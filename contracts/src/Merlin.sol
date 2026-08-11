@@ -491,6 +491,21 @@ contract MerlinProbe {
         }
     }
 
+    function dbg1(bytes calldata label) external pure returns (uint256) {
+        Merlin.Transcript memory t = Merlin.init(label);
+        return t.pos;
+    }
+
+    function dbg2(bytes calldata label) external pure returns (bytes memory) {
+        Merlin.Transcript memory t = Merlin.init(label);
+        return t.challengeBytes("c", 32);
+    }
+
+    function dbg3() external pure returns (bytes memory out) {
+        out = "";
+        out = bytes.concat(out, hex"aabb");
+    }
+
     function blockId(
         uint32 version,
         bytes32 parentId,

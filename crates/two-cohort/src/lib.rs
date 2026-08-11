@@ -102,7 +102,10 @@ pub const EUSD_TOKEN_ID: u64 = 8192;
 /// Used to enumerate the full product of qualifying quorums, which is what the
 /// key-image invariance claim is quantified over.
 pub fn subsets_of(ids: &[u64], size: usize) -> Vec<Vec<u64>> {
-    assert!(ids.len() < 32, "subset enumeration is exponential; keep rosters small");
+    assert!(
+        ids.len() < 32,
+        "subset enumeration is exponential; keep rosters small"
+    );
     let mut out = Vec::new();
     for mask in 0u32..(1u32 << ids.len()) {
         if mask.count_ones() as usize == size {

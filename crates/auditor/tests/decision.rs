@@ -131,19 +131,20 @@ fn loss_beyond_the_bound_is_reported_as_a_model_failure() {
     assert_eq!(evidence.bound, amt(1_667));
     assert_eq!(evidence.observed_exposure, amt(1_000_000));
 
-    // Same ledger, a rate ceiling that actually permits what happened: the
-    // model is no longer contradicted, so the reason falls back to the finding.
+    // Same ledger, a rate ceiling that actually permits what happened --
+    // 100M/hour over 60s is 1,666,667, above the 1,000,000 observed. The model
+    // is no longer contradicted, so the reason falls back to the finding.
     let permissive = AuditPolicy {
         bound: BoundParams {
-            rho: ReleaseRate::new(amt(10_000_000), Duration::from_secs(3_600)).unwrap(),
+            rho: ReleaseRate::new(amt(100_000_000), Duration::from_secs(3_600)).unwrap(),
             ..strict.bound
         },
         ..strict
     };
-    assert_eq!(
-        audit(&l, &permissive, NOW).reason(),
-        Some(FreezeReason::UnbackedRelease)
-    );
+    let d = audit(&l, &permissive, NOW);
+    let FreezeDecision::Freeze { evidence, .. } = &d else { unreachable!() };
+    assert_eq!(evidence.bound, amt(1_666_667));
+    assert_eq!(d.reason(), Some(FreezeReason::UnbackedRelease));
 }
 
 /// Value out past the recall horizon lands in `P` and raises the bound; the

@@ -96,10 +96,7 @@ fn participant_id_zero_is_rejected_because_it_would_hold_the_secret() {
 #[test]
 fn duplicate_ids_within_a_signing_subset_are_rejected() {
     let cohort = deal(2, &[1, 2, 3]).unwrap();
-    let (s1, s2) = (
-        *cohort.share(1).unwrap(),
-        *cohort.share(2).unwrap(),
-    );
+    let (s1, s2) = (*cohort.share(1).unwrap(), *cohort.share(2).unwrap());
     let l1 = lagrange_at_zero(1, &[1, 2]).unwrap();
     let l2 = lagrange_at_zero(2, &[1, 2]).unwrap();
 

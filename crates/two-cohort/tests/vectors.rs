@@ -102,8 +102,7 @@ fn composite_root_reproduces_mobilecoin_published_subaddress_keys() {
 
         // The cohorts also agree in the group, without either half ever being
         // reconstructed on its own.
-        let root_point =
-            owners.public(&[1, 2]).unwrap() + gates.public(&[2, 3, 4]).unwrap();
+        let root_point = owners.public(&[1, 2]).unwrap() + gates.public(&[2, 3, 4]).unwrap();
         assert_eq!(
             RistrettoPublic::from(root_point + offset * RISTRETTO_BASEPOINT_POINT).to_bytes(),
             case.subaddress_spend_public_key,

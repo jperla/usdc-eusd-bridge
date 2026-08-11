@@ -290,9 +290,22 @@ library Ed25519 {
         }
     }
 
+    function _dbgHram(bytes32 r, bytes32 a, bytes memory m) internal pure returns (uint256) {
+        return _hram(r, a, m);
+    }
+
+    function _dbgLe(bytes32 v) internal pure returns (uint256) { return _le(v); }
+
+    function _dbgJoint(uint256 e1, uint256 e2) internal pure returns (uint256,uint256,uint256,uint256) {
+        Point memory b1 = Point({x: BX, y: BY, z: 1, t: mulmod(BX, BY, P)});
+        Point memory b2 = Point({x: BX, y: BY, z: 1, t: mulmod(BX, BY, P)});
+        Point memory q = _jointMul(e1, b1, e2, b2);
+        return (q.x, q.y, q.z, q.t);
+    }
+
     /// base^exp mod p via the modexp precompile. A Solidity square-and-multiply
     /// would be ~250 iterations of loop overhead for the same result.
-    function _expmod(uint256 base, uint256 exp)
+    function _expmod(uint256 b, uint256 e)
         private
         view
         returns (uint256 r)
@@ -302,8 +315,8 @@ library Ed25519 {
             mstore(m, 0x20)
             mstore(add(m, 0x20), 0x20)
             mstore(add(m, 0x40), 0x20)
-            mstore(add(m, 0x60), base)
-            mstore(add(m, 0x80), exp)
+            mstore(add(m, 0x60), b)
+            mstore(add(m, 0x80), e)
             mstore(add(m, 0xa0), P)
             if iszero(staticcall(gas(), 0x05, m, 0xc0, m, 0x20)) {
                 revert(0, 0)
@@ -348,6 +361,22 @@ contract Ed25519Verifier {
         returns (bool ok, uint256 x, uint256 y)
     {
         return Ed25519.decompress(compressed);
+    }
+
+    function dbgHram(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256) {
+        return Ed25519._dbgHram(r, a, m);
+    }
+
+    function dbgPack(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256, bytes32, bytes32) {
+        bytes memory packed = abi.encodePacked(r, a, m);
+        (bytes32 hi, bytes32 lo) = Sha512.hash(packed);
+        return (packed.length, hi, lo);
+    }
+
+    function dbgLe(bytes32 v) external pure returns (uint256) { return Ed25519._dbgLe(v); }
+
+    function dbgJoint(uint256 e1, uint256 e2) external pure returns (uint256,uint256,uint256,uint256) {
+        return Ed25519._dbgJoint(e1, e2);
     }
 
     /// Exposed for cross-checking the hash against FIPS 180-4 vectors
