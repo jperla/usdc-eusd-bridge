@@ -4,3 +4,6 @@ vendor/
 .cargo/config.toml
 *.sqlite
 .DS_Store
+
+# Review transcripts stay local: they are working notes, not deliverables.
+reviews/
