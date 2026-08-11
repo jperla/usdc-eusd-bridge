@@ -30,7 +30,8 @@
 #     own root patches five more, and patches do not compose across workspaces
 #     -- they only take effect from the workspace being built. Without
 #     `bulletproofs-og` and `serde_cbor`, mc-transaction-core does not resolve.
-#     FIX: copy the rest of MobileCoin's [patch.crates-io] into the root.
+#     FIX: copy MobileCoin's `bulletproofs-og` and `serde_cbor` patch entries
+#     into the root [patch.crates-io].
 #
 #  3. MobileCoin pins `nightly-2024-10-11` (vendor/mobilecoin/rust-toolchain.toml)
 #     and means it: mc-common enables `hashbrown/nightly`, which needs
@@ -97,9 +98,6 @@ thiserror = "1"
 [patch.crates-io]
 schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }
 bulletproofs-og = { git = "https://github.com/mobilecoinfoundation/bulletproofs.git", rev = "9abfdc054d9ba65f1e185ea1e6eff3947ce879dc" }
-mbedtls = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
-mbedtls-sys-auto = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
-lmdb-rkv = { git = "https://github.com/mozilla/lmdb-rs", rev = "df1c2f5" }
 serde_cbor = { git = "https://github.com/mobilecoinofficial/cbor", rev = "4c886a7c1d523aae1ec4aa7386f402cb2f4341b5" }
 EOF
 
@@ -114,7 +112,9 @@ RUSTC="$TOOLCHAIN/bin/rustc" RUSTDOC="$TOOLCHAIN/bin/rustdoc" \
 
 # The fixture is a product of the test run; put it where the Solidity suite
 # looks for it.
-if [ -f "$SHADOW/ws/mc-return/fixtures/return.json" ]; then
-  cp "$SHADOW/ws/mc-return/fixtures/return.json" "$CRATE/fixtures/return.json"
-  echo "fixture -> $CRATE/fixtures/return.json"
-fi
+for f in return.json return-block-metadata.json; do
+  if [ -f "$SHADOW/ws/mc-return/fixtures/$f" ]; then
+    cp "$SHADOW/ws/mc-return/fixtures/$f" "$CRATE/fixtures/$f"
+    echo "fixture -> $CRATE/fixtures/$f"
+  fi
+done

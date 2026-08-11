@@ -12,7 +12,9 @@
 //! that created it. You need a later block. The smallest useful chain is three
 //! headers,
 //!
-//!     parent(origin)  ->  origin  ->  anchor
+//! ```text
+//! parent(origin)  ->  origin  ->  anchor
+//! ```
 //!
 //! where `origin` is the block that created the output and `anchor` is any
 //! later block whose `root_element` therefore covers it. What the chain buys:
@@ -24,7 +26,9 @@
 //!   * TxOut indices are assigned in block order and `cumulative_txo_count` is
 //!     "including this block", so
 //!
-//!         parent(origin).cumulative_txo_count <= i < origin.cumulative_txo_count
+//!     ```text
+//!     parent(origin).cumulative_txo_count <= i < origin.cumulative_txo_count
+//!     ```
 //!
 //!     pins the output at global index `i` to block `origin` -- without opening
 //!     `contents_hash`. Each header hashes to the id it carries and names its

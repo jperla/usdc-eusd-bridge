@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {IMobileCoinVerifier, VerifiedReturn} from "./IMobileCoinVerifier.sol";
+import {IMobileCoinVerifier, VerifiedReturn, IRecipientCheck} from "./IMobileCoinVerifier.sol";
 import {ValidatorRegistry} from "./ValidatorRegistry.sol";
 import {Ed25519} from "./Ed25519.sol";
 import {Merlin} from "./Merlin.sol";
@@ -37,6 +37,10 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
 
     /// eUSD token id.
     uint64 public immutable eusdTokenId;
+
+    /// See IRecipientCheck. A deployment that passes a permissive
+    /// implementation here has NOT closed the return leg.
+    IRecipientCheck public immutable recipientCheck;
 
     struct Proof {
         // --- block header fields, in Digestible order ---
@@ -81,8 +85,11 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         ValidatorRegistry _registry,
         bytes32 _returnSpendPublicKey,
         uint64 _eusdTokenId,
-        bytes32 _memoDomain
+        bytes32 _memoDomain,
+        IRecipientCheck _recipientCheck
     ) {
+        require(address(_recipientCheck) != address(0), "recipientCheck required");
+        recipientCheck = _recipientCheck;
         registry = _registry;
         returnSpendPublicKey = _returnSpendPublicKey;
         eusdTokenId = _eusdTokenId;
@@ -188,26 +195,10 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
 
     // -------------------------------------------------------------- internal
 
-    /// UNIMPLEMENTED ON-CHAIN, AND DELIBERATELY LOUD ABOUT IT.
-    ///
-    /// The correct check is `target_key == Hs(a * R) * G + D`, where `a` is the
-    /// return address's published view private key, `R` is the output's public
-    /// key and `D` is `returnSpendPublicKey`. That is the check that proves the
-    /// output is payable to the bridge; a view-key *match* is NOT sufficient,
-    /// and MobileCoin's own light-client relayer has a latent defect of exactly
-    /// that shape -- it classifies burns with a check that never reads
-    /// `target_key`.
-    ///
-    /// Implementing it requires Ristretto255 point decompression and scalar
-    /// multiplication in Solidity. MobileCoin uses Ristretto, not raw Ed25519,
-    /// so `Ed25519.decompress` is NOT interchangeable here and reusing it would
-    /// be wrong in a way that still passes casual tests.
-    ///
-    /// Until that library exists this contract MUST NOT hold live funds. It is
-    /// left reverting rather than returning true so that no deployment can
-    /// accidentally treat the gap as closed.
-    function _payableToBridge(Proof memory) internal pure returns (bool) {
-        revert("recipient check requires Ristretto255; see _payableToBridge");
+    function _payableToBridge(Proof memory p) internal view returns (bool) {
+        return recipientCheck.isPayableToBridge(
+            p.txOutPublicKey, p.txOutTargetKey, returnSpendPublicKey
+        );
     }
 
 }

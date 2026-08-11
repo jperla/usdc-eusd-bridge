@@ -1,0 +1,9 @@
+# MobileCoin's crates reach hashbrown with `features = ["nightly"]` hardcoded
+# in mc-common, and hashbrown 0.14's min_specialization use does not compile on
+# a stable channel. Feature flags are additive, so a dependent workspace cannot
+# turn that off -- the toolchain is the only lever.
+#
+# This is what buys mc-return the ability to link mc-light-client-verifier,
+# MobileCoin's OWN quorum checker, rather than reimplementing it.
+[toolchain]
+channel = "nightly-2024-10-11"

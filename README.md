@@ -147,6 +147,39 @@ checking apparatus itself rather than the design. What survived, survived that.
 
 ---
 
+## Status
+
+**295 tests, 0 failures** — 156 Rust, 139 Solidity against a real EVM.
+
+| | |
+|---|---|
+| Escrow, custody and replay set | done, 16 tests |
+| Validator registry and quorum rule | done, 15 tests |
+| Ed25519 (RFC 8032 vectors) | done, 24 tests, **550,620 gas/verify** |
+| Blake2b-256 (vs hashlib) | done, 10 tests |
+| Merlin — MobileCoin block IDs byte-identical | done, 68 tests |
+| Two-cohort composite spend key | done, 27 tests |
+| Signing ceremony state machine | done, 34 tests |
+| Deposit auditor and freeze bound | done, 50 tests |
+| Return-proof builder | done, 45 tests |
+| Acceptance: the three legs | done, 6 tests |
+
+**The bridge is not ready to hold funds.** Two links are open and both are
+named in the code rather than in a footnote:
+
+1. **The recipient check** — `target_key == Hs(a·R)·G + D`, the step proving an
+   output is payable to the bridge. It needs Ristretto255 in Solidity, which
+   MobileCoin uses and Ed25519 cannot substitute for. It is a **constructor
+   argument** (`IRecipientCheck`), so no deployment can omit it silently, and
+   the test double is named `AcceptsAnyRecipient_DO_NOT_DEPLOY`.
+2. **The block digest framing** in `MobileCoinVerifier.blockDigest` is a
+   hypothesis about Digestible encoding, not yet checked against a
+   node-produced digest. (`MobileCoinBlockId` in `Merlin.sol` *is* checked, and
+   passes — the two need reconciling.)
+
+Also absent: a live signing ceremony, DKG with proof-of-possession, and any
+mainnet deployment.
+
 ## Building
 
 The workspace builds against pinned MobileCoin and Serai checkouts:
@@ -155,15 +188,16 @@ The workspace builds against pinned MobileCoin and Serai checkouts:
 ./scripts/setup.sh
 ```
 
-Then:
+Everything, Rust and Solidity:
 
 ```bash
-cargo test --offline
+./scripts/test.sh
 ```
 
-```bash
-cd contracts && npm install && npm test
-```
+The pinned toolchain is not a preference. MobileCoin's `mc-common` hardcodes
+hashbrown's `nightly` feature, and feature flags are additive, so a dependent
+workspace cannot turn it off. Using that toolchain is what lets `mc-return`
+link **MobileCoin's own light-client verifier** rather than reimplementing it.
 
 ## Review
 

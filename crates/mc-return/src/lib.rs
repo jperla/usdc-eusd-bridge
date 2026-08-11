@@ -41,6 +41,7 @@ use mc_transaction_core::{
 };
 
 pub use attestation::{
+    block_id_script, block_metadata_script, block_sig_script, tx_out_digest_script,
     AttestationRoute, BlockMetadataQuorum, BlockSignatureQuorum, QuorumEvidence,
 };
 pub use chain::HeaderChain;
@@ -48,12 +49,6 @@ pub use disclosure::{Disclosure, BRIDGE_RETURN_MEMO_TYPE};
 pub use error::{Error, Result};
 pub use merkle::TxOutTree;
 pub use transcript::TranscriptScript;
-
-/// The merlin script behind `TxOut::hash()`, which is the preimage of the
-/// Merkle leaf hash.
-pub fn tx_out_digest_script(tx_out: &TxOut) -> TranscriptScript {
-    bundle::tx_out_digest_script_inner(tx_out)
-}
 
 /// A checked return-leg proof.
 #[derive(Debug)]

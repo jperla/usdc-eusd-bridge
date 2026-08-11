@@ -62,16 +62,17 @@ pub struct GroupKey {
 
 /// Trusted-dealer Shamir sharing of a fresh secret.
 ///
-/// A trusted dealer, not a DKG. Out of scope here and stated as such: this
-/// crate is about ceremony sequencing, and key generation is a separate
-/// ceremony with a separate threat model.
+/// A trusted dealer, not a DKG, and no attempt at secret hygiene: the
+/// polynomial coefficients are dropped rather than erased. Both are out of
+/// scope and stated as such -- this crate is about ceremony sequencing, and key
+/// generation is a separate ceremony with a separate threat model.
 pub fn deal<R: RngCore + CryptoRng>(
     threshold: u16,
     ids: &[ParticipantId],
     rng: &mut R,
 ) -> (GroupKey, BTreeMap<ParticipantId, Scalar>) {
     assert!(threshold >= 1 && (threshold as usize) <= ids.len());
-    let mut coeffs: Vec<Scalar> = (0..threshold).map(|_| Scalar::random(rng)).collect();
+    let coeffs: Vec<Scalar> = (0..threshold).map(|_| Scalar::random(rng)).collect();
     let secret = coeffs[0];
 
     let mut shares = BTreeMap::new();
@@ -90,7 +91,6 @@ pub fn deal<R: RngCore + CryptoRng>(
         .iter()
         .map(|(id, s)| (*id, RISTRETTO_BASEPOINT_POINT * *s))
         .collect();
-    coeffs.clear();
 
     (
         GroupKey {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {IMobileCoinVerifier, VerifiedReturn} from "./IMobileCoinVerifier.sol";
+import {IMobileCoinVerifier, VerifiedReturn, IRecipientCheck} from "./IMobileCoinVerifier.sol";
 
 /// TEST ONLY. Never deploy.
 ///
@@ -119,5 +119,36 @@ contract ReentrantToken {
             require(ok, "reentry call failed");
         }
         return true;
+    }
+}
+
+/// TEST ONLY, and named so that it is impossible to deploy this by accident
+/// and believe the return leg is complete.
+///
+/// It answers "is this output payable to the bridge?" with an unconditional
+/// yes. The real answer requires Ristretto255 arithmetic in Solidity, which
+/// does not exist in this repo yet. Any deployment passing this to
+/// MobileCoinVerifier's constructor can be drained by anyone who can produce a
+/// quorum-signed block containing ANY eUSD output -- including one paying
+/// themselves.
+contract AcceptsAnyRecipient_DO_NOT_DEPLOY is IRecipientCheck {
+    function isPayableToBridge(bytes32, bytes32, bytes32)
+        external
+        pure
+        returns (bool)
+    {
+        return true;
+    }
+}
+
+/// TEST ONLY. Rejects everything, so tests can assert the verifier really does
+/// consult the recipient check rather than ignoring it.
+contract RejectsEveryRecipient is IRecipientCheck {
+    function isPayableToBridge(bytes32, bytes32, bytes32)
+        external
+        pure
+        returns (bool)
+    {
+        return false;
     }
 }
