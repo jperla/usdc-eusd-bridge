@@ -89,6 +89,9 @@ library Keccak1600 {
 /// the harness compiles `src/` and calls real bytecode; there is no other way
 /// to reach an `internal` library function from a test.
 contract Keccak1600Probe {
+    function dbgB() external pure returns (bytes memory out) { out = hex"aabb"; }
+    function dbgU() external pure returns (uint256) { return 7; }
+
     function f1600(uint256[25] memory a)
         external
         pure
