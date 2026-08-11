@@ -29,6 +29,7 @@ use mc_blockchain_types::{Block, BlockID, BlockMetadata, BlockSignature};
 use mc_common::NodeID;
 use mc_crypto_digestible::Digestible;
 use mc_crypto_keys::Ed25519Public;
+use mc_transaction_core::tx::TxOut;
 use mc_light_client_verifier::TrustedValidatorSet;
 
 use crate::{
@@ -83,6 +84,14 @@ pub fn block_id_script(block: &Block) -> TranscriptScript {
         block
             .contents_hash
             .append_to_transcript(b"contents_hash", t);
+    })
+}
+
+/// The merlin script for `TxOut::hash()`, which is the preimage of the Merkle
+/// leaf hash -- the leaf cannot be recomputed without it.
+pub fn tx_out_digest_script(tx_out: &TxOut) -> TranscriptScript {
+    record(b"digestible", b"digest32", |t| {
+        tx_out.append_to_transcript(b"mobilecoin-txout", t)
     })
 }
 

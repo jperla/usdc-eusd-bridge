@@ -21,8 +21,10 @@ use mc_return::{
     QuorumEvidence, TxOutTree,
 };
 use mc_transaction_core::{
-    encrypted_fog_hint::EncryptedFogHint, tx::TxOut, AccountKey, Amount, BlockVersion, MemoPayload,
-    PublicAddress, TokenId,
+    encrypted_fog_hint::EncryptedFogHint,
+    membership_proofs::{hash_leaf, hash_nodes, NIL_HASH},
+    tx::TxOut,
+    AccountKey, Amount, BlockVersion, MemoPayload, PublicAddress, TokenId,
 };
 use mc_util_from_random::FromRandom;
 use rand_chacha::ChaChaRng;
@@ -76,9 +78,13 @@ pub fn filler_tx_out(rng: &mut ChaChaRng, value: u64) -> TxOut {
     .expect("TxOut::new_with_memo")
 }
 
-/// A ledger: blocks plus the TxOut Merkle tree they were validated against.
+/// A ledger: blocks, the outputs they created in global index order, and the
+/// TxOut Merkle tree over all of them.
 pub struct Ledger {
     pub blocks: Vec<Block>,
+    pub leaves: Vec<TxOut>,
+    /// The tree as of the tip. NOT the tree any block's `root_element` names --
+    /// see `tree_anchored_at`.
     pub tree: TxOutTree,
 }
 
@@ -88,13 +94,29 @@ impl Ledger {
     pub fn origin(outputs: Vec<TxOut>) -> Self {
         let block = Block::new_origin_block(&outputs);
         let mut tree = TxOutTree::new();
-        for o in outputs {
-            tree.push(o).unwrap();
+        for o in &outputs {
+            tree.push(o.clone()).unwrap();
         }
         Self {
             blocks: vec![block],
+            leaves: outputs,
             tree,
         }
+    }
+
+    /// The first `n` outputs as a tree.
+    pub fn tree_of_first(&self, n: u64) -> TxOutTree {
+        let mut tree = TxOutTree::new();
+        for leaf in &self.leaves[..n as usize] {
+            tree.push(leaf.clone()).unwrap();
+        }
+        tree
+    }
+
+    /// The ledger state block `i`'s `root_element` commits to: everything that
+    /// existed before block `i` was formed.
+    pub fn tree_anchored_at(&self, i: usize) -> TxOutTree {
+        self.tree_of_first(self.blocks[i - 1].cumulative_txo_count)
     }
 
     /// Append a block. The root element is read from the tree BEFORE the new
@@ -110,7 +132,8 @@ impl Ledger {
         let parent = self.blocks.last().unwrap();
         let block = Block::new_with_parent(BlockVersion::MAX, parent, &root_element, &contents);
         for o in outputs {
-            self.tree.push(o).unwrap();
+            self.tree.push(o.clone()).unwrap();
+            self.leaves.push(o);
         }
         self.blocks.push(block);
         self.blocks.last().unwrap()
@@ -258,23 +281,28 @@ impl Scenario {
         let beneficiary: [u8; 20] = hex_20("742d35cc6634c0532925a3b844bc454e4438f44e");
         let value = 1_500_000u64;
 
+        // Three outputs in the origin block, two in block 1. That leaves the
+        // anchor committing to FIVE outputs, so the padded tree is eight wide
+        // and the fixture exercises the nil-padded subtrees. A power-of-two
+        // ledger would let a verifier that mishandles padding pass.
         let mut ledger = Ledger::origin(vec![
             filler_tx_out(&mut r, 10),
             filler_tx_out(&mut r, 11),
-        ]);
-        // Return output is index 2 in the global TxOut ordering.
-        ledger.append(vec![
-            return_tx_out(&mut r, &bridge.default_subaddress(), value, beneficiary),
             filler_tx_out(&mut r, 12),
         ]);
-        ledger.append(vec![filler_tx_out(&mut r, 13)]);
+        // Return output is index 3 in the global TxOut ordering.
+        ledger.append(vec![
+            return_tx_out(&mut r, &bridge.default_subaddress(), value, beneficiary),
+            filler_tx_out(&mut r, 13),
+        ]);
+        ledger.append(vec![filler_tx_out(&mut r, 14)]);
 
         let validators = Validator::set(&mut r, 5);
         Self {
             ledger,
             bridge,
             validators,
-            return_index: 2,
+            return_index: 3,
             value,
             beneficiary,
         }
@@ -287,7 +315,38 @@ impl Scenario {
     pub fn return_spend_public(&self) -> mc_crypto_keys::RistrettoPublic {
         *self.bridge.default_subaddress().spend_public_key()
     }
+
+    /// The tree the anchor block (index 2) was validated against.
+    pub fn anchor_tree(&self) -> TxOutTree {
+        self.ledger.tree_anchored_at(2)
+    }
 }
+
+/// The hash of the node spanning `[from, to]` of a tree holding `leaves`,
+/// defined top-down over the whole padded tree.
+///
+/// The one rule that is not "just hash the children" is upstream's: a right
+/// subtree containing no leaves at all is the NIL hash, not `H(nil, nil)`.
+/// See `tx_out_store::update_merkle_hashes`.
+pub fn expected_hash(leaves: &[TxOut], from: u64, to: u64) -> [u8; 32] {
+    let n = leaves.len() as u64;
+    if from == to {
+        return if from < n {
+            hash_leaf(&leaves[from as usize])
+        } else {
+            *NIL_HASH
+        };
+    }
+    let mid = (from + to) / 2;
+    let left = expected_hash(leaves, from, mid);
+    let right = if mid + 1 >= n {
+        *NIL_HASH
+    } else {
+        expected_hash(leaves, mid + 1, to)
+    };
+    hash_nodes(&left, &right)
+}
+
 
 pub fn hex_20(s: &str) -> [u8; 20] {
     let bytes = hex::decode(s).expect("hex");

@@ -19,31 +19,6 @@ use mc_transaction_core::{
 };
 use mc_return::TxOutTree;
 
-/// The hash of the node spanning `[from, to]` of a tree holding `leaves`,
-/// defined top-down over the whole padded tree.
-///
-/// The one rule that is not "just hash the children" is upstream's: a right
-/// subtree containing no leaves at all is the NIL hash, not `H(nil, nil)`.
-/// See `tx_out_store::update_merkle_hashes`.
-fn expected_hash(leaves: &[TxOut], from: u64, to: u64) -> [u8; 32] {
-    let n = leaves.len() as u64;
-    if from == to {
-        return if from < n {
-            hash_leaf(&leaves[from as usize])
-        } else {
-            *NIL_HASH
-        };
-    }
-    let mid = (from + to) / 2;
-    let left = expected_hash(leaves, from, mid);
-    let right = if mid + 1 >= n {
-        *NIL_HASH
-    } else {
-        expected_hash(leaves, mid + 1, to)
-    };
-    hash_nodes(&left, &right)
-}
-
 fn build(n: usize) -> (TxOutTree, Vec<TxOut>) {
     let mut r = rng(3);
     let leaves: Vec<TxOut> = (0..n).map(|i| filler_tx_out(&mut r, i as u64)).collect();

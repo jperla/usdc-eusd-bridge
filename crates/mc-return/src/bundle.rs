@@ -12,7 +12,6 @@
 //! different rule from its neighbour, and `BigInt(x)` reads them all.
 
 use mc_blockchain_types::{Block, BlockMetadata};
-use mc_crypto_digestible::Digestible;
 use mc_transaction_core::{
     membership_proofs::{hash_leaf, NIL_HASH},
     tx::{TxOut, TxOutMembershipElement, TxOutMembershipProof},
@@ -22,7 +21,8 @@ use serde_json::{json, Map, Value};
 
 use crate::{
     attestation::{
-        block_id_script, block_metadata_script, block_sig_script, AttestationRoute, QuorumEvidence,
+        block_id_script, block_metadata_script, block_sig_script, tx_out_digest_script,
+        AttestationRoute, QuorumEvidence,
     },
     transcript::TranscriptScript,
     ReturnProof,
@@ -178,7 +178,7 @@ impl ReturnProof {
             ),
         };
 
-        let tx_out_script = crate::tx_out_digest_script(&self.tx_out);
+        let tx_out_script = tx_out_digest_script(&self.tx_out);
 
         json!({
             "schema": "mc-return/1",
@@ -249,11 +249,4 @@ impl ReturnProof {
 /// Pretty-print with a trailing newline, so the file is diff-friendly.
 pub fn to_pretty_string(value: &Value) -> Result<String, serde_json::Error> {
     Ok(format!("{}\n", serde_json::to_string_pretty(value)?))
-}
-
-/// The merlin script behind `TxOut::hash()`.
-pub(crate) fn tx_out_digest_script_inner(tx_out: &TxOut) -> TranscriptScript {
-    crate::transcript::record(b"digestible", b"digest32", |t| {
-        tx_out.append_to_transcript(b"mobilecoin-txout", t)
-    })
 }

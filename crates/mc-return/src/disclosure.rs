@@ -75,10 +75,11 @@ impl Disclosure {
             .get_value(&shared_secret)
             .map_err(|e| Error::AmountNotRecoverable(format!("{e}")))?;
 
-        // Re-derive the commitment from the values we are about to publish.
-        // Upstream's check runs against values it derived itself; this one runs
-        // against the exact numbers that leave this process, which is the thing
-        // a reader of the fixture cares about.
+        // Re-derive the commitment from the exact numbers that will be
+        // published. For MaskedAmountV2 this duplicates a check `get_value`
+        // already made and will never fire; it is here for the versions that
+        // do not make it -- MaskedAmountV1's `get_value` does not compare
+        // commitments -- and for any future variant that forgets to.
         let expected = CompressedCommitment::new(amount.value, blinding, &generators(*amount.token_id));
         if &expected != masked_amount.commitment() {
             return Err(Error::CommitmentMismatch);
@@ -121,9 +122,7 @@ impl Disclosure {
     /// change output, say -- is not accepted as a return.
     pub fn require_paid_to(&self, return_subaddress_spend_public: &RistrettoPublic) -> Result<()> {
         if &self.recovered_subaddress_spend_key != return_subaddress_spend_public {
-            return Err(Error::AmountNotRecoverable(
-                "output was not paid to the bridge return subaddress".into(),
-            ));
+            return Err(Error::NotPaidToReturnAddress);
         }
         Ok(())
     }

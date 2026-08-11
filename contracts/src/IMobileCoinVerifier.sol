@@ -32,3 +32,23 @@ interface IMobileCoinVerifier {
         view
         returns (VerifiedReturn memory);
 }
+
+/// The recipient check, factored out because it is the one link in the return
+/// leg that is not yet implementable on-chain.
+///
+/// The real check is `target_key == Hs(a * R) * G + D`: the output is payable
+/// to the bridge's return subaddress. It needs Ristretto255 point
+/// decompression and scalar multiplication in Solidity. MobileCoin uses
+/// Ristretto, NOT raw Ed25519, so an Ed25519 implementation cannot be
+/// substituted -- it would be wrong in a way that still passes casual tests.
+///
+/// It is an interface rather than an internal function so that the gap is a
+/// named constructor argument visible in any deployment transaction, instead
+/// of a comment somebody has to notice.
+interface IRecipientCheck {
+    function isPayableToBridge(
+        bytes32 txOutPublicKey,
+        bytes32 txOutTargetKey,
+        bytes32 returnSpendPublicKey
+    ) external view returns (bool);
+}

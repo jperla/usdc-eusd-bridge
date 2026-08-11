@@ -30,7 +30,7 @@ fn build_with(
 fn a_well_formed_return_is_accepted_on_the_block_signature_route() {
     let s = Scenario::build();
     let chain = s.ledger.chain(0, 2).unwrap();
-    let proof = build_with(&s, chain, &s.ledger.tree, s.return_index).unwrap();
+    let proof = build_with(&s, chain, &s.anchor_tree(), s.return_index).unwrap();
 
     assert_eq!(proof.tx_out_index, s.return_index);
     assert_eq!(proof.disclosure.amount.value, s.value);
@@ -48,7 +48,7 @@ fn a_well_formed_return_is_accepted_on_the_block_metadata_route() {
     let quorum = metadata_evidence(&s.validators, &[0, 1, 2], 3, chain.anchor());
     let proof = ReturnProof::build(
         chain,
-        &s.ledger.tree,
+        &s.anchor_tree(),
         s.return_index,
         quorum,
         s.view_key(),
@@ -66,14 +66,14 @@ fn the_block_that_created_the_output_cannot_anchor_it() {
     // be refused, not quietly produce a proof against the wrong root.
     let s = Scenario::build();
     let chain = s.ledger.chain(0, 1).unwrap();
-    let err = build_with(&s, chain, &s.ledger.tree, s.return_index).unwrap_err();
+    let err = build_with(&s, chain, &s.anchor_tree(), s.return_index).unwrap_err();
     assert!(
         matches!(
             err,
             Error::AnchorDoesNotCover {
                 anchor_index: 1,
-                covered: 2,
-                index: 2
+                covered: 3,
+                index: 3
             }
         ),
         "got {err:?}"
@@ -97,7 +97,7 @@ fn a_tree_that_has_moved_past_the_anchor_is_refused() {
     let chain = s.ledger.chain(0, 2).unwrap();
     let err = build_with(&s, chain, &ahead, s.return_index).unwrap_err();
     assert!(
-        matches!(err, Error::MembershipProofInvalid { index: 2 }),
+        matches!(err, Error::MembershipProofInvalid { index: 3 }),
         "got {err:?}"
     );
 }
@@ -136,13 +136,16 @@ fn a_single_header_is_not_a_chain() {
 
 #[test]
 fn an_output_that_is_not_ours_is_refused() {
-    // Index 3 is the filler output in block 1: same block, same Merkle tree,
+    // Index 4 is the filler output in block 1: same block, same Merkle tree,
     // valid membership proof, paid to someone else.
     let s = Scenario::build();
     let chain = s.ledger.chain(0, 2).unwrap();
-    let err = build_with(&s, chain, &s.ledger.tree, 3).unwrap_err();
+    let err = build_with(&s, chain, &s.anchor_tree(), 4).unwrap_err();
+    // Upstream's MaskedAmountV2::get_value refuses a shared secret that does
+    // not reproduce the commitment, so this surfaces as AmountNotRecoverable;
+    // CommitmentMismatch is the same refusal one layer out.
     assert!(
-        matches!(err, Error::AmountNotRecoverable(_)),
+        matches!(err, Error::AmountNotRecoverable(_) | Error::CommitmentMismatch),
         "an output paid to a third party was accepted: {err:?}"
     );
 }
@@ -182,7 +185,7 @@ fn an_output_to_us_without_the_bridge_memo_is_refused() {
     let quorum = signature_evidence(&validators, &[0, 1, 2], 3, chain.anchor());
     let err = ReturnProof::build(
         chain,
-        &ledger.tree,
+        &ledger.tree_anchored_at(2),
         1,
         quorum,
         bridge.view_private_key(),
@@ -205,14 +208,14 @@ fn a_return_paid_to_a_different_subaddress_is_refused() {
     let wrong = s.bridge.subaddress(7);
     let err = ReturnProof::build(
         chain,
-        &s.ledger.tree,
+        &s.anchor_tree(),
         s.return_index,
         quorum,
         s.view_key(),
         wrong.spend_public_key(),
     )
     .unwrap_err();
-    assert!(matches!(err, Error::AmountNotRecoverable(_)), "got {err:?}");
+    assert!(matches!(err, Error::NotPaidToReturnAddress), "got {err:?}");
 }
 
 #[test]
@@ -223,7 +226,7 @@ fn an_unsigned_anchor_is_refused() {
     let quorum = signature_evidence(&s.validators, &[0, 1], 3, chain.anchor());
     let err = ReturnProof::build(
         chain,
-        &s.ledger.tree,
+        &s.anchor_tree(),
         s.return_index,
         quorum,
         s.view_key(),
@@ -248,7 +251,7 @@ fn a_forged_signature_is_refused() {
 
     let err = ReturnProof::build(
         chain,
-        &s.ledger.tree,
+        &s.anchor_tree(),
         s.return_index,
         mc_return::QuorumEvidence::BlockSignature(q),
         s.view_key(),
@@ -256,4 +259,25 @@ fn a_forged_signature_is_refused() {
     )
     .unwrap_err();
     assert!(matches!(err, Error::BadBlockSignature { position: 1, .. }), "got {err:?}");
+}
+
+#[test]
+fn each_block_commits_to_exactly_the_outputs_that_preceded_it() {
+    // Ties the scenario's headers back to the declarative Merkle definition in
+    // `common`: block i's root_element must be the whole-tree hash of the first
+    // `blocks[i-1].cumulative_txo_count` outputs -- no more, and no fewer. This
+    // is the ledger-shape assumption `HeaderChain::anchor_covers` rests on, and
+    // it is checked against a definition that knows nothing about how
+    // `TxOutTree` builds its nodes.
+    let s = Scenario::build();
+    for i in 1..s.ledger.blocks.len() {
+        let n = s.ledger.block(i - 1).cumulative_txo_count;
+        let full = n.next_power_of_two();
+        assert_eq!(
+            s.ledger.block(i).root_element.hash.as_ref(),
+            &expected_hash(&s.ledger.leaves[..n as usize], 0, full - 1),
+            "block {i} root_element does not cover exactly the first {n} outputs"
+        );
+        assert_eq!(s.ledger.block(i).root_element.range.to, full - 1);
+    }
 }

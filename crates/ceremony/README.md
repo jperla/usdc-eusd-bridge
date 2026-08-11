@@ -1,0 +1,90 @@
+# `ceremony`
+
+The threshold signing ceremony state machine for the MobileCoin side of the
+bridge. It sequences rounds against an abstract authorisation backend
+(`authorizer::Authorizer`), so it can be exercised end to end without a real
+signer -- which matters, because the real signer is an HSM plus a quorum of
+people.
+
+```
+begin ---------> CollectingRoundOne ---------> CollectingRoundTwo ---------> Complete
+   |  reserve slot      |  bind slot to           |  verify each share          |
+   |  (durable)         |  the full context       |  on arrival                 |
+   |                    |  (durable)              |                             |
+   +--> SubThreshold    +--> OneTimeValueReuse    +--> Aborted(culprit)         +--> UnattributableAggregateFailure
+                        +--> Rollback  =>  Failed (terminal)
+```
+
+## The four properties, and the tests that kill them
+
+Each guard was checked by deleting it and confirming the named test fails.
+
+| Property | Guard | Test that fails without it |
+| --- | --- | --- |
+| 1. One-time values never reused | `MemoryStore::bind` refuses a second context | `one_time_values::the_machine_refuses_to_bind_one_one_time_value_to_two_contexts` |
+| 1. Key is the FULL context | length-prefixed `SigningContext::encode` | `context_encoding::{the_statement_subset_boundary,commitment_boundaries}_cannot_be_shifted` |
+| 2. Durable before observable | store write precedes the backend call | `rollback::every_durable_write_precedes_the_observable_step_it_protects` |
+| 2. Anti-rollback | `MemoryAnchor::observe` rejects a rewound sequence | `rollback::a_rolled_back_store_makes_the_signer_fail_closed` |
+| 2. Fail closed | `Ceremony::fail` makes `State::Failed` terminal | `one_time_values::the_machine_refuses_to_bind_one_one_time_value_to_two_contexts` |
+| 3. Identifiable abort | identity-signature checks + per-share verification | `identifiable_abort::{an_invalid_share_is_attributed_to_its_sender, a_round_message_signed_by_the_wrong_identity_key_is_refused, evidence_with_an_unauthenticated_round_one_message_is_rejected}` |
+| 4. Sub-threshold cannot complete | `subset.len() < threshold` in `begin` | `threshold::a_sub_threshold_subset_is_refused_before_any_one_time_value_exists` |
+
+Two tests carry the weight of the whole file set, because they show the guards
+are not bookkeeping:
+
+* `one_time_values::three_responses_under_one_one_time_value_recover_the_long_term_share`
+  runs the attack to the end -- three responses under one one-time value, three
+  linear equations, the participant's long-term share recovered by Cramer's rule
+  and compared against the dealer's value.
+* `identifiable_abort::a_quorum_can_forge_a_valid_signature_with_no_ceremony_at_all`
+  reconstructs the group secret from a quorum's shares and emits a signature
+  that verifies, which is why attribution cannot rest on the transcript.
+
+`identity_kat.rs` pins the identity primitive to RFC 8032 section 7.1 TEST 1 and
+TEST 2, so the roster's seed -> public-key derivation is the standard Ed25519
+one.
+
+## Running the tests
+
+```
+cargo test --offline -p ceremony
+```
+
+At the time of writing this fails before reaching the crate, for a reason in the
+workspace root manifest rather than in this crate: the vendored MobileCoin
+checkout is a path dependency inside the workspace directory, so cargo adopts
+its crates as members of *this* workspace and they then try to inherit
+`workspace.package.rust-version` from a root that does not define it. The fix is
+one line in the root `Cargo.toml`, which this crate does not own:
+
+```toml
+exclude = ["vendor/mobilecoin", "vendor/serai"]
+```
+
+## What this crate does NOT establish
+
+* **Composite two-cohort authorisation.** The machine enforces one roster and
+  one threshold. The bridge's release rule is (k-of-n operators) AND (g-of-m
+  gates); composing the two is `crates/two-cohort`'s and the backend's business.
+  Passing this machine's threshold check is not evidence that the gate cohort
+  participated.
+* **Rollback detection beyond the anchor.** A store cannot detect its own
+  rewind; `Anchor` is the seam for something that did not rewind with it. The
+  in-memory anchor used by the tests starts at zero, so a process restart
+  combined with an equally old store snapshot is invisible to it. Production
+  needs a hardware monotonic counter or an append-only log elsewhere, and this
+  crate does not verify that one exists.
+* **The reference backend against a published vector.** `frost` is FROST-shaped
+  but not RFC 9591's ciphersuite (Blake2b, Ristretto, this crate's own
+  transcript encoding), so no known-answer vector applies to it. Its algebra is
+  tested; its interoperability is not claimed. It is also a trusted-dealer
+  sharing with no DKG, no proof of possession and no rogue-key defence.
+* **Concurrent sessions.** One machine runs one ceremony. Several concurrent
+  ceremonies against one store are safe by construction (distinct slots) but are
+  not tested, and the ROS/Wagner line of attack on concurrent threshold Schnorr
+  sessions has not been analysed here.
+* **Liveness.** There are no timeouts and no transport. A coordinator that
+  withholds messages stalls the ceremony; the machine fails closed by design and
+  makes no attempt to make progress without a full subset.
+* **Identity key management.** Rotation, revocation and the consequences of an
+  identity key compromise (attribution silently fails) are out of scope.

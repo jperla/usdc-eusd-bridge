@@ -74,6 +74,9 @@ pub enum Error {
     #[error("recovered amount does not reproduce the output's commitment")]
     CommitmentMismatch,
 
+    #[error("output was paid to some other subaddress, not the bridge return address")]
+    NotPaidToReturnAddress,
+
     #[error("memo is {len} bytes of payload data, too short to carry a 20-byte address")]
     MemoTooShort { len: usize },
 

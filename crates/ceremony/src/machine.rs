@@ -296,12 +296,14 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
             });
         }
 
+        // Anchor first: if the store has been rewound there must be no new
+        // one-time value, not even an unpublished one sitting in the backend.
+        self.observe_store()?;
         let (slot, commitment) = self
             .authorizer
             .round_one()
             .map_err(|e| Error::Backend(e.to_string()))?;
 
-        self.observe_store()?;
         let receipt = match self.store.reserve(slot) {
             Ok(r) => r,
             Err(e) => return Err(self.fail(Error::Store(e))),
