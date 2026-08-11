@@ -1,99 +1,167 @@
 // ValidatorRegistry tests.
 //
-// This contract is the trust root of the whole return leg: whoever controls it
-// can mint arbitrary MobileCoin "returns". So the tests are about the things
-// that would let someone bypass it -- duplicate keys counted as a quorum, a
-// rotation landing without its timelock, a threshold left above the roster.
+// This contract is the trust root of the return leg: whoever controls it can
+// mint arbitrary MobileCoin "returns". The tests target the ways a quorum
+// could be faked.
+//
+// The headline case is the one that motivated the design. MobileCoin's cheap
+// proof route (`BlockSignature`) is signed with a PER-ENCLAVE identity key,
+// not the node's SCP message key that defines its NodeID. So several keys can
+// belong to one validator entity, and counting keys instead of entities lets
+// one operator satisfy any threshold alone.
 
 import {
-  Chain, selector, word, addrWord, b32, decodeUint, decodeBool,
+  Chain, selector, word, addrWord, b32, decodeBool, decodeUint,
   test, assert, assertEq, summary, revertReason,
 } from './harness.mjs';
 
 const GOV = '0x' + '11'.repeat(20);
 const MALLORY = '0x' + 'ee'.repeat(20);
-const DELAY = 3600n;
+const DELAY = 0n;            // 0 so enrollment is testable in one block
+const H = 1000n;             // a block height inside every enrolled range
 
 const K = (n) => '0x' + n.toString(16).padStart(2, '0').repeat(32);
-// Sorted ascending, as isQuorum requires.
-const KEYS = [K(1), K(2), K(3), K(4), K(5)];
+const E = (n) => '0x' + ('e' + n.toString(16).padStart(1, '0')).repeat(32);
 
-/// bytes32[] as a constructor arg: dynamic, so head is an offset.
 const dynB32Array = (arr) => word(arr.length) + arr.map((k) => b32(k)).join('');
 
-async function fixture(chain, { keys = KEYS, threshold = 3n, delay = DELAY } = {}) {
-  // constructor(address, bytes32[] memory, uint8, uint64)
-  const head = addrWord(GOV) + word(4 * 32) + word(threshold) + word(delay);
-  return chain.deploy('ValidatorRegistry', head + dynB32Array(keys));
+async function fresh(chain, { threshold = 3n, delay = DELAY } = {}) {
+  return chain.deploy('ValidatorRegistry',
+    addrWord(GOV) + word(threshold) + word(delay));
 }
 
-const isQuorum = async (chain, reg, keys) => {
-  const data = selector('isQuorum(bytes32[])') + word(32) + dynB32Array(keys);
+async function enroll(chain, reg, key, entity, from = 0n, to = 0n) {
+  const args = b32(key) + b32(entity) + word(from) + word(to);
+  await chain.must(reg, selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV });
+  await chain.must(reg, selector('enrollKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV });
+}
+
+const isQuorum = async (chain, reg, keys, height = H) => {
+  const data = selector('isQuorum(bytes32[],uint64)') + word(64) + word(height) + dynB32Array(keys);
   const r = await chain.call(reg, data);
   assert(r.ok, `isQuorum reverted: ${revertReason(r.ret)}`);
   return decodeBool(r.ret);
 };
 
-const chain = await Chain.create();
+/// Order keys by the entity they map to, as isQuorum requires.
+const byEntity = (pairs) => pairs.slice()
+  .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+  .map((p) => p[0]);
+
+const chain = await Chain.create({ only: ['ValidatorRegistry.sol'] });
 
 console.log('\nValidatorRegistry');
 
-await test('a threshold-sized set of distinct registered keys is a quorum', async () => {
-  const reg = await fixture(chain);
-  assert(await isQuorum(chain, reg, [KEYS[0], KEYS[1], KEYS[2]]), 'should be quorum');
-  assert(await isQuorum(chain, reg, KEYS), 'full set should be quorum');
+// ------------------------------------------------------- the entity property
+
+await test('THREE keys from ONE entity are not a quorum', async () => {
+  // The defect this contract exists to prevent. A single operator running
+  // three enclaves holds three perfectly valid signing keys.
+  const reg = await fresh(chain);
+  await enroll(chain, reg, K(1), E(1));
+  await enroll(chain, reg, K(2), E(1));
+  await enroll(chain, reg, K(3), E(1));
+  assert(!(await isQuorum(chain, reg, [K(1), K(2), K(3)])),
+    'three keys of one entity must not be a quorum');
 });
 
-await test('fewer than threshold is not a quorum', async () => {
-  const reg = await fixture(chain);
-  assert(!(await isQuorum(chain, reg, [KEYS[0], KEYS[1]])), 'two of three');
+await test('three keys from three entities are a quorum', async () => {
+  const reg = await fresh(chain);
+  const pairs = [[K(1), E(1)], [K(2), E(2)], [K(3), E(3)]];
+  for (const [k, e] of pairs) await enroll(chain, reg, k, e);
+  assert(await isQuorum(chain, reg, byEntity(pairs)), 'should be a quorum');
 });
 
-await test('ONE key repeated is not a quorum', async () => {
-  // Without the distinctness check this is the cheapest possible forgery: a
-  // single compromised validator signs the same digest three times.
-  const reg = await fixture(chain);
-  assert(!(await isQuorum(chain, reg, [KEYS[0], KEYS[0], KEYS[0]])), 'repeats');
+await test('two entities plus a second key of one of them is still not a quorum', async () => {
+  const reg = await fresh(chain);
+  const pairs = [[K(1), E(1)], [K(2), E(2)], [K(3), E(2)]];
+  for (const [k, e] of pairs) await enroll(chain, reg, k, e);
+  assert(!(await isQuorum(chain, reg, byEntity(pairs))),
+    'a padded second key must not lift two entities to three');
 });
 
-await test('an unregistered key never counts, even alongside real ones', async () => {
-  const reg = await fixture(chain);
-  const fake = K(0xaa);
-  assert(!(await isQuorum(chain, reg, [KEYS[0], KEYS[1], fake].sort())), 'fake key');
+// ------------------------------------------------------------ height scoping
+
+await test('a key is rejected outside the height range it was enrolled for', async () => {
+  const reg = await fresh(chain, { threshold: 1n });
+  await enroll(chain, reg, K(1), E(1), 500n, 900n);
+  assert(await isQuorum(chain, reg, [K(1)], 600n), 'inside range');
+  assert(!(await isQuorum(chain, reg, [K(1)], 400n)), 'before range');
+  assert(!(await isQuorum(chain, reg, [K(1)], 900n)), 'toHeight is exclusive');
+  assert(!(await isQuorum(chain, reg, [K(1)], 1500n)), 'after range');
 });
 
-await test('an unsorted set is rejected rather than silently accepted', async () => {
-  const reg = await fixture(chain);
-  assert(!(await isQuorum(chain, reg, [KEYS[2], KEYS[1], KEYS[0]])), 'descending');
+await test('a rotation cannot be counted twice across its own boundary', async () => {
+  // Same entity, an old key and its replacement, ranges abutting. At any
+  // single height only one is valid, and both map to one entity anyway.
+  const reg = await fresh(chain, { threshold: 2n });
+  await enroll(chain, reg, K(1), E(1), 0n, 1000n);
+  await enroll(chain, reg, K(2), E(1), 1000n, 0n);
+  assert(!(await isQuorum(chain, reg, [K(1), K(2)], 999n)), 'at 999');
+  assert(!(await isQuorum(chain, reg, [K(1), K(2)], 1000n)), 'at 1000');
 });
 
-await test('rotation requires a proposal AND the timelock to elapse', async () => {
-  const reg = await fixture(chain);
-  const nk = K(0x7f);
+// -------------------------------------------------------------- basic checks
 
-  // Execute without proposing.
+await test('fewer keys than the threshold is not a quorum', async () => {
+  const reg = await fresh(chain);
+  const pairs = [[K(1), E(1)], [K(2), E(2)]];
+  for (const [k, e] of pairs) await enroll(chain, reg, k, e);
+  assert(!(await isQuorum(chain, reg, byEntity(pairs))), 'two of three');
+});
+
+await test('an unenrolled key never counts, even beside real ones', async () => {
+  const reg = await fresh(chain);
+  const pairs = [[K(1), E(1)], [K(2), E(2)]];
+  for (const [k, e] of pairs) await enroll(chain, reg, k, e);
+  assert(!(await isQuorum(chain, reg, [K(1), K(2), K(9)])), 'unenrolled key');
+});
+
+await test('a revoked key stops counting immediately', async () => {
+  const reg = await fresh(chain);
+  const pairs = [[K(1), E(1)], [K(2), E(2)], [K(3), E(3)]];
+  for (const [k, e] of pairs) await enroll(chain, reg, k, e);
+  const ordered = byEntity(pairs);
+  assert(await isQuorum(chain, reg, ordered), 'quorum before revocation');
+  await chain.must(reg, selector('revokeKey(bytes32)') + b32(K(2)), { from: GOV });
+  assert(!(await isQuorum(chain, reg, ordered)), 'quorum must break after revocation');
+});
+
+await test('a list not ordered by entity is rejected rather than silently accepted', async () => {
+  const reg = await fresh(chain);
+  const pairs = [[K(1), E(1)], [K(2), E(2)], [K(3), E(3)]];
+  for (const [k, e] of pairs) await enroll(chain, reg, k, e);
+  const desc = byEntity(pairs).reverse();
+  assert(!(await isQuorum(chain, reg, desc)), 'descending must be rejected');
+});
+
+// ------------------------------------------------------------- authorisation
+
+await test('enrollment requires a proposal first', async () => {
+  const reg = await fresh(chain);
+  const args = b32(K(1)) + b32(E(1)) + word(0) + word(0);
   assert(!(await chain.call(reg,
-    selector('execute(bytes32,bool)') + b32(nk) + word(1), { from: GOV })).ok,
-    'execute without propose must revert');
-
-  assert((await chain.call(reg,
-    selector('propose(bytes32,bool)') + b32(nk) + word(1), { from: GOV })).ok,
-    'propose should succeed');
-
-  // Still inside the delay: ethereumjs keeps block.timestamp fixed here, so
-  // this asserts the timelock is enforced at all rather than that time passes.
-  assert(!(await chain.call(reg,
-    selector('execute(bytes32,bool)') + b32(nk) + word(1), { from: GOV })).ok,
-    'execute before delay must revert');
+    selector('enrollKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
+    'enroll without propose must revert');
 });
 
-await test('only governance can propose, execute or change the threshold', async () => {
-  const reg = await fixture(chain);
-  const nk = K(0x7e);
+await test('the timelock is enforced when there is a delay', async () => {
+  const reg = await fresh(chain, { delay: 3600n });
+  const args = b32(K(1)) + b32(E(1)) + word(0) + word(0);
+  await chain.must(reg, selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV });
+  assert(!(await chain.call(reg,
+    selector('enrollKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
+    'enroll before the delay must revert');
+});
+
+await test('only governance can propose, enroll, revoke or retune', async () => {
+  const reg = await fresh(chain);
+  const args = b32(K(1)) + b32(E(1)) + word(0) + word(0);
   for (const [sig, arg] of [
-    ['propose(bytes32,bool)', b32(nk) + word(1)],
-    ['execute(bytes32,bool)', b32(nk) + word(1)],
-    ['setThreshold(uint8)', word(2)],
+    ['proposeKey(bytes32,bytes32,uint64,uint64)', args],
+    ['enrollKey(bytes32,bytes32,uint64,uint64)', args],
+    ['revokeKey(bytes32)', b32(K(1))],
+    ['setThreshold(uint8)', word(1)],
     ['transferGovernance(address)', addrWord(MALLORY)],
   ]) {
     assert(!(await chain.call(reg, selector(sig) + arg, { from: MALLORY })).ok,
@@ -101,30 +169,37 @@ await test('only governance can propose, execute or change the threshold', async
   }
 });
 
-await test('the threshold cannot be set to zero or above the roster', async () => {
-  const reg = await fixture(chain);
+await test('the threshold cannot exceed the number of known entities', async () => {
+  const reg = await fresh(chain);
+  await enroll(chain, reg, K(1), E(1));
+  assert(!(await chain.call(reg, selector('setThreshold(uint8)') + word(2), { from: GOV })).ok,
+    'threshold above entity count');
+  assert((await chain.call(reg, selector('setThreshold(uint8)') + word(1), { from: GOV })).ok,
+    'threshold equal to entity count is fine');
   assert(!(await chain.call(reg, selector('setThreshold(uint8)') + word(0), { from: GOV })).ok,
     'zero threshold');
-  assert(!(await chain.call(reg, selector('setThreshold(uint8)') + word(99), { from: GOV })).ok,
-    'threshold above roster');
-  assert((await chain.call(reg, selector('setThreshold(uint8)') + word(5), { from: GOV })).ok,
-    'threshold equal to roster is fine');
 });
 
-await test('a registry cannot be constructed with an impossible threshold', async () => {
-  let threw = false;
-  try {
-    await fixture(chain, { threshold: 9n });
-  } catch (e) { threw = true; }
-  assert(threw, 'constructing with threshold > roster must revert');
+await test('a key cannot be enrolled twice, and an inverted height range is rejected', async () => {
+  const reg = await fresh(chain);
+  await enroll(chain, reg, K(1), E(1));
+  const args = b32(K(1)) + b32(E(1)) + word(0) + word(0);
+  assert(!(await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
+    're-enrolling an existing key must revert');
+
+  const bad = b32(K(7)) + b32(E(7)) + word(900) + word(500);
+  assert(!(await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + bad, { from: GOV })).ok,
+    'toHeight <= fromHeight must revert');
 });
 
-await test('duplicate keys cannot be registered at construction', async () => {
-  let threw = false;
-  try {
-    await fixture(chain, { keys: [K(1), K(1), K(2)], threshold: 2n });
-  } catch (e) { threw = true; }
-  assert(threw, 'duplicate initial validators must revert');
+await test('a zero entity is rejected, so an unenrolled key cannot masquerade as entity 0', async () => {
+  const reg = await fresh(chain);
+  const args = b32(K(1)) + b32('0x' + '00'.repeat(32)) + word(0) + word(0);
+  assert(!(await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
+    'zero entity must revert');
 });
 
 summary();

@@ -9,7 +9,6 @@ mc-blockchain-types = { workspace = true }
 mc-transaction-core = { workspace = true }
 mc-crypto-keys = { workspace = true }
 mc-crypto-digestible = { workspace = true }
-mc-crypto-hashes = { workspace = true }
 
 # Not in [workspace.dependencies] and the root manifest is not ours to edit, so
 # these three are path deps. mc-light-client-verifier is MobileCoin's OWN quorum

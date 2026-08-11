@@ -1,149 +1,190 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-/// The set of MobileCoin consensus validator signing keys this bridge will
-/// accept, and the quorum rule over them.
+/// Maps MobileCoin block-signing keys to validator ENTITIES, scoped to the
+/// block heights each key was valid for, and decides what counts as a quorum.
 ///
-/// WHY THIS IS GOVERNANCE-MANAGED, STATED PLAINLY.
+/// WHY THIS IS NOT A FLAT KEY LIST, WHICH IS WHAT IT LOOKED LIKE IT SHOULD BE.
 ///
-/// MobileCoin binds a validator's signing key to an attested enclave through
-/// `BlockMetadataContents.attestation_evidence`. An Ethereum contract cannot
-/// check that evidence: doing so means verifying an IAS/DCAP certificate
-/// chain, which is far outside any plausible gas budget. It could only *hash*
-/// bytes it has no way to interpret.
+/// There are two kinds of key involved and conflating them is a quorum
+/// forgery. `BlockMetadata` is signed with the node's configured SCP message
+/// key, which is what defines its `NodeID`. `BlockSignature` -- the cheap
+/// route, where every validator signs one identical block digest -- is signed
+/// with a *separate per-enclave identity key*, created randomly by default and
+/// restored from sealing when available. `BlockSignature`'s own verifier
+/// trusts the signer embedded in the object.
 ///
-/// So the trust in "these keys are real attested validators" rests here, on
-/// governance, in BOTH available proof routes. That is a real limitation and
-/// it is the reason this contract exists as a named, auditable component
-/// rather than a mapping tucked inside the verifier: whoever controls this
-/// registry can mint arbitrary MobileCoin "returns" and drain the escrow.
+/// So N block signatures are NOT N validators. Without an authenticated
+/// mapping from enclave key to entity, one operator running several enclaves
+/// -- or one enclave that rotated its key -- satisfies any threshold by
+/// itself. That is why quorum here is counted over ENTITIES, why each key
+/// carries a validity height range, and why the same entity appearing twice is
+/// rejected rather than counted twice.
 ///
-/// Because the trust is identical either way, the cheaper route is preferred
-/// -- see `MobileCoinVerifier` -- since paying ~25x more gas to hash evidence
-/// nobody can validate buys nothing.
+/// WHAT THIS CONTRACT CANNOT DO. It cannot verify attestation. Binding an
+/// enclave key to a real attested validator requires DCAP certificate-chain
+/// verification, far outside any gas budget. That authentication happens
+/// off-chain at enrollment, and this registry records its result. Whoever
+/// controls this registry can therefore forge returns and drain the escrow,
+/// which is why changes are timelocked and why this is a named component
+/// rather than a mapping hidden inside the verifier.
 contract ValidatorRegistry {
-    /// A key set version. Rotation bumps this.
-    ///
-    /// NOTE: the escrow's replay set is deliberately NOT keyed on this. A
-    /// nullifier scoped to a rotatable value is re-usable by rotating it.
-    uint64 public epoch;
+    struct KeyRecord {
+        /// The validator entity this signing key belongs to. Quorum is counted
+        /// over these, never over keys.
+        bytes32 entity;
+        /// Inclusive first block height this key may sign for.
+        uint64 fromHeight;
+        /// Exclusive last block height. 0 means open-ended.
+        uint64 toHeight;
+        bool present;
+        bool revoked;
+    }
 
     address public governance;
 
-    /// Ed25519 public keys, in compressed 32-byte form.
-    mapping(bytes32 => bool) public isValidator;
-    bytes32[] private _validators;
-
-    /// Signatures required for a quorum.
+    /// Distinct entities required for a quorum.
     uint8 public threshold;
 
-    /// Timelock on registry changes. Rotating the validator set is equivalent
-    /// to being able to forge returns, so it should never be instantaneous.
+    /// Timelock on registry changes.
     uint64 public immutable delay;
-    mapping(bytes32 => uint64) public pendingSince;
 
-    event ValidatorProposed(bytes32 indexed key, bool add, uint64 executableAt);
-    event ValidatorChanged(bytes32 indexed key, bool added, uint64 epoch);
+    mapping(bytes32 => KeyRecord) public keys;      // signing key -> record
+    mapping(bytes32 => bool) public isEntity;       // known validator entities
+    bytes32[] private _entities;
+
+    /// Proposal presence is an explicit flag rather than a nonzero timestamp.
+    /// Using 0 as both "never proposed" and a legitimate `executableAt` makes
+    /// enrollment impossible whenever `block.timestamp + delay` is 0, and is
+    /// ambiguous even when it is not.
+    struct Proposal {
+        bool exists;
+        uint64 executableAt;
+    }
+
+    mapping(bytes32 => Proposal) public proposals;
+
+    event KeyProposed(bytes32 indexed key, bytes32 indexed entity, uint64 executableAt);
+    event KeyEnrolled(bytes32 indexed key, bytes32 indexed entity, uint64 fromHeight, uint64 toHeight);
+    event KeyRevoked(bytes32 indexed key, bytes32 indexed entity);
     event ThresholdChanged(uint8 from, uint8 to);
     event GovernanceTransferred(address indexed from, address indexed to);
 
     error NotGovernance();
-    error AlreadyPresent(bytes32 key);
-    error NotPresent(bytes32 key);
+    error ZeroAddress();
+    error KeyAlreadyEnrolled(bytes32 key);
+    error KeyNotEnrolled(bytes32 key);
     error NotProposed(bytes32 key);
     error TooEarly(uint64 nowTs, uint64 executableAt);
-    error BadThreshold(uint8 threshold, uint256 validatorCount);
-    error ZeroAddress();
+    error BadThreshold(uint8 threshold, uint256 entityCount);
+    error BadHeightRange(uint64 fromHeight, uint64 toHeight);
+    error ZeroEntity();
 
     modifier onlyGovernance() {
         if (msg.sender != governance) revert NotGovernance();
         _;
     }
 
-    constructor(
-        address _governance,
-        bytes32[] memory initial,
-        uint8 _threshold,
-        uint64 _delay
-    ) {
+    constructor(address _governance, uint8 _threshold, uint64 _delay) {
         if (_governance == address(0)) revert ZeroAddress();
         governance = _governance;
         delay = _delay;
-        for (uint256 i = 0; i < initial.length; i++) {
-            if (isValidator[initial[i]]) revert AlreadyPresent(initial[i]);
-            isValidator[initial[i]] = true;
-            _validators.push(initial[i]);
-        }
-        if (_threshold == 0 || _threshold > initial.length) {
-            revert BadThreshold(_threshold, initial.length);
-        }
+        // Threshold is checked against the entity count on every change; at
+        // construction the roster is empty, so only zero is rejected here.
+        if (_threshold == 0) revert BadThreshold(_threshold, 0);
         threshold = _threshold;
     }
 
     // ------------------------------------------------------------------ views
 
-    function validatorCount() external view returns (uint256) {
-        return _validators.length;
+    function entityCount() external view returns (uint256) {
+        return _entities.length;
     }
 
-    function validatorAt(uint256 i) external view returns (bytes32) {
-        return _validators[i];
+    function entityAt(uint256 i) external view returns (bytes32) {
+        return _entities[i];
     }
 
-    function validators() external view returns (bytes32[] memory) {
-        return _validators;
+    /// True iff `key` may sign for a block at `height`.
+    function keyValidAt(bytes32 key, uint64 height) public view returns (bool) {
+        KeyRecord storage r = keys[key];
+        if (!r.present || r.revoked) return false;
+        if (height < r.fromHeight) return false;
+        if (r.toHeight != 0 && height >= r.toHeight) return false;
+        return true;
     }
 
-    // ------------------------------------------------------------- mutation
+    function entityOf(bytes32 key) external view returns (bytes32) {
+        return keys[key].entity;
+    }
 
-    function propose(bytes32 key, bool add) external onlyGovernance {
-        if (add && isValidator[key]) revert AlreadyPresent(key);
-        if (!add && !isValidator[key]) revert NotPresent(key);
-        bytes32 id = keccak256(abi.encode(key, add));
+    // -------------------------------------------------------------- mutation
+
+    /// Enrollment is two-step and timelocked. `entity` is the off-chain
+    /// attestation result: that this enclave key belongs to that validator.
+    function proposeKey(
+        bytes32 key,
+        bytes32 entity,
+        uint64 fromHeight,
+        uint64 toHeight
+    ) external onlyGovernance {
+        if (entity == bytes32(0)) revert ZeroEntity();
+        if (keys[key].present) revert KeyAlreadyEnrolled(key);
+        if (toHeight != 0 && toHeight <= fromHeight) {
+            revert BadHeightRange(fromHeight, toHeight);
+        }
+        bytes32 id = keccak256(abi.encode(key, entity, fromHeight, toHeight));
         uint64 at = uint64(block.timestamp) + delay;
-        pendingSince[id] = at;
-        emit ValidatorProposed(key, add, at);
+        proposals[id] = Proposal({exists: true, executableAt: at});
+        emit KeyProposed(key, entity, at);
     }
 
-    function execute(bytes32 key, bool add) external onlyGovernance {
-        bytes32 id = keccak256(abi.encode(key, add));
-        uint64 at = pendingSince[id];
-        if (at == 0) revert NotProposed(key);
-        if (uint64(block.timestamp) < at) {
-            revert TooEarly(uint64(block.timestamp), at);
+    function enrollKey(
+        bytes32 key,
+        bytes32 entity,
+        uint64 fromHeight,
+        uint64 toHeight
+    ) external onlyGovernance {
+        bytes32 id = keccak256(abi.encode(key, entity, fromHeight, toHeight));
+        Proposal memory p = proposals[id];
+        if (!p.exists) revert NotProposed(key);
+        if (uint64(block.timestamp) < p.executableAt) {
+            revert TooEarly(uint64(block.timestamp), p.executableAt);
         }
-        delete pendingSince[id];
+        delete proposals[id];
+        if (keys[key].present) revert KeyAlreadyEnrolled(key);
 
-        if (add) {
-            if (isValidator[key]) revert AlreadyPresent(key);
-            isValidator[key] = true;
-            _validators.push(key);
-        } else {
-            if (!isValidator[key]) revert NotPresent(key);
-            isValidator[key] = false;
-            uint256 n = _validators.length;
-            for (uint256 i = 0; i < n; i++) {
-                if (_validators[i] == key) {
-                    _validators[i] = _validators[n - 1];
-                    _validators.pop();
-                    break;
-                }
-            }
-            // Removing a validator can strand the threshold above the roster.
-            // Clamp rather than revert: leaving the registry unusable is worse
-            // than lowering the bar, and governance can raise it again.
-            if (threshold > _validators.length) {
-                emit ThresholdChanged(threshold, uint8(_validators.length));
-                threshold = uint8(_validators.length);
-            }
+        keys[key] = KeyRecord({
+            entity: entity,
+            fromHeight: fromHeight,
+            toHeight: toHeight,
+            present: true,
+            revoked: false
+        });
+        if (!isEntity[entity]) {
+            isEntity[entity] = true;
+            _entities.push(entity);
         }
-        epoch += 1;
-        emit ValidatorChanged(key, add, epoch);
+        emit KeyEnrolled(key, entity, fromHeight, toHeight);
+    }
+
+    /// Revocation is immediate and NOT timelocked: a key believed compromised
+    /// must be removable faster than an attacker can use it. The asymmetry is
+    /// deliberate -- adding authority is slow, removing it is fast.
+    ///
+    /// The entity is intentionally left in `_entities`. It is a denominator for
+    /// the threshold check, not a claim that the entity currently has a usable
+    /// key, and removing it would silently lower the bar for everyone else.
+    function revokeKey(bytes32 key) external onlyGovernance {
+        KeyRecord storage r = keys[key];
+        if (!r.present) revert KeyNotEnrolled(key);
+        r.revoked = true;
+        emit KeyRevoked(key, r.entity);
     }
 
     function setThreshold(uint8 t) external onlyGovernance {
-        if (t == 0 || t > _validators.length) {
-            revert BadThreshold(t, _validators.length);
+        if (t == 0 || t > _entities.length) {
+            revert BadThreshold(t, _entities.length);
         }
         emit ThresholdChanged(threshold, t);
         threshold = t;
@@ -155,22 +196,29 @@ contract ValidatorRegistry {
         governance = to;
     }
 
-    // -------------------------------------------------------------- quorum
+    // ---------------------------------------------------------------- quorum
 
-    /// True iff `keys` are all registered validators, all distinct, and number
-    /// at least `threshold`.
+    /// True iff `signingKeys` are all valid at `height` and belong to at least
+    /// `threshold` DISTINCT entities.
     ///
-    /// Distinctness is the whole point: without it one validator's signature
-    /// repeated `threshold` times is a "quorum". The caller sorts, and this
-    /// checks strict ascending order, which gives distinctness in one pass
-    /// without quadratic comparison or scratch storage.
-    function isQuorum(bytes32[] calldata keys) external view returns (bool) {
-        if (keys.length < threshold) return false;
-        bytes32 prev = bytes32(0);
-        for (uint256 i = 0; i < keys.length; i++) {
-            if (keys[i] <= prev) return false;    // unsorted or duplicate
-            if (!isValidator[keys[i]]) return false;
-            prev = keys[i];
+    /// The caller must pass keys ordered by strictly ascending ENTITY. That
+    /// single check gives entity-distinctness in one pass: sorting by key
+    /// would not, because two different keys can map to the same entity, which
+    /// is exactly the case this contract exists to reject.
+    function isQuorum(bytes32[] calldata signingKeys, uint64 height)
+        external
+        view
+        returns (bool)
+    {
+        if (signingKeys.length < threshold) return false;
+        bytes32 prevEntity = bytes32(0);
+        for (uint256 i = 0; i < signingKeys.length; i++) {
+            if (!keyValidAt(signingKeys[i], height)) return false;
+            bytes32 e = keys[signingKeys[i]].entity;
+            // Strictly ascending: rejects both an unsorted list and any repeat
+            // of an entity, however many distinct keys it presents.
+            if (e <= prevEntity) return false;
+            prevEntity = e;
         }
         return true;
     }

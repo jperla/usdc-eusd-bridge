@@ -83,24 +83,42 @@ no mocked chain — via `contracts/test/harness.mjs`.
 
 ---
 
-## Two ways to prove a block, and why the cheap one is used
+## Two ways to prove a block — still "prototype and measure"
 
-MobileCoin offers two routes, and they are in very different cost classes:
+MobileCoin offers two routes. One is genuinely cheaper, but it is **not
+selected**, because review found the cost comparison overstated and the cheap
+route incomplete in a way that matters.
 
 - **Via block metadata** — each validator's signature covers its own hardware
-  attestation evidence. Different for every validator, so nothing is shared:
-  about **203 hash permutations** for seven validators.
+  attestation evidence, which differs per validator.
 - **Via the block signature** — every validator signs the *same* 164-byte block
-  summary, so the hashing happens **once** for the whole quorum: at most **8**.
+  summary, so that hashing happens **once** for the whole quorum. Measured
+  exactly: **6 Keccak permutations** (5 if the fixed setup is precomputed).
 
-That is **~25× less work**, and since it is a count of operations rather than a
-gas figure, it holds however well the code is optimised.
+**What is established:** the shared digest is real, and 6 is a measurement
+rather than an estimate.
 
-**Why the expensive route buys nothing:** a contract cannot *validate*
-attestation evidence — that needs certificate-chain verification far beyond any
-gas budget — it can only hash bytes it has no way to interpret. Both routes end
-up trusting `ValidatorRegistry`. So the expensive one pays 25× for a binding it
-cannot check.
+**What is not:** the metadata route's cost was an *estimate over an assumed
+evidence size*, so the "25×" that appeared in an earlier draft compared a
+measurement against a guess and has been withdrawn. Real DCAP evidence has no
+established size bound, and part of it amortises across validators, so "nothing
+amortises" was too strong. The current native route also needs a separate block
+ID transcript — another 5 permutations — before any inclusion or bridge checks.
+
+**The catch that actually blocks the cheap route.** Its signature is made with
+a **per-enclave identity key**, not the node's message key that defines its
+identity in the network — and that key is created randomly by default. So *N
+block signatures are not N validators*. Taking this route requires an
+authenticated, height-scoped mapping from enclave key to validator entity, with
+entity-level deduplication so a rotation cannot count twice. `ValidatorRegistry`
+implements exactly that mapping; the enrollment that fills it is off-chain.
+Availability is also weaker: the signature is optional in the block record, and
+a node that caught up rather than forming the block discards it.
+
+Attestation is what natively authenticates that enclave key — the enclave places
+its block-signing key inside the attested identity — so it is **not** true that
+the expensive route's binding buys nothing. It buys nothing *in the current
+acceptance decision*, which is a narrower statement.
 
 ---
 

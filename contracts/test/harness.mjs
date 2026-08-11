@@ -80,12 +80,31 @@ export function revertReason(retHex, errorSelectors = {}) {
 
 // ------------------------------------------------------------------ compiling
 
-export function compileAll({ optimize = true, runs = 200 } = {}) {
+/// Resolve a file's local imports transitively, so a suite can compile only
+/// what it needs. Without this, one contributor's half-written contract in
+/// src/ breaks every other suite in the repo -- which is a coordination
+/// failure, not a test failure, and should not look like one.
+function withImports(entry, seen = new Set()) {
+  if (seen.has(entry)) return seen;
+  seen.add(entry);
+  const body = readFileSync(join(SRC, entry), 'utf8');
+  for (const m of body.matchAll(/import\s+[^;]*?["']\.\/([^"']+)["']/g)) {
+    withImports(m[1], seen);
+  }
+  return seen;
+}
+
+export function compileAll({ optimize = true, runs = 200, only = null } = {}) {
   const sources = {};
-  for (const f of readdirSync(SRC)) {
-    if (f.endsWith('.sol')) {
-      sources[f] = { content: readFileSync(join(SRC, f), 'utf8') };
-    }
+  let wanted;
+  if (only) {
+    wanted = new Set();
+    for (const f of only) for (const g of withImports(f)) wanted.add(g);
+  } else {
+    wanted = new Set(readdirSync(SRC).filter((f) => f.endsWith('.sol')));
+  }
+  for (const f of wanted) {
+    sources[f] = { content: readFileSync(join(SRC, f), 'utf8') };
   }
   const input = {
     language: 'Solidity',

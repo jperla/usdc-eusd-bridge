@@ -35,7 +35,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::amount::Amount;
-use crate::ledger::ReleaseRecord;
 
 /// Rejected release-rate parameters.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -125,25 +124,31 @@ pub fn exposure_bound(
     remaining_balance.min(reachable)
 }
 
-/// Sum the value of releases that settled longer ago than `recall_horizon`,
-/// i.e. the `P` term.
+/// The `P` term: of the value already identified as unbacked, how much has
+/// been out long enough that no response can recover it.
 ///
-/// "Past the point of recall" is a property of the *recipient's* opportunity to
-/// move the funds on, not of MobileCoin finality, so `recall_horizon` is a
-/// policy input. Setting it to zero -- treating everything already released as
-/// unrecoverable -- is the conservative choice and the one to prefer absent a
-/// specific reason.
+/// `items` are `(value_at_risk, settled_at_unix_secs)` pairs -- in practice the
+/// exposure of each discrepancy paired with its release's block timestamp.
+/// Note what is *not* summed here: legitimately backed releases. `P` is a term
+/// in a bound on loss, so it counts only value that is both unbacked and
+/// unrecoverable. Summing all released value instead would make `P` roughly the
+/// float and the bound would degenerate to the balance, which is true but
+/// useless.
+///
+/// "Past the point of recall" is a property of the recipient's opportunity to
+/// move funds on, not of MobileCoin finality, so `recall_horizon` is a policy
+/// input. Zero -- nothing is ever recoverable -- is the conservative setting
+/// and the one to prefer absent a specific reason to believe otherwise.
 #[must_use]
-pub fn irrevocable_value(
-    releases: &[ReleaseRecord],
-    now: u64,
-    recall_horizon: Duration,
-) -> Amount {
+pub fn irrevocable_value<I>(items: I, now: u64, recall_horizon: Duration) -> Amount
+where
+    I: IntoIterator<Item = (Amount, u64)>,
+{
     let horizon = recall_horizon.as_secs();
-    releases
-        .iter()
-        .filter(|r| now.saturating_sub(r.timestamp) >= horizon)
-        .fold(Amount::ZERO, |acc, r| acc.saturating_add(r.amount))
+    items
+        .into_iter()
+        .filter(|(_, settled_at)| now.saturating_sub(*settled_at) >= horizon)
+        .fold(Amount::ZERO, |acc, (v, _)| acc.saturating_add(v))
 }
 
 /// Compose `delta_eff` from the segments that actually make it up.

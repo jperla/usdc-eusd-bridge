@@ -63,7 +63,7 @@ mod ledger;
 mod matcher;
 
 pub use amount::{Amount, Bytes32, EthAddress};
-pub use bound::{exposure_bound, irrevocable_value, RateError, ReleaseRate};
+pub use bound::{effective_delay, exposure_bound, irrevocable_value, RateError, ReleaseRate};
 pub use decision::{audit, AuditPolicy, AuditStats, BoundParams, Evidence, FreezeDecision,
                    FreezeReason};
 pub use ledger::{DepositEvent, DepositId, IngestError, Ledger, ReleaseRecord};
