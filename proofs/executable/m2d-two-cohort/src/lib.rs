@@ -413,6 +413,58 @@ mod tests {
         assert_eq!(sig.key_image, KeyImage::from(&x));
     }
 
+    /// THE NEGATIVE CASE, and the one that actually settles gate
+    /// indispensability at the SIGNATURE level rather than in the algebra.
+    ///
+    /// An owner quorum alone holds `common + b_owner`. It can close MLSAG row 1
+    /// (the commitment/mask row) perfectly well, because that row belongs to
+    /// the owner cohort here. The question is whether closing row 1 can somehow
+    /// compensate for the missing gate term in row 0. It cannot: the verifier
+    /// evaluates the rows as mandatory conjuncts and hashes all three points
+    /// into the challenge, so substituting x_o for (x_o + x_g) in row 0 leaves a
+    /// residual c*x_g*G that nothing else can absorb.
+    ///
+    /// This test spends the SAME fixed ring and the SAME real index as the
+    /// accepting test above, so the only difference is the missing gate share.
+    #[test]
+    fn an_owner_only_scalar_is_rejected_by_the_stock_verifier() {
+        let s = setup(6, 2, 3, 2, 3, 0);
+        let (value, blinding, out_blinding) = (5_000u64, Scalar::from(9u64), Scalar::from(4u64));
+        let (ring, gens) = make_ring(&s, 11, 5, value, blinding);
+        let out = CompressedCommitment::from(&Commitment::new(value, out_blinding, &gens));
+
+        // Exactly what an owner quorum can assemble without any gate.
+        let owner_only: Scalar =
+            s.common + s.owners.weighted(&[1, 3]).iter().map(|(_, w)| w).sum::<Scalar>();
+        let x_bad = RistrettoPrivate::from(owner_only);
+
+        // Sanity: this really is missing precisely the gate term, and really is
+        // a different scalar from the authorised one.
+        let x_good = s.onetime(&[1, 3], &[102, 103]);
+        let gate_term: Scalar =
+            s.gates.weighted(&[102, 103]).iter().map(|(_, w)| w).sum();
+        assert_eq!(owner_only + gate_term, x_good, "owner-only + gate == authorised");
+        assert_ne!(owner_only, x_good, "owner-only must differ from authorised");
+
+        let mut rng = ChaCha20Rng::seed_from_u64(4242);
+        let sig = RingMLSAG::sign(
+            b"m2d", &ring, 5, &x_bad, value, &blinding, &out_blinding, &gens, &mut rng,
+        );
+
+        // Signing may itself fail (the scalar does not open the ring member) or
+        // it may succeed and produce a signature the verifier rejects. Either
+        // is a rejection; what must NOT happen is an accepted signature.
+        match sig {
+            Err(_) => {}
+            Ok(sig) => {
+                assert!(
+                    sig.verify(b"m2d", &ring, &out).is_err(),
+                    "stock verifier ACCEPTED a signature made without the gate cohort"
+                );
+            }
+        }
+    }
+
     #[test]
     fn stock_verifier_accepts_every_subset_pair_and_all_agree_on_the_key_image() {
         let s = setup(7, 2, 3, 2, 3, 3);

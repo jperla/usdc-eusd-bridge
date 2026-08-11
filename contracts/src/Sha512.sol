@@ -24,6 +24,32 @@ library Sha512 {
         pure
         returns (bytes32 hi, bytes32 lo)
     {
+        return _compress(_pad(0, 0, 0, message));
+    }
+
+    /// Digest of `p0 || p1 || message`, without ever materialising the
+    /// concatenation.
+    ///
+    /// Ed25519 hashes R || A || M and nothing else, and `abi.encodePacked`
+    /// would allocate a second copy of M to build that. The prefix instead
+    /// goes straight into the padded buffer the compression function was
+    /// always going to need. Avoiding the compiler's memory-to-memory copy
+    /// also keeps this deployable below Cancun, where MCOPY does not exist.
+    function hashPrefixed(bytes32 p0, bytes32 p1, bytes memory message)
+        internal
+        pure
+        returns (bytes32 hi, bytes32 lo)
+    {
+        return _compress(_pad(p0, p1, 64, message));
+    }
+
+    // --------------------------------------------------------------- internal
+
+    function _compress(bytes memory p)
+        private
+        pure
+        returns (bytes32 hi, bytes32 lo)
+    {
         // Round constants K[0..79]: the first 64 bits of the fractional parts
         // of the cube roots of the first eighty primes (FIPS 180-4 s4.2.3).
         bytes memory k = hex"428a2f98d728ae227137449123ef65cd"
@@ -47,8 +73,6 @@ library Sha512 {
             hex"113f9804bef90dae1b710b35131c471b28db77f523047d8432caab7b40c72493"
             hex"3c9ebe0a15c9bebc431d67c49c100d4c4cc5d4becb3e42b6597f299cfc657e2a"
             hex"5fcb6fab3ad6faec6c44198c4a475817";
-
-        bytes memory p = _pad(message);
 
         // Initial state: first 64 bits of the fractional parts of the square
         // roots of the first eight primes (FIPS 180-4 s5.3.5).
@@ -129,8 +153,6 @@ library Sha512 {
         );
     }
 
-    // --------------------------------------------------------------- internal
-
     /// Big-endian 8 bytes at `off` within the data section of `b`.
     function _load64(bytes memory b, uint256 off)
         private
@@ -148,25 +170,39 @@ library Sha512 {
         return (x >> n) | (x << (64 - n));
     }
 
-    /// Append 0x80, zero-fill, then the message length in bits as a big-endian
-    /// 128-bit integer, to a multiple of the 1024-bit block size.
-    function _pad(bytes memory m) private pure returns (bytes memory p) {
-        uint256 len = m.length;
+    /// Lay out `p0 || p1 || m` (the prefix included only when `pre` is 64) and
+    /// pad it: 0x80, zero-fill, then the length in bits as a big-endian 128-bit
+    /// integer, out to a multiple of the 1024-bit block size.
+    function _pad(bytes32 p0, bytes32 p1, uint256 pre, bytes memory m)
+        private
+        pure
+        returns (bytes memory p)
+    {
+        uint256 len = pre + m.length;
         // len + 1 terminator + 16 length bytes, rounded up to a whole block.
         uint256 total = ((len + 17 + 127) / 128) * 128;
         p = new bytes(total);
 
-        uint256 nfull = len & ~uint256(31);
-        uint256 rem = len - nfull;
+        // `pre` is a whole number of words, so the message copy below stays
+        // word-aligned in both buffers and the tail analysis is unaffected.
+        if (pre == 64) {
+            assembly {
+                mstore(add(p, 32), p0)
+                mstore(add(p, 64), p1)
+            }
+        }
+
+        uint256 nfull = m.length & ~uint256(31);
+        uint256 rem = m.length - nfull;
         assembly {
             let src := add(m, 32)
-            let dst := add(p, 32)
+            let dst := add(add(p, 32), pre)
             for { let i := 0 } lt(i, nfull) { i := add(i, 32) } {
                 mstore(add(dst, i), mload(add(src, i)))
             }
             // The tail is written through a mask so the copy cannot spill past
-            // the end of `p` into the next allocation. `total - nfull >= 32`
-            // always holds, so this store itself is in bounds.
+            // the end of `p` into the next allocation. `total - pre - nfull >=
+            // 32` always holds, so this store itself is in bounds.
             if rem {
                 let mask := not(shr(shl(3, rem), not(0)))
                 mstore(add(dst, nfull), and(mload(add(src, nfull)), mask))

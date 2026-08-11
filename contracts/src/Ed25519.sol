@@ -294,6 +294,14 @@ library Ed25519 {
         return _hram(r, a, m);
     }
 
+    function _dbgH1(bytes32 r, bytes32 a, bytes memory m) internal pure returns (uint256) {
+        (bytes32 hi,) = Sha512.hash(abi.encodePacked(r, a, m));
+        return _le(hi);
+    }
+    function _dbgH2(bytes32 r, bytes32 a, bytes memory m) internal pure returns (uint256) {
+        (bytes32 hi, bytes32 lo) = Sha512.hash(abi.encodePacked(r, a, m));
+        return _le(hi) % L + _le(lo) % L;
+    }
     function _dbgLe(bytes32 v) internal pure returns (uint256) { return _le(v); }
 
     function _dbgJoint(uint256 e1, uint256 e2) internal pure returns (uint256,uint256,uint256,uint256) {
@@ -367,6 +375,12 @@ contract Ed25519Verifier {
         return Ed25519._dbgHram(r, a, m);
     }
 
+    function dbgH1(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256) {
+        return Ed25519._dbgH1(r, a, m);
+    }
+    function dbgH2(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256) {
+        return Ed25519._dbgH2(r, a, m);
+    }
     function dbgPack(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256, bytes32, bytes32) {
         bytes memory packed = abi.encodePacked(r, a, m);
         (bytes32 hi, bytes32 lo) = Sha512.hash(packed);

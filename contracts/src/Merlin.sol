@@ -506,6 +506,19 @@ contract MerlinProbe {
         out = bytes.concat(out, hex"aabb");
     }
 
+    function dbg4() external pure returns (bytes memory out) {
+        out = new bytes(0);
+        out = bytes.concat(out, hex"aabb");
+    }
+
+    function dbg5() external pure returns (bytes memory out) {
+        out = "";
+    }
+
+    function dbg6() external pure returns (bytes memory out) {
+        out = abi.encodePacked(hex"aabb", hex"ccdd");
+    }
+
     function blockId(
         uint32 version,
         bytes32 parentId,

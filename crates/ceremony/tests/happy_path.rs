@@ -7,7 +7,7 @@
 mod common;
 
 use ceremony::machine::State;
-use ceremony::{Authorizer, Error, ParticipantId, Subset};
+use ceremony::{Authorizer, BindingStore, Error, ParticipantId, Subset};
 use common::*;
 
 #[test]
@@ -113,5 +113,3 @@ fn a_participant_not_on_the_roster_cannot_be_named_in_a_subset() {
         Error::UnknownParticipant(ParticipantId(9))
     );
 }
-
-use ceremony::BindingStore;
