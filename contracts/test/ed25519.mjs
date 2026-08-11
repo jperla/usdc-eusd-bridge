@@ -444,6 +444,27 @@ const main = async () => {
     }
   });
 
+  await test('rejects s == L exactly, not merely s > L', async () => {
+    // The boundary the `s + L` test above cannot reach. Every RFC vector has
+    // s < L, so s + L lands strictly above L and a weakened `s > L` check
+    // still rejects it -- review confirmed by mutation that `s >= L` could be
+    // changed to `s > L` with the whole suite still green.
+    //
+    // s == L reduces to 0 mod L, so accepting it would give (R, 0) and (R, L)
+    // as two encodings of one signature: exactly the malleability the range
+    // check exists to remove.
+    const [, , pk, msg, sig] = RFC8032[1];
+    const atL = sig.slice(0, 64) + leBytes(L);
+    assert(
+      !(await verified(chain, at, atL, pk, msg)),
+      'accepted s == L'
+    );
+    assert(
+      !ed25519.verify(hx(atL), hx(msg), hx(pk)),
+      '@noble accepted s == L'
+    );
+  });
+
   await test('rejects a malformed R', async () => {
     // R with a non-canonical y must be refused before any arithmetic runs.
     const [, , pk, msg, sig] = RFC8032[1];
