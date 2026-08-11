@@ -1,0 +1,32 @@
+[package]
+name = "mc-return"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mc-blockchain-types = { workspace = true }
+mc-transaction-core = { workspace = true }
+mc-crypto-keys = { workspace = true }
+mc-crypto-digestible = { workspace = true }
+mc-crypto-hashes = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The light-client verifier is MobileCoin's OWN quorum checker. It is a
+# dev-dependency on purpose: the relayer does not need it to BUILD a bundle,
+# but every bundle this crate emits is checked against it before it is written,
+# so the fixture is known-good by MobileCoin's rules and not merely by ours.
+mc-light-client-verifier = { path = "../../vendor/mobilecoin/light-client/verifier" }
+mc-consensus-scp-types = { path = "../../vendor/mobilecoin/consensus/scp/types" }
+mc-common = { path = "../../vendor/mobilecoin/common" }
+mc-account-keys = { path = "../../vendor/mobilecoin/account-keys" }
+mc-util-from-random = { path = "../../vendor/mobilecoin/util/from-random" }
+
+curve25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }

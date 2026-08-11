@@ -1,0 +1,30 @@
+# Deliberately its own workspace (empty [workspace] table): this is a build-time
+# fixture generator, not a bridge component, and it drags in the whole
+# MobileCoin dependency tree. Keeping it out of the root workspace keeps
+# `cargo test -p <bridge crate>` from paying for that.
+[workspace]
+
+[package]
+name = "merlin-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+merlin = { version = "3", default-features = false }
+mc-crypto-digestible = { path = "../../vendor/mobilecoin/crypto/digestible" }
+mc-blockchain-types = { path = "../../vendor/mobilecoin/blockchain/types" }
+mc-transaction-core = { path = "../../vendor/mobilecoin/transaction/core" }
+hex = "0.4"
+serde_json = "1"
+
+# Mirrors vendor/mobilecoin/Cargo.toml's [patch.crates-io]. The MobileCoin
+# crates do not resolve without it, and the point of this tool is to link the
+# SAME code MobileCoin links.
+[patch.crates-io]
+bulletproofs-og = { git = "https://github.com/mobilecoinfoundation/bulletproofs.git", rev = "9abfdc054d9ba65f1e185ea1e6eff3947ce879dc" }
+mbedtls = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
+mbedtls-sys-auto = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
+lmdb-rkv = { git = "https://github.com/mozilla/lmdb-rs", rev = "df1c2f5" }
+schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }
+serde_cbor = { git = "https://github.com/mobilecoinofficial/cbor", rev = "4c886a7c1d523aae1ec4aa7386f402cb2f4341b5" }

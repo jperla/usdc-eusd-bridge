@@ -1,0 +1,26 @@
+[package]
+name = "two-cohort"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mc-crypto-ring-signature = { workspace = true }
+mc-crypto-keys = { workspace = true }
+mc-crypto-hashes = { workspace = true }
+
+# `digest` gives Scalar::from_hash / RistrettoPoint::from_hash, which the
+# MobileCoin key derivations are defined in terms of. `zeroize` gives the
+# Scalar: Zeroize impl that every secret-bearing type here relies on; with
+# default-features off at the workspace level it is not otherwise enabled.
+curve25519-dalek = { workspace = true, features = ["digest", "zeroize"] }
+
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
