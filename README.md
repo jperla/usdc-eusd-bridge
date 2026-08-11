@@ -164,8 +164,15 @@ checking apparatus itself rather than the design. What survived, survived that.
 | Return-proof builder | done, 45 tests |
 | Acceptance: the three legs | done, 6 tests |
 
-**The bridge is not ready to hold funds.** Two links are open and both are
-named in the code rather than in a footnote:
+**The bridge is not ready to hold funds, and the composite architecture gate is
+not closed.** Three things are open, all named in code rather than in a
+footnote:
+
+0. **No non-reconstructing two-cohort signing protocol.** The artifacts
+   reconstruct the composite scalar in one process. What is established is the
+   algebra plus stock-verifier compatibility — a scalar missing the gate share
+   cannot satisfy MobileCoin's unmodified MLSAG — not a live threshold
+   ceremony. **A composite address must not be funded on this evidence.**
 
 1. **The recipient check** — `target_key == Hs(a·R)·G + D`, the step proving an
    output is payable to the bridge. It needs Ristretto255 in Solidity, which

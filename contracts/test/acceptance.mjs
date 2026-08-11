@@ -84,13 +84,19 @@ await test('LEG 1: a USDC deposit is custodied and announced to the operators', 
 // LEG 2 — MobileCoin side. Established in Rust; asserted here as a handoff.
 // ---------------------------------------------------------------------------
 
-await test('LEG 2: the eUSD release requires BOTH cohorts (established in Rust)', async () => {
-  // The claim: releasing eUSD needs (k-of-n operators) AND (g-of-m gates),
-  // and the gate share is inside the key image, so MobileCoin's own consensus
-  // rejects a release without it.
+await test('LEG 2: an incomplete scalar cannot satisfy stock MLSAG (established in Rust)', async () => {
+  // NARROWED after review. What is established is that a scalar missing the
+  // gate cohort's share cannot satisfy MobileCoin's unmodified RingMLSAG
+  // against the fixed composite target: signing succeeds and verification
+  // returns exactly InvalidSignature.
   //
-  // That is proven where it can be proven -- against MobileCoin's unmodified
-  // RingMLSAG verifier -- not here:
+  // What is NOT established is a non-reconstructing two-cohort row-0 signing
+  // protocol. The artifacts reconstruct the scalar in one process, so this is
+  // the algebra plus stock compatibility, not a live threshold ceremony. That
+  // protocol remains the production obligation and the architecture gate is
+  // NOT closed.
+  //
+  // Proven where it can be proven, not here:
   //
   //   proofs/executable/m2d-two-cohort  an_owner_only_scalar_is_rejected_by_the_stock_verifier
   //   crates/two-cohort                 key_image_is_invariant_across_asymmetric_cohorts
@@ -189,9 +195,9 @@ console.log('ESTABLISHED');
 console.log('  * Leg 1 custodies real USDC and announces the destination.');
 console.log('  * Leg 3 pays the beneficiary named in the proof, never the');
 console.log('    relayer, and a spent output can never be redeemed again.');
-console.log('  * Leg 2 requires both cohorts, proven against MobileCoin\'s');
-console.log('    UNMODIFIED RingMLSAG verifier in Rust, including the negative');
-console.log('    case where an owner-only scalar is rejected.');
+console.log('  * A scalar missing the gate share cannot satisfy stock');
+console.log('    MLSAG: signing succeeds and MobileCoin\'s UNMODIFIED');
+console.log('    verifier returns exactly InvalidSignature.');
 console.log('');
 console.log('NOT ESTABLISHED — legs 1 and 3 above run against MockVerifier.');
 console.log('  * The recipient check (target_key == Hs(a*R)*G + D) needs');
@@ -200,6 +206,10 @@ console.log('    constructor argument so no deployment can miss it.');
 console.log('  * The block digest framing in MobileCoinVerifier.blockDigest is');
 console.log('    a hypothesis about Digestible encoding, not yet checked');
 console.log('    against a node-produced digest.');
+console.log('  * NO non-reconstructing two-cohort signing protocol. The');
+console.log('    artifacts reconstruct the scalar in one process, so the');
+console.log('    composite architecture gate is NOT closed and a composite');
+console.log('    address must not be funded on this evidence.');
 console.log('  * No live ceremony, no DKG, no mainnet deployment.');
 console.log('');
 console.log('THE BRIDGE IS NOT READY TO HOLD FUNDS.');
