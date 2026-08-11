@@ -62,7 +62,7 @@ fn masked_amount_json(m: &MaskedAmount) -> Value {
     };
     json!({
         "version": version,
-        "commitment": hx(&m.commitment().to_bytes()),
+        "commitment": hx(m.commitment().point.as_bytes()),
         "masked_value": u64s(*m.get_masked_value()),
         "masked_token_id": hx(m.masked_token_id()),
     })

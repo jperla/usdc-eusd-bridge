@@ -112,9 +112,9 @@ impl ReturnProof {
             &membership_proof,
             anchor.root_element.hash.as_ref(),
         )
-        .map_err(|source| Error::MembershipProofMalformed {
+        .map_err(|e| Error::MembershipProofMalformed {
             index: tx_out_index,
-            source,
+            detail: format!("{e}"),
         })?;
         if !ok {
             return Err(Error::MembershipProofInvalid {

@@ -85,6 +85,29 @@ impl Fixture {
         )
     }
 
+    /// A node whose signer draws one-time values from a different stream.
+    /// Needed wherever a test runs two ceremonies and wants them to differ the
+    /// way two real runs would: `node` is seeded per participant, so two nodes
+    /// for the same participant deliberately reproduce the same one-time
+    /// values -- which is a hazard some tests want and others do not.
+    pub fn node_seeded(&self, id: ParticipantId, rng_seed: u64) -> Node {
+        let mut node = self.node(id);
+        node.machine = Ceremony::new(
+            self.roster.clone(),
+            id,
+            identity(id),
+            node.store.clone(),
+            node.anchor.clone(),
+            FrostSigner::new(
+                id,
+                self.shares[&id],
+                self.group.clone(),
+                ChaCha20Rng::seed_from_u64(rng_seed),
+            ),
+        );
+        node
+    }
+
     pub fn node(&self, id: ParticipantId) -> Node {
         let store: Store = Rc::new(RefCell::new(MemoryStore::new()));
         let anchor: AnchorHandle = Rc::new(RefCell::new(MemoryAnchor::new()));

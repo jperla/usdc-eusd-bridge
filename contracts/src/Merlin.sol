@@ -115,9 +115,15 @@ library Merlin {
         }
     }
 
-    function _squeeze(Transcript memory t, bytes memory out) private pure {
+    function _squeezeInto(
+        Transcript memory t,
+        bytes memory out,
+        uint256 off,
+        uint256 len
+    ) private pure {
         unchecked {
-            for (uint256 i = 0; i < out.length; i++) {
+            for (uint256 k = 0; k < len; k++) {
+                uint256 i = off + k;
                 uint256 p = t.pos;
                 uint256 sh = (p & 7) << 3;
                 uint256 lane = t.st[p >> 3];
@@ -217,18 +223,46 @@ library Merlin {
         appendMessage(t, label, _le64(x));
     }
 
-    /// merlin `Transcript::challenge_bytes`.
+    /// merlin `Transcript::challenge_bytes`, writing `len` bytes into `buf` at
+    /// `off`. This is the primitive form; the other two are wrappers.
+    ///
+    /// It exists in this shape so a caller producing several challenges can
+    /// accumulate them into one buffer. Concatenating afterwards would be a
+    /// memory-to-memory copy, which solc compiles to MCOPY, which does not
+    /// exist before Cancun.
+    function challengeBytesInto(
+        Transcript memory t,
+        bytes memory label,
+        bytes memory buf,
+        uint256 off,
+        uint256 len
+    ) internal pure {
+        _metaAd(t, label, false);
+        _beginOp(t, FLAG_M | FLAG_A, true);
+        // The LENGTH REQUESTED is absorbed, not the buffer's size. Squeezing
+        // 32 bytes into a 64-byte buffer must give the same state as squeezing
+        // 32 into a 32-byte one.
+        _absorbU32LE(t, len);
+        _beginOp(t, FLAG_I | FLAG_A | FLAG_C, false);
+        _squeezeInto(t, buf, off, len);
+    }
+
+    /// merlin's own signature: fill `dest` completely.
+    function challengeBytes(
+        Transcript memory t,
+        bytes memory label,
+        bytes memory dest
+    ) internal pure {
+        challengeBytesInto(t, label, dest, 0, dest.length);
+    }
+
     function challengeBytes(
         Transcript memory t,
         bytes memory label,
         uint256 outLen
     ) internal pure returns (bytes memory out) {
-        _metaAd(t, label, false);
-        _beginOp(t, FLAG_M | FLAG_A, true);
-        _absorbU32LE(t, outLen);
         out = new bytes(outLen);
-        _beginOp(t, FLAG_I | FLAG_A | FLAG_C, false);
-        _squeeze(t, out);
+        challengeBytesInto(t, label, out, 0, outLen);
     }
 
     // -------------------------------------------------- digestible AST framing
@@ -423,18 +457,29 @@ library MobileCoinBlockId {
 ///     0x06 append_agg_header u16 nameLen, name
 ///     0x07 append_agg_closer u16 nameLen, name
 ///     0x08 append_var_header u16 nameLen, name, u32 which
+///
+/// `run` returns a HASH of the concatenated challenge output rather than the
+/// output itself, plus its length and its first 32 bytes for diagnosis. Not a
+/// design preference: this repo's test harness runs a Shanghai EVM while solc
+/// 0.8.26 targets Cancun, so returning a dynamic `bytes` -- which compiles to
+/// MCOPY -- is an invalid opcode there. Comparing keccak256 of the whole
+/// output is the same assertion.
 contract MerlinProbe {
     using Merlin for Merlin.Transcript;
 
     error BadOpcode(uint8 opcode);
+    error OutputTooLong(uint256 need, uint256 cap);
+
+    uint256 private constant OUT_CAP = 4096;
 
     function run(bytes calldata label, bytes calldata script)
         external
         pure
-        returns (bytes memory out)
+        returns (bytes32 outHash, uint256 outLen, bytes32 head)
     {
         Merlin.Transcript memory t = Merlin.init(label);
-        out = "";
+        bytes memory acc = new bytes(OUT_CAP);
+        uint256 used = 0;
 
         uint256 i = 0;
         while (i < script.length) {
@@ -453,7 +498,9 @@ contract MerlinProbe {
             } else if (op == 0x01) {
                 uint256 n = _be(script, i, 4);
                 i += 4;
-                out = bytes.concat(out, t.challengeBytes(ctx, n));
+                if (used + n > OUT_CAP) revert OutputTooLong(used + n, OUT_CAP);
+                t.challengeBytesInto(ctx, acc, used, n);
+                used += n;
             } else if (op == 0x02) {
                 t.appendU64(ctx, uint64(_be(script, i, 8)));
                 i += 8;
@@ -489,34 +536,12 @@ contract MerlinProbe {
                 revert BadOpcode(op);
             }
         }
-    }
 
-    function dbg1(bytes calldata label) external pure returns (uint256) {
-        Merlin.Transcript memory t = Merlin.init(label);
-        return t.pos;
-    }
-
-    function dbg2(bytes calldata label) external pure returns (bytes memory) {
-        Merlin.Transcript memory t = Merlin.init(label);
-        return t.challengeBytes("c", 32);
-    }
-
-    function dbg3() external pure returns (bytes memory out) {
-        out = "";
-        out = bytes.concat(out, hex"aabb");
-    }
-
-    function dbg4() external pure returns (bytes memory out) {
-        out = new bytes(0);
-        out = bytes.concat(out, hex"aabb");
-    }
-
-    function dbg5() external pure returns (bytes memory out) {
-        out = "";
-    }
-
-    function dbg6() external pure returns (bytes memory out) {
-        out = abi.encodePacked(hex"aabb", hex"ccdd");
+        outLen = used;
+        assembly {
+            outHash := keccak256(add(acc, 32), used)
+            head := mload(add(acc, 32))
+        }
     }
 
     function blockId(
