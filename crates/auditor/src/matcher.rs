@@ -245,6 +245,10 @@ impl MatchReport {
     }
 
     /// The worst severity present, if any.
+    ///
+    /// `min`, not `max`: [`Severity`] declares `Loss` before `Anomaly`, so the
+    /// derived ordering puts the worse outcome first and the smallest value is
+    /// the one to act on.
     pub fn worst_severity(&self) -> Option<Severity> {
         self.discrepancies.iter().map(|d| d.severity()).min()
     }

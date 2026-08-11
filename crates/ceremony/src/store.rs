@@ -34,8 +34,6 @@ pub enum StoreError {
     /// about to be produced for a one-time value the store has no record of.
     #[error("slot {0:?} was never reserved")]
     NotReserved(SlotId),
-    #[error("slot {0:?} was already reserved")]
-    AlreadyReserved(SlotId),
     #[error("backing store failed: {0}")]
     Io(String),
 }
@@ -93,6 +91,13 @@ pub trait BindingStore {
     fn sequence(&self) -> u64;
 
     /// Record that a one-time value exists, before its commitment is published.
+    ///
+    /// Idempotent, and deliberately so: a signer that crashed between reserving
+    /// and publishing must be able to resume, and from the store's side that is
+    /// indistinguishable from a signer whose state was rolled back. Refusal
+    /// therefore lives entirely in `bind` (which is where reuse becomes
+    /// dangerous, since only a *response* leaks anything) and in the anchor
+    /// (which is the only thing that can tell a resume from a rewind).
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError>;
 
     /// Bind a reserved one-time value to one context, before any share for it
@@ -141,10 +146,7 @@ impl BindingStore for MemoryStore {
     }
 
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError> {
-        if self.slots.contains_key(&slot) {
-            return Err(StoreError::AlreadyReserved(slot));
-        }
-        self.slots.insert(slot, SlotRecord::Reserved);
+        self.slots.entry(slot).or_insert(SlotRecord::Reserved);
         self.sequence += 1;
         Ok(Receipt::issue(slot, None, self.sequence))
     }

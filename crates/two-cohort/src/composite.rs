@@ -123,13 +123,8 @@ impl CompositeSpend {
         // a real output to spend.
         let tx_private = Zeroizing::new(random_scalar(rng));
 
-        let owner_cohort = Cohort::deal(
-            &owners.name,
-            &b_owner,
-            owners.threshold,
-            &owners.ids,
-            rng,
-        )?;
+        let owner_cohort =
+            Cohort::deal(&owners.name, &b_owner, owners.threshold, &owners.ids, rng)?;
         let gate_cohort = Cohort::deal(&gates.name, &b_gate, gates.threshold, &gates.ids, rng)?;
 
         let root = *b_owner * RISTRETTO_BASEPOINT_POINT + *b_gate * RISTRETTO_BASEPOINT_POINT;
@@ -221,7 +216,11 @@ impl CompositeSpend {
     }
 
     /// `B = B_owner + B_gate`, each half assembled from its own subset.
-    pub fn composite_root(&self, owner_subset: &[u64], gate_subset: &[u64]) -> Result<RistrettoPoint> {
+    pub fn composite_root(
+        &self,
+        owner_subset: &[u64],
+        gate_subset: &[u64],
+    ) -> Result<RistrettoPoint> {
         Ok(self.owners.public(owner_subset)? + self.gates.public(gate_subset)?)
     }
 
