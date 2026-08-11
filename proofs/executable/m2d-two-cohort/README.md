@@ -25,22 +25,22 @@ object with its own roster, threshold and Lagrange weights, and nothing in the
 | `cohorts_carry_independent_rosters_and_thresholds` | 2-of-3 owners **and** 1-of-1 gates coexist — different sizes, different thresholds |
 | `composite_root_is_the_sum_of_the_two_cohort_publics` | `B = B_owner + B_gate`, each computed from its own qualifying subset |
 | **`key_image_is_invariant_across_every_owner_gate_subset_pair`** | **the load-bearing one** — all 3×3 *minimal* subset pairs produce the *same* key image, and it equals the canonical one. `subsets()` enumerates size exactly `t`, so this is every minimal pair, **not** every qualifying pair |
-| `one_time_key_is_invariant_and_matches_upstream` | invariant across pairs, and a genuine differential against upstream `recover_onetime_private_key` |
+| `one_time_key_is_invariant_and_matches_upstream` | invariant across pairs, and a differential against upstream `recover_onetime_private_key` **for the one-time `Hs(aR)` term only** — a counter-mutation of the `mc_subaddress` tag leaves every test green, so it does not cover the subaddress or Shamir derivation |
 | `an_owner_quorum_without_gates_reaches_a_different_key_image` | the gate cohort's contribution is exactly what is missing, checked additively |
 | `stock_verifier_accepts_a_two_cohort_signature` | unmodified `RingMLSAG::verify` accepts it, at eUSD token id and ring size 11 |
 | `stock_verifier_accepts_every_subset_pair_...` | 9 signatures, every *minimal* subset pair, all accepted, all agreeing on one key image |
-| **`an_owner_only_scalar_is_rejected_by_the_stock_verifier`** | **the negative case** — signs the same fixed ring with `common + b_owner` and asserts the unmodified verifier REJECTS it. This is what settles gate indispensability at the signature level rather than in the algebra |
+| **`an_owner_only_scalar_is_rejected_by_the_stock_verifier`** | **the negative case** — signing must SUCCEED and `RingMLSAG::verify` must then return exactly `InvalidSignature`. Demonstrates that the incomplete scalar cannot satisfy stock MLSAG against the fixed composite target. It does **not** establish a non-reconstructing two-cohort row-0 protocol |
 | `below_threshold_subsets_are_rejected` | sub-threshold subsets cannot contribute |
 
-## Why key-image invariance is the property that matters
+## Why key-image invariance is necessary — and why it is not enough
 
 A key image that varied with the signing subset would let **one output be spent
 twice under different images** — consensus deduplicates on the image, so two
-distinct images for one output is a double spend. Invariance across the full
-`owner-subset × gate-subset` product is therefore not bookkeeping; it is the
-correctness condition for the whole scheme.
+distinct images for one output is a double spend. Invariance across the
+`owner-subset × gate-subset` product is therefore not bookkeeping; it is a
+**necessary** condition.
 
-It is **necessary but not sufficient**. The full property set also requires
+It is **not sufficient**. The full property set also requires
 that no sub-threshold coalition can produce a verifying signature, that
 malicious coordinators cannot get a non-canonical image accepted, and that the
 result holds across independent signing sessions. None of those is established

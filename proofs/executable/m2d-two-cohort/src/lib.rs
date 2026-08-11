@@ -447,22 +447,24 @@ mod tests {
         assert_ne!(owner_only, x_good, "owner-only must differ from authorised");
 
         let mut rng = ChaCha20Rng::seed_from_u64(4242);
+
+        // Signing MUST succeed. Tolerating a signer error here would make the
+        // test fail open: a signer that errored for any incidental reason --
+        // or a counter-mutation that made it always error -- would satisfy the
+        // assertion without the verifier ever running. Review reproduced
+        // exactly that, and the same defect was already fixed once in M2c.
         let sig = RingMLSAG::sign(
             b"m2d", &ring, 5, &x_bad, value, &blinding, &out_blinding, &gens, &mut rng,
-        );
+        )
+        .expect("owner-only stock signing must succeed, or this proves nothing");
 
-        // Signing may itself fail (the scalar does not open the ring member) or
-        // it may succeed and produce a signature the verifier rejects. Either
-        // is a rejection; what must NOT happen is an accepted signature.
-        match sig {
-            Err(_) => {}
-            Ok(sig) => {
-                assert!(
-                    sig.verify(b"m2d", &ring, &out).is_err(),
-                    "stock verifier ACCEPTED a signature made without the gate cohort"
-                );
-            }
-        }
+        // And the rejection must come from the verifier, with the specific
+        // error, not from any other failure path.
+        assert_eq!(
+            sig.verify(b"m2d", &ring, &out),
+            Err(mc_crypto_ring_signature::Error::InvalidSignature),
+            "stock verifier must reject a signature made without the gate cohort"
+        );
     }
 
     #[test]
