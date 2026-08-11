@@ -50,7 +50,7 @@ const release = (chain, escrow, from, retStruct) =>
     selector('release(bytes)') + word(32) + dynBytes(retStruct),
     { from });
 
-const chain = await Chain.create();
+const chain = await Chain.create({ only: ['Escrow.sol', 'TestMocks.sol'] });
 
 console.log('\nEscrow');
 

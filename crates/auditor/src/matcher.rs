@@ -38,8 +38,12 @@ pub enum Severity {
 /// Each variant carries the identifiers needed to reproduce the finding from
 /// the two chains independently -- the evidence has to survive being handed to
 /// someone who does not trust this program.
+///
+/// The serialised tag matches [`Discrepancy::kind`], so the JSON an operator
+/// reads and the slug that goes on-chain in the freeze reason are the same
+/// word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Discrepancy {
     /// eUSD was released against a deposit that does not exist, or against no
     /// deposit at all. The whole amount is unbacked.

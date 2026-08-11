@@ -96,8 +96,9 @@ results.push(await call(
   selector('keccakF1600(uint256[25])') + zero25,
   'verified against the all-zero test vector'));
 
-// Several batch sizes, so the MARGINAL per-permutation cost is derived from
-// a slope rather than from one call that also carries dispatch overhead.
+// Several batch sizes so the MARGINAL per-permutation cost excludes dispatch
+// overhead. The figure reported is the two-point endpoint slope (x8-x1)/7,
+// NOT a fit over all four points -- OLS gives essentially the same number.
 for (const nperm of [1, 2, 4, 8]) {
   results.push(await call(
     `Keccak-f1600 x${nperm} (batch)`,
@@ -255,30 +256,49 @@ if (k1 && k8 && !k1.err && !k8.err) {
   console.log('  Crucially EVERY VALIDATOR SIGNS THE SAME DIGEST, so the');
   console.log('  transcript is computed ONCE and amortizes across the quorum.');
   console.log('');
-  const routeB = 8;   // bound, not a measurement: <=8 perms for a few hundred bytes
+  // MEASURED, not bounded: replaying the exact Digestible/Merlin operation
+  // sequence for the Block struct absorbs 770 bytes and takes 6 f1600 calls
+  // (initial f, four rate crossings, final forced PRF). 5 if the fixed STROBE
+  // initialization is precomputed.
+  const routeB = 6;
   console.log(`    <=${routeB} permutations TOTAL   ${Math.round(routeB * marginal).toLocaleString().padStart(16)}`);
   console.log('');
   const worstA = (Math.ceil(4096 / 166) + 4) * 7;
-  console.log(`  Keccak term, Route A vs Route B: ${worstA} perms vs <=${routeB}` +
-    ` = ${(worstA / routeB).toFixed(0)}x.`);
-  console.log('  That ratio is IMPLEMENTATION-INDEPENDENT -- it is a count of');
-  console.log('  permutations, so it survives any optimization of the');
-  console.log('  permutation itself.');
+  console.log('  NO RATIO IS REPORTED. Comparing the exact Route B count');
+  console.log('  against an ESTIMATED Route A count would compare a');
+  console.log('  measurement to a guess. A ratio requires an exact counter');
+  console.log('  run over real ArchiveBlock samples.');
   console.log('');
-  console.log('  What Route B gives up: BlockMetadataContents binds the quorum');
-  console.log('  set and attestation evidence to the signature. But a contract');
-  console.log('  cannot VALIDATE attestation evidence anyway -- that needs IAS/');
-  console.log('  DCAP certificate-chain verification -- it would only be');
-  console.log('  HASHING it. Both routes therefore rest on a governance-managed');
-  console.log('  validator key set, and Route A pays ~25x the Keccak cost for');
-  console.log('  binding it cannot check. THIS IS THE ARGUMENT FOR ROUTE B AND');
-  console.log('  IT NEEDS REVIEW, not adoption on my say-so.');
+  console.log('  Route B ALSO needs the block ID transcript (a separate');
+  console.log('  Merlin transcript, 5 more f1600 calls) unless the bridge');
+  console.log('  deliberately proves that check is redundant given the quorum');
+  console.log('  signs the full block -- which is a CHANGED predicate and');
+  console.log('  would have to be stated and tested as such.');
   console.log('');
-  console.log('  CAVEAT, and it is a large one: every figure in this file is');
-  console.log('  NAIVE SOLIDITY with bounds-checked memory arrays. A hand-');
-  console.log('  written assembly Keccak-f1600 is roughly an order of');
-  console.log('  magnitude cheaper. These are UPPER BOUNDS on a from-scratch');
-  console.log('  Solidity verifier, not the floor for an optimized one.');
-  console.log('  The evidence SIZE is also assumed, not read from a live');
-  console.log('  block -- the table is parameterized for that reason.');
+  console.log('  WHAT ROUTE B COSTS, which is not gas. Its signature is made');
+  console.log('  with a PER-ENCLAVE IDENTITY KEY (random by default), not the');
+  console.log('  node message key that defines its NodeID, and the verifier');
+  console.log('  trusts the signer embedded in the object. So N block');
+  console.log('  signatures are NOT N validators. Route B needs an');
+  console.log('  authenticated height-scoped enclave-key -> entity mapping with');
+  console.log('  entity-level dedup. Availability is weaker too: the signature');
+  console.log('  is optional, and catch-up discards it.');
+  console.log('');
+  console.log('  Attestation is what natively authenticates that enclave key,');
+  console.log('  so it is NOT true that Route A binding buys nothing -- only');
+  console.log('  that it buys nothing in the CURRENT acceptance decision.');
+  console.log('');
+  console.log('  CAVEAT, and it is a large one: every figure here is NAIVE');
+  console.log('  SOLIDITY with bounds-checked memory arrays, so these are');
+  console.log('  UPPER BOUNDS. An assembly implementation would be cheaper,');
+  console.log('  but BY HOW MUCH IS UNMEASURED -- no speedup factor is quoted');
+  console.log('  here, and no claim is made about which term dominates after');
+  console.log('  optimization, because that ordering depends on the factor.');
+  console.log('');
+  console.log('  The Route A evidence SIZE is ASSUMED, not read from a live');
+  console.log('  block, and ceil(S/166)+4 is NOT exact Merlin accounting:');
+  console.log('  each message absorbs a label, an LE32 length, the payload and');
+  console.log('  operation headers, and Digestible expands each field into');
+  console.log('  several messages. Treat the Route A column as illustrative');
+  console.log('  ONLY. Route B below is exact by contrast.');
 }

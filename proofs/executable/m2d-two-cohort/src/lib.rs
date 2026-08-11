@@ -63,7 +63,7 @@ fn subaddress_offset(a: &Scalar, index: u64) -> Scalar {
     h.update(SUBADDRESS_DOMAIN_TAG);
     h.update(a.as_bytes());
     h.update(Scalar::from(index).as_bytes());
-    let _ = h; Scalar::ZERO
+    Scalar::from_hash(h)
 }
 
 fn rand_scalar(rng: &mut ChaCha20Rng) -> Scalar {
@@ -90,17 +90,24 @@ pub struct Cohort {
 
 impl Cohort {
     /// Shamir-share `secret` at `threshold` over `n` participants.
+    /// `id_base` is the first participant id. The two cohorts are given
+    /// DISJOINT id ranges, which is not cosmetic: with both rosters equal to
+    /// {1,2,3}, every owner subset is also a qualifying gate subset, so
+    /// `gates.weighted(osub)` succeeds and the gate argument becomes dead
+    /// code that no test can detect. Review confirmed this by mutation --
+    /// swapping gsub for osub left 8/8 green. Disjoint ids kill that.
     pub fn deal(
         name: &'static str,
         secret: Scalar,
         threshold: usize,
         n: usize,
+        id_base: u64,
         rng: &mut ChaCha20Rng,
     ) -> Self {
         let coeffs: Vec<Scalar> = std::iter::once(secret)
             .chain((1..threshold).map(|_| rand_scalar(rng)))
             .collect();
-        let shares = (1..=n as u64)
+        let shares = (id_base..id_base + n as u64)
             .map(|i| {
                 let x = Scalar::from(i);
                 let mut acc = Scalar::ZERO;
@@ -135,7 +142,13 @@ impl Cohort {
     }
 
     fn share_of(&self, id: u64) -> Scalar {
-        self.shares.iter().find(|(i, _)| *i == id).unwrap().1
+        self.shares
+            .iter()
+            .find(|(i, _)| *i == id)
+            .unwrap_or_else(|| {
+                panic!("{}: no share for participant id {id}", self.name)
+            })
+            .1
     }
 
     /// Each participant's Lagrange-weighted contribution for this subset.
@@ -182,8 +195,8 @@ pub fn setup(seed: u64, k: usize, n: usize, g: usize, m: usize, index: u64) -> T
     let b_gate = rand_scalar(&mut rng);
     let r = rand_scalar(&mut rng);
 
-    let owners = Cohort::deal("owners", b_owner, k, n, &mut rng);
-    let gates = Cohort::deal("gates", b_gate, g, m, &mut rng);
+    let owners = Cohort::deal("owners", b_owner, k, n, OWNER_ID_BASE, &mut rng);
+    let gates = Cohort::deal("gates", b_gate, g, m, GATE_ID_BASE, &mut rng);
 
     let gp = RISTRETTO_BASEPOINT_POINT;
     let root = b_owner * gp + b_gate * gp; // B = B_owner + B_gate
@@ -246,14 +259,32 @@ impl TwoCohort {
 }
 
 /// Qualifying subsets of a cohort, as sorted id vectors.
-pub fn subsets(n: usize, t: usize) -> Vec<Vec<u64>> {
+pub const OWNER_ID_BASE: u64 = 1;
+pub const GATE_ID_BASE: u64 = 101;
+
+/// Qualifying subsets of a cohort, as sorted id vectors in that cohort's own
+/// id namespace.
+pub fn subsets_from(id_base: u64, n: usize, t: usize) -> Vec<Vec<u64>> {
     let mut out = Vec::new();
     for mask in 0u32..(1 << n) {
         if (mask.count_ones() as usize) == t {
-            out.push((0..n).filter(|i| mask >> i & 1 == 1).map(|i| i as u64 + 1).collect());
+            out.push(
+                (0..n)
+                    .filter(|i| mask >> i & 1 == 1)
+                    .map(|i| id_base + i as u64)
+                    .collect(),
+            );
         }
     }
     out
+}
+
+pub fn owner_subsets(n: usize, t: usize) -> Vec<Vec<u64>> {
+    subsets_from(OWNER_ID_BASE, n, t)
+}
+
+pub fn gate_subsets(m: usize, g: usize) -> Vec<Vec<u64>> {
+    subsets_from(GATE_ID_BASE, m, g)
 }
 
 pub fn make_ring(
@@ -305,7 +336,7 @@ mod tests {
     fn composite_root_is_the_sum_of_the_two_cohort_publics() {
         let s = setup(2, 2, 3, 2, 3, 0);
         let gp = RISTRETTO_BASEPOINT_POINT;
-        let root = s.owners.public(&[1, 2]) + s.gates.public(&[1, 2]);
+        let root = s.owners.public(&[1, 2]) + s.gates.public(&[101, 102]);
         let h = subaddress_offset(s.view_private.as_ref(), s.index);
         assert_eq!(s.spend_public.as_ref(), &(root + h * gp));
     }
@@ -314,10 +345,10 @@ mod tests {
     #[test]
     fn key_image_is_invariant_across_every_owner_gate_subset_pair() {
         let s = setup(3, 2, 3, 2, 3, 7);
-        let reference = s.key_image_from_shares(&[1, 2], &[1, 2]);
+        let reference = s.key_image_from_shares(&[1, 2], &[101, 102]);
         let mut pairs = 0;
-        for osub in subsets(3, 2) {
-            for gsub in subsets(3, 2) {
+        for osub in owner_subsets(3, 2) {
+            for gsub in gate_subsets(3, 2) {
                 let ki = s.key_image_from_shares(&osub, &gsub);
                 assert_eq!(
                     ki, reference,
@@ -336,16 +367,16 @@ mod tests {
     #[test]
     fn one_time_key_is_invariant_and_matches_upstream() {
         let s = setup(4, 2, 3, 2, 3, 1);
-        let x = s.onetime(&[1, 2], &[2, 3]);
-        for osub in subsets(3, 2) {
-            for gsub in subsets(3, 2) {
+        let x = s.onetime(&[1, 2], &[102, 103]);
+        for osub in owner_subsets(3, 2) {
+            for gsub in gate_subsets(3, 2) {
                 assert_eq!(s.onetime(&osub, &gsub), x);
             }
         }
         // Genuine differential against upstream recovery.
         let h = subaddress_offset(s.view_private.as_ref(), s.index);
         let b_owner: Scalar = s.owners.weighted(&[1, 2]).iter().map(|(_, w)| w).sum();
-        let b_gate: Scalar = s.gates.weighted(&[1, 2]).iter().map(|(_, w)| w).sum();
+        let b_gate: Scalar = s.gates.weighted(&[101, 102]).iter().map(|(_, w)| w).sum();
         let d = RistrettoPrivate::from(h + b_owner + b_gate);
         let up = recover_onetime_private_key(&s.tx_public, &s.view_private, &d);
         let ups: &Scalar = up.as_ref();
@@ -355,13 +386,13 @@ mod tests {
     #[test]
     fn an_owner_quorum_without_gates_reaches_a_different_key_image() {
         let s = setup(5, 2, 3, 2, 3, 0);
-        let full = s.key_image_from_shares(&[1, 2], &[1, 2]);
+        let full = s.key_image_from_shares(&[1, 2], &[101, 102]);
         let no_gate = s.key_image_without_gates(&[1, 2]);
         assert_ne!(full, no_gate);
         // The gate cohort's contribution is exactly what is missing.
         let hp = hash_to_point(&s.target);
         let gate_term: RistrettoPoint =
-            s.gates.weighted(&[1, 2]).iter().map(|(_, w)| w * hp).sum();
+            s.gates.weighted(&[101, 102]).iter().map(|(_, w)| w * hp).sum();
         assert_eq!(full, no_gate + gate_term);
     }
 
@@ -370,7 +401,7 @@ mod tests {
         let s = setup(6, 2, 3, 2, 3, 0);
         let (value, blinding, out_blinding) = (5_000u64, Scalar::from(9u64), Scalar::from(4u64));
         let (ring, gens) = make_ring(&s, 11, 5, value, blinding);
-        let x = RistrettoPrivate::from(s.onetime(&[1, 3], &[2, 3]));
+        let x = RistrettoPrivate::from(s.onetime(&[1, 3], &[102, 103]));
         let mut rng = ChaCha20Rng::seed_from_u64(77);
         let sig = RingMLSAG::sign(
             b"m2d", &ring, 5, &x, value, &blinding, &out_blinding, &gens, &mut rng,
@@ -390,8 +421,8 @@ mod tests {
         let out = CompressedCommitment::from(&Commitment::new(value, out_blinding, &gens));
         let mut seen: Option<KeyImage> = None;
         let mut count = 0;
-        for osub in subsets(3, 2) {
-            for gsub in subsets(3, 2) {
+        for osub in owner_subsets(3, 2) {
+            for gsub in gate_subsets(3, 2) {
                 let x = RistrettoPrivate::from(s.onetime(&osub, &gsub));
                 let mut rng = ChaCha20Rng::seed_from_u64(1000 + count);
                 let sig = RingMLSAG::sign(

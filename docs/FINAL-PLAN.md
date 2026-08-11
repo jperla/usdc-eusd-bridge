@@ -109,26 +109,36 @@ one call, against **27K** for the same loop shape via `ecrecover` — a **128× 
 protocol is ours to change, auxiliary secp256k1 block signatures remove the dominant *signature*
 cost.
 
-**The hashing term, which we had missed, is now measured — and it found a cheaper design.**
-MobileCoin has **two** ways to prove a block was signed, and they are in different cost classes:
+**The hashing term is now partly measured, and review cut the conclusion back.** MobileCoin has
+**two** ways to prove a block was signed:
 
 - **Via block metadata** — what MobileCoin's own light client does. Each validator's signature
-  covers its own hardware-attestation evidence, which is different for every validator, so the
-  hashing must be redone for each one and nothing is shared. About **203 hash permutations** for
-  seven validators.
+  covers its own hardware-attestation evidence, which differs per validator.
 - **Via the block signature** — every validator signs the **identical** 164-byte block summary,
-  so the hashing is done **once** for the whole quorum. At most **8 permutations**.
+  so that hashing is done **once** for the whole quorum. Now measured exactly: **6 permutations**
+  (5 with the fixed setup precomputed), by replaying the real encoding rather than estimating.
 
-That is a **25× reduction**, and because it is a *count of operations* rather than a gas figure,
-it holds no matter how well the code is optimized. The block-signature route is produced by the
-real consensus enclave in production, not just in tests.
+**A "25× reduction" appeared in the previous draft and has been withdrawn.** The metadata figure
+was an *estimate over an assumed 4KB evidence size*, so the ratio compared a measurement against a
+guess. Real attestation evidence has no established size bound, and some of it amortizes across
+validators, so "nothing amortizes" was also too strong.
 
-**The argument for taking it is out for review, not adopted.** Metadata binds attestation
-evidence into the signature — but a contract cannot *check* that evidence (it needs certificate-
-chain verification far beyond any gas budget), only hash it. So both routes rest on a
-governance-managed validator key list, and the expensive one appears to pay 25× for a binding it
-cannot verify. If that reasoning has a hole, the cheap route goes away, so it is flagged rather
-than banked.
+**And the cheap route is not simply available.** Its signature is made with a **per-enclave
+identity key** — created randomly by default — not the node's configured message key that defines
+its identity in the network. So **N block signatures are not N validators**. Using it requires an
+authenticated, height-scoped mapping from enclave key to validator entity, with entity-level
+deduplication so a rotation cannot be counted twice. Availability is weaker too: the signature is
+optional in the block record, and a node that caught up rather than forming the block discards it.
+
+**Attestation is what natively authenticates that enclave key**, so the earlier claim that the
+expensive route's binding "buys nothing" was wrong as stated. It buys nothing *in the current
+acceptance decision* — a much narrower claim.
+
+**Decision state: still "prototype and measure".** The cheap route stays the leading prototype
+candidate, conditional on key enrollment, historical quorum mapping, entity deduplication and
+archive coverage. Since the protocol is ours to change, the cleaner production candidate remains a
+compact domain-separated signature under an **already authenticated** validator key — the existing
+message key, or an auxiliary secp256k1 key verified with `ecrecover`.
 
 **Still a line item, not a verifier total** — it excludes point decompression, SHA-512 challenge
 derivation, small-order checks, the Merkle path, and calldata. Every figure is naive Solidity and
