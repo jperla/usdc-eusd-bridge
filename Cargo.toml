@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/two-cohort",
+    "crates/ceremony",
+    "crates/auditor",
+    "crates/mc-return",
+    "crates/e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+mc-crypto-ring-signature = { path = "vendor/mobilecoin/crypto/ring-signature", default-features = false, features = ["alloc"] }
+mc-crypto-keys = { path = "vendor/mobilecoin/crypto/keys", default-features = false, features = ["alloc"] }
+mc-core-types = { path = "vendor/mobilecoin/core/types", default-features = false }
+mc-crypto-hashes = { path = "vendor/mobilecoin/crypto/hashes", default-features = false }
+mc-crypto-digestible = { path = "vendor/mobilecoin/crypto/digestible", default-features = false }
+mc-blockchain-types = { path = "vendor/mobilecoin/blockchain/types", default-features = false }
+mc-transaction-core = { path = "vendor/mobilecoin/transaction/core", default-features = false }
+
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "rand_core"] }
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
+rand_chacha = "0.3"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+thiserror = "1"
+
+[patch.crates-io]
+schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }

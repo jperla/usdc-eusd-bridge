@@ -1,0 +1,6 @@
+target/
+node_modules/
+vendor/
+.cargo/config.toml
+*.sqlite
+.DS_Store
