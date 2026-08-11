@@ -35,12 +35,10 @@ pub enum Error {
     #[error("membership proof for index {index} does not reproduce the expected root")]
     MembershipProofInvalid { index: u64 },
 
-    #[error("membership proof for index {index} is malformed: {source}")]
-    MembershipProofMalformed {
-        index: u64,
-        #[source]
-        source: mc_transaction_core::membership_proofs::MembershipProofError,
-    },
+    // MembershipProofError does not implement std::error::Error upstream, so it
+    // cannot be a #[source]; carry its rendering instead of dropping it.
+    #[error("membership proof for index {index} is malformed: {detail}")]
+    MembershipProofMalformed { index: u64, detail: String },
 
     #[error("signature {position} over block {block_id} does not verify")]
     BadBlockSignature { position: usize, block_id: BlockID },

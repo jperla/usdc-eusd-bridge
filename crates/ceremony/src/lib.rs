@@ -45,6 +45,8 @@ pub use context::{
     Commitment, ContextId, ParticipantId, RoundOnePackage, Share, SigningContext, SlotId,
     Statement, Subset,
 };
-pub use identity::{IdentityKey, IdentityPublic, IdentitySignature, SignedRoundOne, SignedRoundTwo};
+pub use identity::{
+    IdentityError, IdentityKey, IdentityPublic, IdentitySignature, SignedRoundOne, SignedRoundTwo,
+};
 pub use machine::{AbortEvidence, Ceremony, Error, EvidenceError, Roster, State};
 pub use store::{Anchor, AnchorError, BindingStore, MemoryAnchor, MemoryStore, Receipt, StoreError};

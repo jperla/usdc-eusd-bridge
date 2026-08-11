@@ -12,10 +12,11 @@ pragma solidity ^0.8.26;
 /// The body is a port of the implementation gated in gas-measurement's
 /// Primitives.sol. It is kept structurally identical to that version rather
 /// than optimised, because the whole value of a port is that it is the same
-/// algorithm. `keccak.mjs` re-tests it here on this repo's compiler settings
-/// against FIPS 202 and against the Keccak team's intermediate values, on all
-/// 25 lanes -- an earlier version of this permutation elsewhere omitted rho,
-/// pi and the round constants and still matched lane 0.
+/// algorithm. `test/merlin.mjs` re-tests it here on this repo's compiler
+/// settings against FIPS 202 SHA3-256, against a length sweep of Ethereum's
+/// own keccak256, and against the Keccak team's intermediate values on all 25
+/// lanes -- an earlier version of this permutation elsewhere omitted rho, pi
+/// and the round constants and still matched lane 0.
 ///
 /// STATE CONVENTION. A lane is a 64-bit value held in the low bits of a
 /// uint256; the high 192 bits of every entry are always zero. Lane i of the
@@ -89,9 +90,6 @@ library Keccak1600 {
 /// the harness compiles `src/` and calls real bytecode; there is no other way
 /// to reach an `internal` library function from a test.
 contract Keccak1600Probe {
-    function dbgB() external pure returns (bytes memory out) { out = hex"aabb"; }
-    function dbgU() external pure returns (uint256) { return 7; }
-
     function f1600(uint256[25] memory a)
         external
         pure

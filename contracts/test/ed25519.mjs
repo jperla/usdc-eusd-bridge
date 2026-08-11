@@ -15,6 +15,17 @@
 //     of those alone without a published vector behind it.
 //
 // Nothing here compares the contract against itself.
+//
+// The suite was checked by mutation: fifteen single-line defects were injected
+// into copies of Sha512.sol and Ed25519.sol -- verify() returning true
+// unconditionally, the s >= L check removed, the sign bit dropped, one doubling
+// per window instead of two, the two scalar windows swapped, d for 2d in the
+// addition, the mod-L reduction of H(R,A,M) skipped, the scalar read
+// big-endian, a corrupted round constant, a corrupted padding terminator, the
+// message length omitted from the padding, a wrong rotation in Sigma1, and the
+// three decompression rejections removed one at a time. All fifteen were
+// killed. The mutants live in the scratch directory, not in this repo; the
+// claim they support is only that no assertion below is vacuous.
 
 import { createHash } from 'crypto';
 import { ed25519 } from '@noble/curves/ed25519';
@@ -312,7 +323,9 @@ const main = async () => {
   });
 
   await test('rejects non-canonical y (y >= p)', async () => {
-    for (const y of [P, P + 1n, P + 19n, (1n << 255n) - 1n]) {
+    // Careful: p + 19 is 2^255, which lands in the sign bit rather than in y.
+    // The non-canonical range is exactly [p, 2^255).
+    for (const y of [P, P + 1n, P + 2n, (1n << 255n) - 1n]) {
       const d = await callDecompress(chain, at, leBytes(y));
       assert(!d.ok, `accepted non-canonical y = ${y}`);
     }
@@ -343,6 +356,15 @@ const main = async () => {
     assert(good.ok && good.x === 0n && good.y === 1n, 'identity was rejected');
     const bad = await callDecompress(chain, at, leBytes(1n | (1n << 255n)));
     assert(!bad.ok, 'accepted the -0 encoding of the identity');
+
+    // y = -1 is the other y with the single root x = 0 (the order-2 point).
+    // It is a genuine curve point and must NOT be caught by the -0 rule.
+    const two = await callDecompress(chain, at, compress(0n, P - 1n));
+    assert(two.ok && two.x === 0n, 'rejected the order-2 point (0, -1)');
+    assert(
+      !(await callDecompress(chain, at, leBytes((P - 1n) | (1n << 255n)))).ok,
+      'accepted the -0 encoding of the order-2 point'
+    );
   });
 
   console.log('\nEd25519 verification (RFC 8032 s7.1)');
@@ -435,6 +457,34 @@ const main = async () => {
       !(await verified(chain, at, sig, leBytes(P + 1n), msg)),
       'accepted a public key with y = p + 1'
     );
+  });
+
+  await test('the identity public key admits forgery, as Ed25519 does', async () => {
+    // With A = the neutral element, [h]A is the neutral element for every h,
+    // so ANY (R = [r]B, s = r) verifies against any message. That is a property
+    // of RFC 8032 cofactorless verification, not a defect here -- @noble agrees
+    // below -- but it is the reason the validator registry must refuse the
+    // identity as a public key. Recorded as a test so the behaviour is pinned
+    // rather than discovered.
+    //
+    // It also exercises the completeness claim on the addition formula: half
+    // the precomputed table is the neutral element, so every window that
+    // selects an A-component adds it, and none of those additions may take a
+    // special case that the code does not have.
+    const identity = compress(0n, 1n);
+    const r = 12345678901234567890n;
+    const R = ed25519.Point.BASE.multiply(r);
+    const sig = hex(R.toBytes()) + leBytes(r);
+    for (const msg of ['', 'deadbeef']) {
+      assert(
+        ed25519.verify(hx(sig), hx(msg), hx(identity)),
+        '@noble rejected the identity-key forgery; the premise has changed'
+      );
+      assert(
+        await verified(chain, at, sig, identity, msg),
+        'disagreed with @noble on the identity public key'
+      );
+    }
   });
 
   await test('agrees with @noble over random signatures', async () => {

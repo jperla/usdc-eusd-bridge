@@ -24,7 +24,7 @@ library Sha512 {
         pure
         returns (bytes32 hi, bytes32 lo)
     {
-        return _compress(_pad(0, 0, 0, message));
+        return _compress(_pad(bytes32(0), bytes32(0), 0, message));
     }
 
     /// Digest of `p0 || p1 || message`, without ever materialising the

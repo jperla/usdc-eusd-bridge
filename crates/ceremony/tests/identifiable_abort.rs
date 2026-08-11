@@ -244,9 +244,9 @@ fn a_signed_share_cannot_be_moved_to_another_context() {
     a[0].machine.round_two().expect("p1 signs");
     let p2_share = a[1].machine.round_two().expect("p2 signs");
 
-    // Ceremony B: same statement, same subset, fresh nodes and therefore a
-    // different round-one package.
-    let mut b = vec![fx.node(P1), fx.node(P2)];
+    // Ceremony B: same statement, same subset, fresh one-time values and
+    // therefore a different round-one package.
+    let mut b = vec![fx.node_seeded(P1, 77), fx.node_seeded(P2, 78)];
     round_one(&mut b, &stmt, &subset).expect("round one");
     b[0].machine.round_two().expect("p1 signs");
     let ctx_b = b[0].machine.context().unwrap().id();
@@ -267,6 +267,57 @@ fn a_signed_share_cannot_be_moved_to_another_context() {
     assert_eq!(
         b[0].machine.receive_round_two(relabelled).unwrap_err(),
         Error::Identity(IdentityError::BadSignature(P2))
+    );
+}
+
+/// Evidence must be authenticated end to end, not just at the accused message.
+///
+/// The context id already ties the accused's signature to one exact round-one
+/// package, so an accuser cannot swap a commitment without invalidating the
+/// accused's own signature. What it cannot do by itself is establish that the
+/// *rest* of the transcript was really sent by the participants it names -- and
+/// a proceeding that convicts on a transcript nobody else is bound to is one
+/// the accuser can walk away from. Here the accused message is genuine and only
+/// P1's round-one message is re-signed by P3; verification must still refuse.
+#[test]
+fn evidence_with_an_unauthenticated_round_one_message_is_rejected() {
+    let fx = fixture(2, 3);
+    let subset = Subset::new([P1, P2]);
+    let stmt = statement(b"release 250000 eUSD to R, block 12345");
+
+    let mut nodes = vec![fx.node(P1), fx.node(P2)];
+    let r1 = round_one(&mut nodes, &stmt, &subset).expect("round one");
+    let honest_p2 = nodes[1].machine.round_two().expect("p2 signs");
+    let z = scalar_from(&honest_p2.share.0).unwrap();
+    let bad_p2 = SignedRoundTwo::create(
+        &identity(P2),
+        P2,
+        honest_p2.context,
+        Share((z + Scalar::ONE).to_bytes().to_vec()),
+    );
+
+    // Same commitment, so the context id -- and P2's signature over it -- still
+    // match. Only the authorship of P1's message has been forged.
+    let forged_p1 = SignedRoundOne {
+        participant: P1,
+        ..SignedRoundOne::create(
+            &identity(P3),
+            P3,
+            stmt.clone(),
+            subset.clone(),
+            r1[0].commitment.clone(),
+        )
+    };
+    let evidence = AbortEvidence {
+        round_one: vec![forged_p1, r1[1].clone()],
+        accused: bad_p2,
+    };
+
+    assert_eq!(
+        evidence
+            .verify(&fx.roster, &fx.public_verifier())
+            .unwrap_err(),
+        EvidenceError::Identity(IdentityError::BadSignature(P1))
     );
 }
 

@@ -25,6 +25,7 @@ import {
   Chain, selector, word, b32, dynBytes, test, assert, assertEq, summary,
 } from './harness.mjs';
 
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = JSON.parse(
   readFileSync(join(HERE, 'fixtures', 'merlin.json'), 'utf8')
@@ -48,13 +49,6 @@ const hexToBytes = (h) => {
 
 const bytesToHex = (b) =>
   Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-
-/// Decode a returned single dynamic `bytes`.
-const decodeBytes = (ret) => {
-  const h = ret.replace(/^0x/, '');
-  const len = parseInt(h.slice(64, 128), 16);
-  return h.slice(128, 128 + len * 2);
-};
 
 /// Two dynamic `bytes` arguments, both in the tail.
 const encodeTwoBytes = (sig, aHex, bHex) => {
@@ -239,13 +233,36 @@ await test('keccak256 length sweep vs ethereum-cryptography', async () => {
 
 // ----------------------------------------------------- merlin differentials
 
+/// The probe returns keccak256 of the concatenated challenge output (see
+/// MerlinProbe for why it cannot return the bytes themselves), so the fixture's
+/// expected hex is hashed the same way before comparing. `head` and `len` come
+/// back too, purely so a failure says something.
 const runScript = async (label, ops) => {
   const r = await chain.must(
     mp,
     encodeTwoBytes('run(bytes,bytes)', label, encodeScript(ops)),
     { gasLimit: GAS }
   );
-  return decodeBytes(r.ret);
+  const h = r.ret.replace(/^0x/, '');
+  return {
+    hash: h.slice(0, 64),
+    len: Number(BigInt('0x' + h.slice(64, 128))),
+    head: h.slice(128, 192),
+  };
+};
+
+const expectOutput = (got, expectedHex, what) => {
+  assertEq(got.len, expectedHex.length / 2, `${what}: output length`);
+  assertEq(
+    got.head,
+    (expectedHex.slice(0, 64) + '0'.repeat(64)).slice(0, 64),
+    `${what}: first 32 output bytes`
+  );
+  assertEq(
+    got.hash,
+    bytesToHex(keccak256(hexToBytes(expectedHex))),
+    `${what}: keccak256 of the whole output`
+  );
 };
 
 assert(FIX.cases.length > 0, 'fixture file has no transcript cases');
@@ -253,13 +270,13 @@ assert(FIX.merlinVersion === '3.0.0', 'fixtures were built against a different m
 
 for (const c of FIX.cases) {
   await test(`merlin: ${c.name}`, async () => {
-    assertEq(await runScript(c.label, c.ops), c.expected, c.name);
+    expectOutput(await runScript(c.label, c.ops), c.expected, c.name);
   });
 }
 
 for (const c of FIX.digestibleKats) {
   await test(`digestible KAT (upstream): ${c.name}`, async () => {
-    assertEq(await runScript(c.label, c.ops), c.expected, c.name);
+    expectOutput(await runScript(c.label, c.ops), c.expected, c.name);
   });
 }
 
@@ -289,7 +306,7 @@ await test('the domain separator reaches the state', async () => {
   const ops = [{ op: 'challenge', ctx: '63', len: 32 }];
   const a = await runScript('746573742070726f746f636f6c', ops);
   const b = await runScript('746573742070726f746f636f6d', ops); // last byte + 1
-  assert(a !== b, 'two different dom-seps produced the same challenge');
+  assert(a.hash !== b.hash, 'two different dom-seps produced the same challenge');
 });
 
 await test('a one-bit change in an appended message changes the challenge', async () => {
@@ -300,7 +317,10 @@ await test('a one-bit change in an appended message changes the challenge', asyn
     d.slice(0, d.length - 2) +
     (parseInt(d.slice(-2), 16) ^ 1).toString(16).padStart(2, '0');
   const got = await runScript(c.label, tampered);
-  assert(got !== c.expected, 'tampered message reproduced the fixture output');
+  assert(
+    got.hash !== bytesToHex(keccak256(hexToBytes(c.expected))),
+    'tampered message reproduced the fixture output'
+  );
 });
 
 await test('the message LENGTH is framed, not just the bytes', async () => {
@@ -316,7 +336,7 @@ await test('the message LENGTH is framed, not just the bytes', async () => {
     { op: 'append', ctx: '6162', data: '6364' },
     ch,
   ]);
-  assert(a !== b, 'framing collision between distinct append sequences');
+  assert(a.hash !== b.hash, 'framing collision between distinct append sequences');
 });
 
 await test('every block-id field is bound', async () => {

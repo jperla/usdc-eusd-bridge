@@ -166,7 +166,7 @@ library Ed25519 {
         pure
         returns (uint256)
     {
-        (bytes32 hi, bytes32 lo) = Sha512.hash(abi.encodePacked(r, a, m));
+        (bytes32 hi, bytes32 lo) = Sha512.hashPrefixed(r, a, m);
         // Little-endian: digest bytes 0..31 are the LOW half of the integer.
         uint256 low = _le(hi);
         uint256 high = _le(lo);
@@ -290,27 +290,6 @@ library Ed25519 {
         }
     }
 
-    function _dbgHram(bytes32 r, bytes32 a, bytes memory m) internal pure returns (uint256) {
-        return _hram(r, a, m);
-    }
-
-    function _dbgH1(bytes32 r, bytes32 a, bytes memory m) internal pure returns (uint256) {
-        (bytes32 hi,) = Sha512.hash(abi.encodePacked(r, a, m));
-        return _le(hi);
-    }
-    function _dbgH2(bytes32 r, bytes32 a, bytes memory m) internal pure returns (uint256) {
-        (bytes32 hi, bytes32 lo) = Sha512.hash(abi.encodePacked(r, a, m));
-        return _le(hi) % L + _le(lo) % L;
-    }
-    function _dbgLe(bytes32 v) internal pure returns (uint256) { return _le(v); }
-
-    function _dbgJoint(uint256 e1, uint256 e2) internal pure returns (uint256,uint256,uint256,uint256) {
-        Point memory b1 = Point({x: BX, y: BY, z: 1, t: mulmod(BX, BY, P)});
-        Point memory b2 = Point({x: BX, y: BY, z: 1, t: mulmod(BX, BY, P)});
-        Point memory q = _jointMul(e1, b1, e2, b2);
-        return (q.x, q.y, q.z, q.t);
-    }
-
     /// base^exp mod p via the modexp precompile. A Solidity square-and-multiply
     /// would be ~250 iterations of loop overhead for the same result.
     function _expmod(uint256 b, uint256 e)
@@ -334,19 +313,31 @@ library Ed25519 {
     }
 }
 
-// LIMITATIONS
+// LIMITATIONS -- what this library does NOT establish.
 //
-// * Cofactorless. A signature under a public key with a small-order component
-//   can verify here and fail under a cofactored verifier, and neither this
-//   library nor RFC 8032 makes Ed25519 verification strongly binding. Callers
-//   that need one signature to have exactly one interpretation across all
-//   implementations -- consensus over a validator set is exactly that case --
-//   must additionally pin the validator public keys, which the bridge does.
-// * Not constant time, and does not try to be. Every input here is public:
+// * NO KEY VALIDATION. `verify` accepts any public key that decodes to a curve
+//   point, including the identity and the seven other points of order dividing
+//   8. Against the identity, [h]A is the identity for every h, so (R = [r]B,
+//   s = r) verifies for ANY message: universal forgery, and the same is true
+//   of ed25519-dalek and libsodium. This is pinned by a test rather than left
+//   implicit. The caller -- the validator registry -- is what must refuse such
+//   keys; this library deliberately does not, because silently filtering keys
+//   would make it disagree with the reference implementations.
+// * Cofactorless, per RFC 8032 s5.1.7. Cofactored verification accepts a
+//   strict superset, so nothing accepted here would be rejected by a cofactored
+//   verifier; the converse does not hold. Ed25519 is not strongly binding under
+//   either rule, so a signature is not a unique identifier for a message.
+// * STRICTER THAN ref10 on encodings. `decompress` rejects y >= p and the
+//   negative-zero form, matching libsodium and @noble but not the original
+//   ref10, which masks the sign bit and lets some non-canonical y through. The
+//   divergence is in the safe direction (this accepts fewer signatures), but it
+//   is a divergence: a signature that some other implementation accepts can be
+//   rejected here. Untested against ref10 directly -- no ref10 oracle is
+//   available in this repo -- so this is stated, not demonstrated.
+// * Not constant time, and does not try to be. Every input is public:
 //   signatures, public keys and block digests are all on-chain already.
-// * `decompress` rejects non-canonical encodings and off-curve points. It does
-//   NOT reject low-order or mixed-order points; that is a separate check and
-//   deliberately not folded in, because RFC 8032 does not require it.
+// * Single signatures only. No batch verification, which is where the real
+//   per-signature saving would be for a validator quorum.
 
 /// Thin deployed wrapper.
 ///
@@ -369,28 +360,6 @@ contract Ed25519Verifier {
         returns (bool ok, uint256 x, uint256 y)
     {
         return Ed25519.decompress(compressed);
-    }
-
-    function dbgHram(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256) {
-        return Ed25519._dbgHram(r, a, m);
-    }
-
-    function dbgH1(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256) {
-        return Ed25519._dbgH1(r, a, m);
-    }
-    function dbgH2(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256) {
-        return Ed25519._dbgH2(r, a, m);
-    }
-    function dbgPack(bytes32 r, bytes32 a, bytes calldata m) external pure returns (uint256, bytes32, bytes32) {
-        bytes memory packed = abi.encodePacked(r, a, m);
-        (bytes32 hi, bytes32 lo) = Sha512.hash(packed);
-        return (packed.length, hi, lo);
-    }
-
-    function dbgLe(bytes32 v) external pure returns (uint256) { return Ed25519._dbgLe(v); }
-
-    function dbgJoint(uint256 e1, uint256 e2) external pure returns (uint256,uint256,uint256,uint256) {
-        return Ed25519._dbgJoint(e1, e2);
     }
 
     /// Exposed for cross-checking the hash against FIPS 180-4 vectors
