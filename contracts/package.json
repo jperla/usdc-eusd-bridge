@@ -1,0 +1,12 @@
+{
+  "name": "bridge-contracts",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node test/run.mjs" },
+  "dependencies": {
+    "@ethereumjs/evm": "^3.1.0",
+    "@ethereumjs/util": "^9.0.3",
+    "ethereum-cryptography": "^2.1.3",
+    "solc": "^0.8.26"
+  }
+}
