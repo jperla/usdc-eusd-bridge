@@ -1,0 +1,18 @@
+[package]
+name = "ceremony"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Threshold signing ceremony state machine for the USDC <-> eUSD bridge."
+
+[dependencies]
+mc-crypto-keys = { workspace = true }
+mc-crypto-hashes = { workspace = true }
+curve25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
