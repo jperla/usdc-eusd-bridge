@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Keccak1600} from "./Keccak1600.sol";
+import {LE} from "./LE.sol";
 
 /// Merlin transcripts, on-chain.
 ///
@@ -220,7 +221,7 @@ library Merlin {
         internal
         pure
     {
-        appendMessage(t, label, _le64(x));
+        appendMessage(t, label, LE.le64(x));
     }
 
     /// merlin `Transcript::challenge_bytes`, writing `len` bytes into `buf` at
@@ -289,7 +290,7 @@ library Merlin {
         uint64 len
     ) internal pure {
         appendMessage(t, context, "seq");
-        appendMessage(t, "len", _le64(len));
+        appendMessage(t, "len", LE.le64(len));
     }
 
     function appendAggHeader(
@@ -318,7 +319,7 @@ library Merlin {
     ) internal pure {
         appendMessage(t, context, "var");
         appendMessage(t, "name", typeName);
-        appendMessage(t, "which", _le32(which));
+        appendMessage(t, "which", LE.le32(which));
     }
 
     /// The absence of data. Note the separator is the EMPTY string, so this is
@@ -337,20 +338,6 @@ library Merlin {
 
     // ----------------------------------------------------------------- helpers
 
-    function _le32(uint32 x) private pure returns (bytes memory b) {
-        b = new bytes(4);
-        unchecked {
-            for (uint256 i = 0; i < 4; i++) b[i] = bytes1(uint8(x >> (8 * i)));
-        }
-    }
-
-    function _le64(uint64 x) private pure returns (bytes memory b) {
-        b = new bytes(8);
-        unchecked {
-            for (uint256 i = 0; i < 8; i++) b[i] = bytes1(uint8(x >> (8 * i)));
-        }
-    }
-
     function _word(bytes memory b) private pure returns (uint256 v) {
         assembly {
             v := mload(add(b, 32))
@@ -358,7 +345,8 @@ library Merlin {
     }
 }
 
-/// MobileCoin's block identifier, recomputed on Ethereum.
+/// MobileCoin's two block digests, recomputed on Ethereum: the block id,
+/// and the digest a validator's `BlockSignature` covers.
 ///
 /// Mirrors `compute_block_id` in mobilecoin 05cb699f
 /// blockchain/types/src/block.rs, which is
@@ -391,10 +379,11 @@ library Merlin {
 /// `[u8; 32]` is never empty and a `u64` has no omit path at all. So nothing
 /// here is conditional, which is why this function takes plain arguments and
 /// has no "was this field present" flags.
-library MobileCoinBlockId {
+library MobileCoinBlock {
     using Merlin for Merlin.Transcript;
 
-    function compute(
+    /// `compute_block_id`: the six fields under protocol "mobilecoin-block-id".
+    function id(
         uint32 version,
         bytes32 parentId,
         uint64 index,
@@ -405,41 +394,83 @@ library MobileCoinBlockId {
         bytes32 contentsHash
     ) internal pure returns (bytes32) {
         Merlin.Transcript memory t = Merlin.init("mobilecoin-block-id");
+        _fields(
+            t, version, parentId, index, cumulativeTxoCount,
+            rootRangeFrom, rootRangeTo, rootHash, contentsHash
+        );
+        return t.extractDigest();
+    }
 
-        t.appendPrimitive("version", "uint", _le32(version));
+    /// The digest a validator's `BlockSignature` covers:
+    /// `block.digest32::<MerlinTranscript>(b"block-sig")`.
+    ///
+    /// `digest32` opens a fresh transcript under the generic "digestible"
+    /// protocol and appends the whole struct under the caller's context, so
+    /// relative to `id` this wraps the same field walk in an aggregate node
+    /// ("block-sig" -> Block) and includes the block's own `id` field --
+    /// `Block` stores it, so the signature covers it. That embedded id is why
+    /// a verifier checking this digest binds the id transitively.
+    ///
+    /// Every validator signs THIS SAME value. That is what makes this route's
+    /// hashing constant in the quorum size, where the metadata route's is
+    /// linear: metadata signatures each cover per-node attestation evidence,
+    /// so no two validators sign the same bytes.
+    function sigDigest(
+        bytes32 blockId,
+        uint32 version,
+        bytes32 parentId,
+        uint64 index,
+        uint64 cumulativeTxoCount,
+        uint64 rootRangeFrom,
+        uint64 rootRangeTo,
+        bytes32 rootHash,
+        bytes32 contentsHash
+    ) internal pure returns (bytes32) {
+        Merlin.Transcript memory t = Merlin.init("digestible");
+        t.appendAggHeader("block-sig", "Block");
+        t.appendPrimitive("id", "bytes", abi.encodePacked(blockId));
+        _fields(
+            t, version, parentId, index, cumulativeTxoCount,
+            rootRangeFrom, rootRangeTo, rootHash, contentsHash
+        );
+        t.appendAggCloser("block-sig", "Block");
+        return t.extractDigest();
+    }
+
+    /// The field walk both digests share: `Block`'s fields minus `id`, in
+    /// declaration order, exactly as the Digestible derive expands them.
+    function _fields(
+        Merlin.Transcript memory t,
+        uint32 version,
+        bytes32 parentId,
+        uint64 index,
+        uint64 cumulativeTxoCount,
+        uint64 rootRangeFrom,
+        uint64 rootRangeTo,
+        bytes32 rootHash,
+        bytes32 contentsHash
+    ) private pure {
+        t.appendPrimitive("version", "uint", LE.le32(version));
         t.appendPrimitive("parent_id", "bytes", abi.encodePacked(parentId));
-        t.appendPrimitive("index", "uint", _le64(index));
+        t.appendPrimitive("index", "uint", LE.le64(index));
         t.appendPrimitive(
-            "cumulative_txo_count", "uint", _le64(cumulativeTxoCount)
+            "cumulative_txo_count", "uint", LE.le64(cumulativeTxoCount)
         );
 
         t.appendAggHeader("root_element", "TxOutMembershipElement");
         t.appendAggHeader("range", "Range");
-        t.appendPrimitive("from", "uint", _le64(rootRangeFrom));
-        t.appendPrimitive("to", "uint", _le64(rootRangeTo));
+        t.appendPrimitive("from", "uint", LE.le64(rootRangeFrom));
+        t.appendPrimitive("to", "uint", LE.le64(rootRangeTo));
         t.appendAggCloser("range", "Range");
         t.appendPrimitive("hash", "bytes", abi.encodePacked(rootHash));
         t.appendAggCloser("root_element", "TxOutMembershipElement");
 
-        t.appendPrimitive("contents_hash", "bytes", abi.encodePacked(contentsHash));
-
-        return t.extractDigest();
-    }
-
-    function _le32(uint32 x) private pure returns (bytes memory b) {
-        b = new bytes(4);
-        unchecked {
-            for (uint256 i = 0; i < 4; i++) b[i] = bytes1(uint8(x >> (8 * i)));
-        }
-    }
-
-    function _le64(uint64 x) private pure returns (bytes memory b) {
-        b = new bytes(8);
-        unchecked {
-            for (uint256 i = 0; i < 8; i++) b[i] = bytes1(uint8(x >> (8 * i)));
-        }
+        t.appendPrimitive(
+            "contents_hash", "bytes", abi.encodePacked(contentsHash)
+        );
     }
 }
+
 
 /// Test-facing surface: a tiny interpreter so a fixture can drive an arbitrary
 /// sequence of transcript operations without a bespoke contract per case.
@@ -554,7 +585,31 @@ contract MerlinProbe {
         bytes32 rootHash,
         bytes32 contentsHash
     ) external pure returns (bytes32) {
-        return MobileCoinBlockId.compute(
+        return MobileCoinBlock.id(
+            version,
+            parentId,
+            index,
+            cumulativeTxoCount,
+            rootRangeFrom,
+            rootRangeTo,
+            rootHash,
+            contentsHash
+        );
+    }
+
+    function blockSigDigest(
+        bytes32 blockId_,
+        uint32 version,
+        bytes32 parentId,
+        uint64 index,
+        uint64 cumulativeTxoCount,
+        uint64 rootRangeFrom,
+        uint64 rootRangeTo,
+        bytes32 rootHash,
+        bytes32 contentsHash
+    ) external pure returns (bytes32) {
+        return MobileCoinBlock.sigDigest(
+            blockId_,
             version,
             parentId,
             index,

@@ -392,4 +392,61 @@ await test('report the cost of one block id', async () => {
   console.log(`        one keccak-f[1600]:      ${p.gas.toLocaleString()} gas`);
 });
 
+// ---------------------------------------------------------------------------
+// Against MobileCoin's own output, not against a fixture this file generated.
+//
+// crates/mc-return builds a real Block with MobileCoin's types and signs it
+// with BlockSignature::from_block_and_keypair, then records both digests. If
+// these two assertions pass, the Solidity reproduces what a MobileCoin node
+// produces -- which is the only thing that makes an on-chain verifier sound.
+// ---------------------------------------------------------------------------
+
+{
+  const RET = JSON.parse(readFileSync(
+    join(HERE, '..', '..', 'crates', 'mc-return', 'fixtures', 'return.json'), 'utf8'));
+  const blk = RET.chain[RET.chain.length - 1];
+  const args =
+    word(blk.version) + b32(blk.parent_id) + word(blk.index) +
+    word(blk.cumulative_txo_count) + word(blk.root_element.range.from) +
+    word(blk.root_element.range.to) + b32(blk.root_element.hash) +
+    b32(blk.contents_hash);
+
+  await test('block id matches a Block built by MobileCoin itself', async () => {
+    const r = await chain.must(mp, selector(
+      'blockId(uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)') + args);
+    assertEq(r.ret, blk.id, 'block id');
+    // The block stores its own id, so agreement here is what lets the
+    // signature digest below bind the id transitively.
+    assertEq(r.ret, RET.digests.block_id.digest, 'id == recorded block_id digest');
+  });
+
+  await test('BlockSignature digest matches what a validator actually signs', async () => {
+    const r = await chain.must(mp, selector(
+      'blockSigDigest(bytes32,uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)')
+      + b32(blk.id) + args);
+    assertEq(r.ret, RET.digests.block_sig.digest, 'block-sig digest');
+  });
+
+  await test('the sig digest is not the id digest, and depends on every field', async () => {
+    // Distinct protocol label and an aggregate wrapper, so confusing the two
+    // would be a real substitution -- assert they cannot be interchanged.
+    assert(RET.digests.block_sig.digest !== RET.digests.block_id.digest,
+      'sig digest must differ from the id digest');
+
+    // Perturb each field in turn; every one must move the digest, or that
+    // field is not bound and a relayer could vary it freely.
+    const base = b32(blk.id) + args;
+    const sel = selector(
+      'blockSigDigest(bytes32,uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)');
+    const ref = (await chain.must(mp, sel + base)).ret;
+    for (let wordIdx = 0; wordIdx < 9; wordIdx++) {
+      const words = base.match(/.{64}/g);
+      const cur = BigInt('0x' + words[wordIdx]);
+      words[wordIdx] = word(cur ^ 1n);
+      const got = (await chain.must(mp, sel + words.join(''))).ret;
+      assert(got !== ref, `field ${wordIdx} is not bound into the digest`);
+    }
+  });
+}
+
 summary();
