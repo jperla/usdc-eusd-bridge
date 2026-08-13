@@ -211,28 +211,33 @@ The `proofs/` results are in neither.
 | Deposit auditor and freeze bound | Rust | 50 tests |
 | Return-proof builder | Rust | 45 tests |
 
-**The bridge is not ready to hold funds, and the composite architecture gate is
-not closed.** Three things are open, all named in code rather than in a
-footnote:
+## Status
 
-0. **No non-reconstructing two-cohort signing protocol.** The artifacts
-   reconstruct the composite scalar in one process. What is established is the
-   algebra plus stock-verifier compatibility — a scalar missing the gate share
-   cannot satisfy MobileCoin's unmodified MLSAG — not a live threshold
+**383 tests, 0 failures** — 179 Rust, 204 Solidity against a real EVM.
+`./scripts/acceptance.sh` runs the whole objective in one command.
+
+**It fits.** A real return-leg transaction costs **6,498,577 gas** — 21.7% of a
+30M block, including the 21,000 intrinsic and 1,694 bytes of calldata. It was
+31M, over the limit and unlandable at any price, until Keccak-f1600 was
+rewritten in Yul: 1,281,221 → 135,629 gas per permutation, and `verifyReturn`
+runs about eighteen of them.
+
+**The bridge is still not ready to hold funds.** Two things are open, and the
+acceptance run prints them itself rather than letting a green result imply more
+than it shows:
+
+1. **The payout amount is asserted by whoever relays the proof.** The TxOut
+   digest binds the *masked* value, so the figure is not derived from the
+   output. The fix is for the recipient check to return `(payable, amount)`
+   rather than a bool — it already computes the shared secret that unmasking
+   needs.
+2. **No non-reconstructing two-cohort signing protocol.** The artifacts
+   reconstruct the composite scalar in one process, so what is established is
+   the algebra plus stock-verifier compatibility, not a live threshold
    ceremony. **A composite address must not be funded on this evidence.**
 
-1. **The recipient check** — `target_key == Hs(a·R)·G + D`, the step proving an
-   output is payable to the bridge. It needs Ristretto255 in Solidity, which
-   MobileCoin uses and Ed25519 cannot substitute for. It is a **constructor
-   argument** (`IRecipientCheck`), so no deployment can omit it silently, and
-   the test double is named `AcceptsAnyRecipient_DO_NOT_DEPLOY`.
-2. ~~The block digest framing is unvalidated.~~ **Closed.** Both the block id
-   and the digest a validator's `BlockSignature` covers are now reproduced
-   byte-for-byte against a `Block` built and signed by MobileCoin's own crates,
-   with a per-field test asserting every header field is bound.
-
 Also absent: a live signing ceremony, DKG with proof-of-possession, and any
-mainnet deployment.
+deployment.
 
 ## Building
 
