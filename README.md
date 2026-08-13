@@ -226,11 +226,17 @@ runs about eighteen of them.
 acceptance run prints them itself rather than letting a green result imply more
 than it shows:
 
-1. **The payout amount is asserted by whoever relays the proof.** The TxOut
-   digest binds the *masked* value, so the figure is not derived from the
-   output. The fix is for the recipient check to return `(payable, amount)`
-   rather than a bool — it already computes the shared secret that unmasking
-   needs.
+1. **The payout values are asserted by whoever relays the proof** — the amount,
+   the token id, *and* the beneficiary. The TxOut digest binds their
+   **encrypted** forms (a Pedersen commitment plus a masked value, and a
+   ciphertext memo), and nothing on chain opens them. So a relayer holding one
+   genuine, quorum-signed, provably included return still names its value and
+   its payee freely.
+
+   All three close together, since they need the same shared secret the
+   recipient check already computes. Opening the amount must also **recompute
+   the commitment and require equality** — unmasking alone would let a large
+   masked value be paired with a smaller unrelated commitment.
 2. **No non-reconstructing two-cohort signing protocol.** The artifacts
    reconstruct the composite scalar in one process, so what is established is
    the algebra plus stock-verifier compatibility, not a live threshold

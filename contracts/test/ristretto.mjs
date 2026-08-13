@@ -127,6 +127,36 @@ await test('an encoding whose only fault is a negative t is refused', async () =
   }
 });
 
+/// Each of the five conditions RFC 9496 4.3.1 requires, isolated.
+///
+/// A vector that fails several conditions at once cannot tell you whether any
+/// particular check exists. Review found exactly that hole here: the suite
+/// still passed with the canonical-range check removed, because every
+/// non-canonical vector in the published list also fails a later condition.
+/// Each encoding below fails ONE condition and passes the other four, so
+/// removing any single check turns this test red.
+const SOLE_FAULT = [
+  ['s >= p, non-canonical',
+   '0xdaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'],
+  ['negative s (odd canonical representative)',
+   '0x0b0d51f59543b18e577b569e3affaea0a71cf4955a7d22724959a6ba1f72d209'],
+  ['no square root',
+   '0x0e00000000000000000000000000000000000000000000000000000000000000'],
+  ['negative t',
+   '0x0200000000000000000000000000000000000000000000000000000000000000'],
+  ['y == 0',
+   '0xecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'],
+];
+
+await test('each of the five decode conditions has a sole-fault witness', async () => {
+  for (const [why, enc] of SOLE_FAULT) {
+    assert(!(await decodes(enc)), `accepted an encoding whose only fault is: ${why}`);
+  }
+  // Not vacuous: a neighbouring canonical value must still decode, so this is
+  // not a decoder that refuses everything in the vicinity.
+  assert(await decodes('0x' + '04' + '00'.repeat(31)), 's = 4 must decode');
+});
+
 await test('a decoder that accepted everything would fail this suite', async () => {
   // Guards the guard: if `decodes` ever became a constant, the rejects test
   // above would pass vacuously only if it also stopped accepting real points.
