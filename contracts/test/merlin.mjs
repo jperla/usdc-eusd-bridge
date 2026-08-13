@@ -208,6 +208,129 @@ await test('the 25-lane gate is not vacuous', async () => {
   assert(same === 0, `one flipped input bit left ${same} lanes unchanged`);
 });
 
+// ---------------------------------------------------------------------------
+// The assembly against the Solidity it replaced.
+//
+// The fixed anchors below -- the 25-lane KAT, FIPS 202, the keccak256 sweep,
+// MobileCoin's own digests -- are the ones that matter, because they were not
+// written here. This differential adds the thing they cannot give: coverage of
+// states nobody chose. `Keccak1600.f1600Reference` is the readable port that
+// `f1600` replaced; if the two ever disagree on a state, one of them is wrong
+// and neither is trustworthy until that is resolved.
+// ---------------------------------------------------------------------------
+
+async function permuteRef(chain, probe, lanes) {
+  const r = await chain.must(
+    probe,
+    selector('f1600Reference(uint256[25])') + encLanes(lanes),
+    { gasLimit: GAS }
+  );
+  return decLanes(r.ret);
+}
+
+/// xorshift64*, seeded by hand, so a failing state is the same state on the
+/// next run and can be pasted into a regression test.
+function rng(seed) {
+  let s = seed;
+  return () => {
+    s ^= (s << 13n) & 0xffffffffffffffffn;
+    s ^= s >> 7n;
+    s ^= (s << 17n) & 0xffffffffffffffffn;
+    return (s * 0x2545f4914f6cdd1dn) & 0xffffffffffffffffn;
+  };
+}
+
+async function assertAgrees(lanes, what) {
+  const got = await permute(chain, kp, lanes);
+  const want = await permuteRef(chain, kp, lanes);
+  for (let i = 0; i < 25; i++) {
+    assertEq(
+      got[i].toString(16).padStart(64, '0'),
+      want[i].toString(16).padStart(64, '0'),
+      `${what}: lane ${i}`
+    );
+  }
+  return got;
+}
+
+await test('assembly and reference agree on random states', async () => {
+  const next = rng(0x9e3779b97f4a7c15n);
+  for (let t = 0; t < 16; t++) {
+    const lanes = Array.from({ length: 25 }, () => next());
+    await assertAgrees(lanes, `random state ${t}`);
+  }
+});
+
+await test('assembly and reference agree on states that stress the mask', async () => {
+  // Random lanes are dense in their high bits and would hide a rotation that
+  // is only wrong when a lane is nearly empty or nearly full. These are the
+  // shapes where an off-by-one in a shift count survives everything else:
+  // every bit set, one bit set at each end, and the two halves separated.
+  const ALL = 0xffffffffffffffffn;
+  const shapes = [
+    ['all lanes zero but lane 24', (i) => (i === 24 ? ALL : 0n)],
+    ['all bits set', () => ALL],
+    ['top bit of every lane', () => 1n << 63n],
+    ['bottom bit of every lane', () => 1n],
+    ['top and bottom bits', () => (1n << 63n) | 1n],
+    ['high half set', () => 0xffffffff00000000n],
+    ['low half set', () => 0x00000000ffffffffn],
+    ['alternating bits', (i) => (i % 2 ? 0xaaaaaaaaaaaaaaaan : 0x5555555555555555n)],
+  ];
+  for (const [name, f] of shapes) {
+    await assertAgrees(Array.from({ length: 25 }, (_, i) => f(i)), name);
+  }
+  // One bit, walked across every lane boundary and every byte boundary within
+  // a lane: this is what catches a lane written to the wrong pi destination.
+  for (const bit of [0n, 1n, 7n, 8n, 31n, 32n, 62n, 63n]) {
+    const lanes = new Array(25).fill(0n);
+    lanes[Number(bit) % 25] = 1n << bit;
+    await assertAgrees(lanes, `single bit ${bit}`);
+  }
+});
+
+await test('assembly and reference agree even on out-of-convention input', async () => {
+  // Lanes are documented as 64-bit values in a uint256, and nothing in src/
+  // produces anything else -- but the ABI decoder does not enforce it, so a
+  // caller reaching the probe directly can pass 256 dirty bits. Both
+  // implementations fold that down on the first round's rho; this pins that
+  // they fold it down the SAME way, rather than one of them carrying dirt
+  // into a later round.
+  const next = rng(0xdeadbeefcafef00dn);
+  for (let t = 0; t < 4; t++) {
+    const lanes = Array.from(
+      { length: 25 },
+      () => (next() << 192n) | (next() << 128n) | (next() << 64n) | next()
+    );
+    const got = await assertAgrees(lanes, `dirty state ${t}`);
+    for (let i = 0; i < 25; i++) {
+      assert(got[i] >> 64n === 0n, `lane ${i} left dirty on output`);
+    }
+  }
+});
+
+await test('the differential is not vacuous', async () => {
+  // Both sides are reached through the same encoder and decoder. If the probe
+  // dispatched both selectors to one implementation, or the comparison were
+  // self-referential, every assertion above would hold with the assembly
+  // deleted. Distinct inputs must give distinct outputs through BOTH entry
+  // points, and the reference must reproduce the published KAT on its own.
+  const ref = await permuteRef(chain, kp, new Array(25).fill(0n));
+  for (let i = 0; i < 25; i++) {
+    assertEq(
+      ref[i].toString(16).padStart(16, '0'),
+      ZERO_STATE_PERMUTED[i].toString(16).padStart(16, '0'),
+      `reference lane ${i}`
+    );
+  }
+  const perturbed = new Array(25).fill(0n);
+  perturbed[3] = 1n << 40n;
+  const refOther = await permuteRef(chain, kp, perturbed);
+  let same = 0;
+  for (let i = 0; i < 25; i++) if (ref[i] === refOther[i]) same++;
+  assert(same === 0, `reference ignored its input on ${same} lanes`);
+});
+
 await test('FIPS 202: SHA3-256 of the empty string', async () => {
   // a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a is the
   // value in the FIPS 202 / NIST CAVP SHA3-256 short-message set for len 0.
