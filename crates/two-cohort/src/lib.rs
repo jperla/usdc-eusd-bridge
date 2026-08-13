@@ -15,6 +15,21 @@
 //! belongs to no output in the ring. Consensus itself refuses it. The gate is
 //! not a policy check layered on top of the spend path -- it is inside it.
 //!
+//! # Control-domain independence
+//!
+//! "Different entities" is the entire premise, and it is not something the
+//! algebra can check: interpolation over `{1,2,3}` is the same arithmetic
+//! whichever roster those ids were meant to name. If both cohorts are dealt
+//! over `{1,2,3}` then every owner subset is also a qualifying gate subset,
+//! `gates.weighted(owner_subset)` succeeds, and the gate argument is dead code
+//! that no test can distinguish from a live one.
+//!
+//! [`control`] therefore makes cohort identity structural. [`Owners`] and
+//! [`Gates`] are distinct types -- passing a gate spec where an owner spec
+//! belongs does not compile -- and each owns a disjoint band of participant
+//! ids, so a subset that reaches the wrong cohort at runtime is rejected
+//! instead of interpolated.
+//!
 //! # The load-bearing property
 //!
 //! **The key image must be identical for every (owner-subset x gate-subset)
@@ -32,20 +47,26 @@
 //! # Example
 //!
 //! ```
-//! use two_cohort::{CohortSpec, CompositeSpend};
+//! use two_cohort::{CohortSpec, CompositeSpend, ControlDomain, Gates, Owners};
 //!
 //! // 2-of-3 owners AND 2-of-3 gates over one root.
-//! let owners = CohortSpec::sequential("owners", 2, 3);
-//! let gates = CohortSpec::sequential("gates", 2, 3);
+//! let owners = CohortSpec::<Owners>::sequential(2, 3);
+//! let gates = CohortSpec::<Gates>::sequential(2, 3);
 //! let spend = CompositeSpend::simulate_from_seed(42, &owners, &gates, 7)?;
 //!
+//! // Ids are per-domain, so `o` and `g` are different integers.
+//! let (o, g) = (Owners::nth, Gates::nth);
+//!
 //! // Different quorums, same image.
-//! let a = spend.key_image_from_shares(&[1, 2], &[2, 3])?;
-//! let b = spend.key_image_from_shares(&[2, 3], &[1, 3])?;
+//! let a = spend.key_image_from_shares(&[o(0), o(1)], &[g(1), g(2)])?;
+//! let b = spend.key_image_from_shares(&[o(1), o(2)], &[g(0), g(2)])?;
 //! assert_eq!(a, b);
 //!
 //! // An owner quorum alone reaches somewhere else entirely.
-//! assert_ne!(a, spend.key_image_without_gates(&[1, 2])?);
+//! assert_ne!(a, spend.key_image_without_gates(&[o(0), o(1)])?);
+//!
+//! // And an owner quorum is not a gate quorum: the ids are not gate ids.
+//! assert!(spend.key_image_from_shares(&[o(0), o(1)], &[o(0), o(1)]).is_err());
 //! # Ok::<(), two_cohort::Error>(())
 //! ```
 //!
@@ -84,12 +105,14 @@
 
 pub mod cohort;
 pub mod composite;
+pub mod control;
 pub mod derive;
 pub mod error;
 pub mod fixture;
 
 pub use cohort::{lagrange_at_zero, Cohort, ParticipantTerm};
 pub use composite::{CohortSpec, CompositeSpend, KeyImageTerms};
+pub use control::{ControlDomain, Gates, Owners, NAMESPACE_SPAN};
 pub use error::{Error, Result};
 
 /// MobileCoin token id for eUSD. Releases from the bridge are denominated in

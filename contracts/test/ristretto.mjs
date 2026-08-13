@@ -8,7 +8,9 @@
 //
 // What has to be true for the bridge to be safe, and is tested here:
 //
-//   * an encoding that dalek refuses is refused here too (all 10 vectors)
+//   * an encoding that dalek refuses is refused here too (all 10 vectors),
+//     plus two families the published list does not isolate -- see the note
+//     above those tests, which were checked against dalek before being written
 //   * decode and encode are inverse on every published multiple of B
 //   * scalar multiplication agrees with dalek on independent points
 //   * hash_to_scalar agrees with MobileCoin, including the wide reduction

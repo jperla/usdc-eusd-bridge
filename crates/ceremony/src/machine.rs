@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::authorizer::Authorizer;
+use crate::authorizer::{Authorizer, Rejection};
 use crate::context::{ParticipantId, Share, SigningContext, SlotId, Statement, Subset};
 use crate::identity::{
     IdentityError, IdentityKey, IdentityPublic, SignedRoundOne, SignedRoundTwo,
@@ -137,6 +137,15 @@ pub enum Error {
     #[error("participant {culprit:?} produced an invalid share")]
     IdentifiableAbort { culprit: ParticipantId },
 
+    /// The share was neither accepted nor faulted: the backend could not say.
+    /// Held separate from `IdentifiableAbort` because the two lead to opposite
+    /// places -- one to a disciplinary proceeding, the other to a pager.
+    #[error("could not check {participant:?}'s share ({detail}); this is not a finding about {participant:?}")]
+    ShareUncheckable {
+        participant: ParticipantId,
+        detail: String,
+    },
+
     /// Every individual share verified but the aggregate did not. Reported
     /// without a culprit on purpose: naming one here would be a guess.
     #[error("aggregate signature failed to verify though every share was valid")]
@@ -172,6 +181,11 @@ pub enum EvidenceError {
     /// finding about the accuser.
     #[error("the accused share is valid; the accusation does not stand")]
     ShareIsValid,
+    /// The checker could not run the check -- key material it does not have, a
+    /// roster it does not recognise. The evidence is neither upheld nor
+    /// refuted, and in particular nobody has been convicted of anything.
+    #[error("the accused share could not be checked ({0}); this convicts no one")]
+    Unverifiable(String),
 }
 
 impl AbortEvidence {
@@ -214,9 +228,13 @@ impl AbortEvidence {
             .ok_or(EvidenceError::UnknownParticipant(self.accused.participant))?;
         self.accused.verify(key)?;
 
+        // A checker that cannot check must say so rather than convict. The
+        // accusation is worth exactly as much as the check behind it, and a
+        // checker holding the wrong epoch's key material has performed none.
         match authorizer.verify_share(&context, self.accused.participant, &self.accused.share) {
             Ok(()) => Err(EvidenceError::ShareIsValid),
-            Err(_) => Ok(self.accused.participant),
+            Err(Rejection::Fault(_)) => Ok(self.accused.participant),
+            Err(Rejection::Error(e)) => Err(EvidenceError::Unverifiable(e.to_string())),
         }
     }
 }
@@ -324,7 +342,7 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
             Ok(r) => r,
             Err(e) => return Err(self.fail(Error::Store(e))),
         };
-        self.observe_receipt(&receipt)?;
+        self.commit_receipt(&receipt)?;
 
         let msg = SignedRoundOne::create(
             &self.identity,
@@ -401,7 +419,7 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
             }
             Err(e) => return Err(self.fail(Error::Store(e))),
         };
-        self.observe_receipt(&receipt)?;
+        self.commit_receipt(&receipt)?;
 
         // Everything above this line is durable. Everything below it is
         // observable.
@@ -441,18 +459,26 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
             return Err(Error::WrongContext(msg.participant));
         }
 
-        if self
-            .authorizer
-            .verify_share(&context, msg.participant, &msg.share)
-            .is_err()
-        {
-            let culprit = msg.participant;
-            self.evidence = Some(AbortEvidence {
-                round_one: self.round_one.values().cloned().collect(),
-                accused: msg,
-            });
-            self.state = State::Aborted(culprit);
-            return Err(Error::IdentifiableAbort { culprit });
+        match self.authorizer.verify_share(&context, msg.participant, &msg.share) {
+            Ok(()) => {}
+            Err(Rejection::Fault(_)) => {
+                let culprit = msg.participant;
+                self.evidence = Some(AbortEvidence {
+                    round_one: self.round_one.values().cloned().collect(),
+                    accused: msg,
+                });
+                self.state = State::Aborted(culprit);
+                return Err(Error::IdentifiableAbort { culprit });
+            }
+            // Unchecked is not accepted -- the share does not go in, so the
+            // ceremony cannot finish without it. But the state is left alone:
+            // the backend may come back, and the sender has done nothing.
+            Err(Rejection::Error(e)) => {
+                return Err(Error::ShareUncheckable {
+                    participant: msg.participant,
+                    detail: e.to_string(),
+                })
+            }
         }
 
         self.round_two.insert(msg.participant, msg);
@@ -492,14 +518,25 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
             // Shares were checked individually on arrival, so this is not a
             // known-culprit case. Say so instead of blaming someone.
             for (id, share) in &shares {
-                if self.authorizer.verify_share(&context, *id, share).is_err() {
-                    let culprit = *id;
-                    self.evidence = Some(AbortEvidence {
-                        round_one: self.round_one.values().cloned().collect(),
-                        accused: self.round_two[&culprit].clone(),
-                    });
-                    self.state = State::Aborted(culprit);
-                    return Err(Error::IdentifiableAbort { culprit });
+                match self.authorizer.verify_share(&context, *id, share) {
+                    Ok(()) => {}
+                    Err(Rejection::Fault(_)) => {
+                        let culprit = *id;
+                        self.evidence = Some(AbortEvidence {
+                            round_one: self.round_one.values().cloned().collect(),
+                            accused: self.round_two[&culprit].clone(),
+                        });
+                        self.state = State::Aborted(culprit);
+                        return Err(Error::IdentifiableAbort { culprit });
+                    }
+                    // Nothing was emitted and nobody is accused; a retry once
+                    // the backend answers again can still attribute this.
+                    Err(Rejection::Error(e)) => {
+                        return Err(Error::ShareUncheckable {
+                            participant: *id,
+                            detail: e.to_string(),
+                        })
+                    }
                 }
             }
             self.state = State::Failed;
@@ -531,7 +568,9 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
         Ok(())
     }
 
-    /// Check the store has not gone backwards before writing to it.
+    /// Check the store has not gone backwards before writing to it. Before a
+    /// write there is no record to compare, so this can only compare counts --
+    /// which is why it is not the whole of the defence; see `commit_receipt`.
     fn observe_store(&mut self) -> Result<(), Error> {
         let seq = self.store.sequence();
         match self.anchor.observe(seq) {
@@ -540,8 +579,12 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
         }
     }
 
-    fn observe_receipt(&mut self, receipt: &Receipt) -> Result<(), Error> {
-        match self.anchor.observe(receipt.sequence()) {
+    /// Advance the anchor onto the record that was just written, by
+    /// compare-and-swap against the record it already holds. This is what
+    /// catches a store whose counter is level but whose history is not, and it
+    /// sits between the durable write and the observable step it protects.
+    fn commit_receipt(&mut self, receipt: &Receipt) -> Result<(), Error> {
+        match self.anchor.commit(receipt) {
             Ok(()) => Ok(()),
             Err(e) => Err(self.fail(Error::Rollback(e))),
         }

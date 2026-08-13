@@ -54,6 +54,14 @@ contract Escrow is Governed {
 
     IMobileCoinVerifier public verifier;
 
+    /// Pending verifier change, and when it may be executed.
+    IMobileCoinVerifier public pendingVerifier;
+    uint64 public pendingVerifierAt;
+
+    /// Delay on a verifier change. Immutable so it cannot itself be lowered
+    /// to zero and then used to bypass the delay it exists to impose.
+    uint64 public immutable verifierDelay;
+
     address public auditor;
 
     /// Releases are blocked while frozen. Deposits are NOT: freezing the
@@ -101,6 +109,7 @@ contract Escrow is Governed {
     event Frozen(address indexed by, string reason);
     event Unfrozen(address indexed by);
     event VerifierChanged(address indexed from, address indexed to);
+    event VerifierProposed(address indexed to, uint64 executableAt);
     event DepositCapChanged(uint256 from, uint256 to);
     event AuditorChanged(address indexed from, address indexed to);
 
@@ -117,6 +126,8 @@ contract Escrow is Governed {
     error ZeroPayout(uint64 mobAmount);
     error ZeroUsdc();
     error ZeroVerifier();
+    error VerifierNotProposed(address attempted);
+    error VerifierTooEarly(uint64 nowTs, uint64 executableAt);
     error ZeroDestination();
     error ZeroBeneficiary();
     error CapExceeded(uint256 attempted, uint256 cap);
@@ -143,8 +154,10 @@ contract Escrow is Governed {
         uint64 _eusdTokenId,
         uint256 _depositCap,
         address _governance,
-        address _auditor
+        address _auditor,
+        uint64 _verifierDelay
     ) Governed(_governance) {
+        verifierDelay = _verifierDelay;
         if (address(_usdc) == address(0)) revert ZeroUsdc();
         if (address(_verifier) == address(0)) revert ZeroVerifier();
         usdc = _usdc;
@@ -269,10 +282,40 @@ contract Escrow is Governed {
 
     // ------------------------------------------------------------- governance
 
+    /// Replacing the verifier is equivalent to being able to forge returns:
+    /// a permissive one drains the escrow in a single transaction. It is
+    /// therefore proposed and executed with the same delay the validator
+    /// registry applies to enrolling a signing key -- there is no point
+    /// timelocking who may sign if the thing that checks signatures can be
+    /// swapped instantly.
+    ///
+    /// Freezing stays immediate, so the auditor can still stop payouts while a
+    /// verifier change is pending.
+    function proposeVerifier(IMobileCoinVerifier v) external onlyGovernance {
+        if (address(v) == address(0)) revert ZeroVerifier();
+        uint64 at = uint64(block.timestamp) + verifierDelay;
+        pendingVerifier = v;
+        pendingVerifierAt = at;
+        emit VerifierProposed(address(v), at);
+    }
+
     function setVerifier(IMobileCoinVerifier v) external onlyGovernance {
         if (address(v) == address(0)) revert ZeroVerifier();
+        if (address(pendingVerifier) != address(v)) revert VerifierNotProposed(address(v));
+        if (uint64(block.timestamp) < pendingVerifierAt) {
+            revert VerifierTooEarly(uint64(block.timestamp), pendingVerifierAt);
+        }
         emit VerifierChanged(address(verifier), address(v));
         verifier = v;
+        delete pendingVerifier;
+        delete pendingVerifierAt;
+    }
+
+    /// Abandon a pending change without waiting it out.
+    function cancelVerifier() external onlyGovernance {
+        emit VerifierProposed(address(0), 0);
+        delete pendingVerifier;
+        delete pendingVerifierAt;
     }
 
     function setDepositCap(uint256 cap) external onlyGovernance {

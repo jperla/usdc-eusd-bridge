@@ -1,9 +1,13 @@
 //! One cohort: its own roster, its own threshold, its own secret.
 //!
-//! Nothing in this module refers to a second cohort. That is the structural
-//! point -- a design with one roster and one `t/n` shared between roles cannot
-//! express operators-and-gates at all, because the gate cohort has a different
-//! size, a different threshold and a different set of humans behind it.
+//! A `Cohort` never refers to a second cohort. That is the structural point --
+//! a design with one roster and one `t/n` shared between roles cannot express
+//! operators-and-gates at all, because the gate cohort has a different size, a
+//! different threshold and a different set of humans behind it.
+//!
+//! Separateness of the two rosters is not this type's business either; it is
+//! [`control`](crate::control)'s, and [`Cohort::deal_in`] is where the two
+//! meet.
 
 use core::fmt;
 
@@ -13,7 +17,10 @@ use curve25519_dalek::{
 use rand_core::{CryptoRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::error::{Error, Result};
+use crate::{
+    control::{ControlDomain, NAMESPACE_SPAN},
+    error::{Error, Result},
+};
 
 /// One participant's Lagrange-weighted contribution for a particular subset.
 ///
@@ -116,16 +123,33 @@ impl Cohort {
         })
     }
 
-    /// Convenience dealing over the roster `1..=n`.
-    pub fn deal_sequential<R: RngCore + CryptoRng>(
-        name: &str,
+    /// Deal a cohort inside a control domain.
+    ///
+    /// The domain supplies the cohort's name and, more importantly, the id
+    /// band the roster must lie in. Rejecting an out-of-band id here is what
+    /// makes the two cohorts of a [`CompositeSpend`](crate::CompositeSpend)
+    /// non-interchangeable: their rosters cannot intersect, so a subset drawn
+    /// from one is never a quorum of the other.
+    pub fn deal_in<C: ControlDomain, R: RngCore + CryptoRng>(
         secret: &Scalar,
         threshold: usize,
-        n: usize,
+        ids: &[u64],
         rng: &mut R,
     ) -> Result<Cohort> {
-        let ids: Vec<u64> = (1..=n as u64).collect();
-        Cohort::deal(name, secret, threshold, &ids, rng)
+        for &id in ids {
+            if !C::owns(id) {
+                return Err(Error::in_cohort(
+                    C::NAME,
+                    Error::IdOutsideDomain {
+                        domain: C::NAME,
+                        id,
+                        base: C::ID_BASE,
+                        end: C::ID_BASE + NAMESPACE_SPAN,
+                    },
+                ));
+            }
+        }
+        Cohort::deal(C::NAME, secret, threshold, ids, rng)
     }
 
     pub fn name(&self) -> &str {

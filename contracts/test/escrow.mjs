@@ -27,13 +27,13 @@ const MOB_DEST = '0x' + '7d'.repeat(32);
 const encReturn = ({ outKey, beneficiary, amount, tokenId = EUSD_TOKEN_ID, blockIndex = 100n }) =>
   b32(outKey) + addrWord(beneficiary) + word(amount) + word(tokenId) + word(blockIndex);
 
-async function fixture(chain, { cap = CAP } = {}) {
+async function fixture(chain, { cap = CAP, verifierDelay = 0n } = {}) {
   const usdc = await chain.deploy('MockERC20');
   const ver = await chain.deploy('MockVerifier');
   const escrow = await chain.deploy(
     'Escrow',
     addrWord(usdc) + addrWord(ver) + word(EUSD_TOKEN_ID) + word(cap) +
-      addrWord(GOV) + addrWord(AUDITOR)
+      addrWord(GOV) + addrWord(AUDITOR) + word(verifierDelay)
   );
   return { usdc, ver, escrow };
 }
@@ -248,7 +248,9 @@ await test('only governance can change the verifier, cap, auditor and governance
   const { escrow } = await fixture(chain);
   const other = '0x' + '99'.repeat(20);
   for (const [sig, arg] of [
-    ['setVerifier(address)', addrWord(other)],
+    // setVerifier is exercised in its own timelock test: it now needs a
+    // matching proposal, so it cannot be driven by this generic loop.
+    ['proposeVerifier(address)', addrWord(await chain.deploy('MockVerifier'))],
     ['setDepositCap(uint256)', word(1n)],
     ['setAuditor(address)', addrWord(other)],
     ['transferGovernance(address)', addrWord(other)],
@@ -316,7 +318,7 @@ await test('a token that re-enters release cannot double-spend the escrow', asyn
   const ver = await chain.deploy('MockVerifier');
   const escrow = await chain.deploy('Escrow',
     addrWord(rtoken) + addrWord(ver) + word(EUSD_TOKEN_ID) + word(CAP) +
-      addrWord(GOV) + addrWord(AUDITOR));
+      addrWord(GOV) + addrWord(AUDITOR) + word(0));
   await chain.must(rtoken, selector('mint(address,uint256)') + addrWord(escrow) + word(100_000000n));
 
   const enc = encReturn({ outKey: '0x' + '0a'.repeat(32), beneficiary: BOB, amount: 1_000000n });
@@ -331,6 +333,47 @@ await test('a token that re-enters release cannot double-spend the escrow', asyn
   const bal = decodeUint((await chain.must(rtoken,
     selector('balanceOf(address)') + addrWord(BOB))).ret);
   assert(bal <= 1_000000n, `bob must not be paid twice, got ${bal}`);
+});
+
+await test('replacing the verifier is timelocked', async () => {
+  // A permissive verifier drains the escrow in one transaction, so swapping it
+  // is equivalent to forging returns. Timelocking who may SIGN while leaving
+  // the thing that CHECKS signatures instantly replaceable protects nothing.
+  const { escrow } = await fixture(chain, { verifierDelay: 3600n });
+  const other = await chain.deploy('MockVerifier');
+
+  assert(!(await chain.call(escrow,
+    selector('setVerifier(address)') + addrWord(other), { from: GOV })).ok,
+    'an unproposed swap must revert');
+
+  await chain.must(escrow,
+    selector('proposeVerifier(address)') + addrWord(other), { from: GOV });
+  assert(!(await chain.call(escrow,
+    selector('setVerifier(address)') + addrWord(other), { from: GOV })).ok,
+    'a swap before the delay must revert');
+
+  // And a proposal for one verifier must not authorise a different one.
+  const third = await chain.deploy('MockVerifier');
+  assert(!(await chain.call(escrow,
+    selector('setVerifier(address)') + addrWord(third), { from: GOV })).ok,
+    'a proposal must not authorise a different verifier');
+});
+
+await test('a proposed verifier can be cancelled, and freezing stays immediate',
+  async () => {
+  const { escrow } = await fixture(chain, { verifierDelay: 0n });
+  const other = await chain.deploy('MockVerifier');
+  await chain.must(escrow,
+    selector('proposeVerifier(address)') + addrWord(other), { from: GOV });
+  await chain.must(escrow, selector('cancelVerifier()'), { from: GOV });
+  assert(!(await chain.call(escrow,
+    selector('setVerifier(address)') + addrWord(other), { from: GOV })).ok,
+    'a cancelled proposal must not execute');
+
+  // The auditor must still be able to stop payouts while a change is pending.
+  assert((await chain.call(escrow,
+    selector('freeze(string)') + word(32) + word(0) + '0'.repeat(64),
+    { from: AUDITOR })).ok, 'freezing must remain immediate');
 });
 
 summary();

@@ -40,7 +40,7 @@ pub mod identity;
 pub mod machine;
 pub mod store;
 
-pub use authorizer::Authorizer;
+pub use authorizer::{Authorizer, Fault, Rejection};
 pub use context::{
     Commitment, ContextId, ParticipantId, RoundOnePackage, Share, SigningContext, SlotId,
     Statement, Subset,
@@ -49,4 +49,7 @@ pub use identity::{
     IdentityError, IdentityKey, IdentityPublic, IdentitySignature, SignedRoundOne, SignedRoundTwo,
 };
 pub use machine::{AbortEvidence, Ceremony, Error, EvidenceError, Roster, State};
-pub use store::{Anchor, AnchorError, BindingStore, MemoryAnchor, MemoryStore, Receipt, StoreError};
+pub use store::{
+    Anchor, AnchorError, BindingStore, MemoryAnchor, MemoryStore, RecordDigest, RecordLog, Receipt,
+    SlotRecord, StoreError,
+};

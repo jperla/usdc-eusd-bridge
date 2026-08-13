@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {Ed25519} from "./Ed25519.sol";
+
 import {Governed} from "./Governed.sol";
 
 /// Maps MobileCoin block-signing keys to validator ENTITIES, scoped to the
@@ -77,6 +79,7 @@ contract ValidatorRegistry is Governed {
     event KeyEnrolled(bytes32 indexed key, bytes32 indexed entity, uint64 fromHeight, uint64 toHeight);
     event KeyRevoked(bytes32 indexed key, bytes32 indexed entity);
     event ThresholdChanged(uint8 from, uint8 to);
+    event ThresholdProposed(uint8 to, uint64 executableAt);
 
     error KeyAlreadyEnrolled(bytes32 key);
     error KeyNotEnrolled(bytes32 key);
@@ -87,6 +90,8 @@ contract ValidatorRegistry is Governed {
     error BadThreshold(uint8 threshold, uint256 entityCount);
     error BadHeightRange(uint64 fromHeight, uint64 toHeight);
     error ZeroEntity();
+    error InadmissibleKey(bytes32 key);
+    error ThresholdNotProposed(uint8 threshold);
 
     constructor(address _governance, uint8 _threshold, uint64 _delay)
         Governed(_governance)
@@ -144,6 +149,13 @@ contract ValidatorRegistry is Governed {
         uint64 toHeight
     ) external onlyGovernance {
         if (entity == bytes32(0)) revert ZeroEntity();
+        // A small-order key admits universal forgery: with A neutral, [h]A is
+        // neutral for every h, so (R = [r]B, s = r) verifies against ANY
+        // message. Ed25519.verify reproduces that on purpose, to agree with
+        // libsodium and dalek, which makes refusing such keys this contract's
+        // job. Checked at proposal AND at enrollment so a key cannot be
+        // proposed while admissible and enrolled after a library change.
+        if (!Ed25519.isAdmissiblePublicKey(key)) revert InadmissibleKey(key);
         if (keys[key].present) revert KeyAlreadyEnrolled(key);
         if (toHeight != 0 && toHeight <= fromHeight) {
             revert BadHeightRange(fromHeight, toHeight);
@@ -168,6 +180,7 @@ contract ValidatorRegistry is Governed {
         }
         delete proposals[id];
         if (keys[key].present) revert KeyAlreadyEnrolled(key);
+        if (!Ed25519.isAdmissiblePublicKey(key)) revert InadmissibleKey(key);
 
         keys[key] = KeyRecord({
             entity: entity,
@@ -197,12 +210,36 @@ contract ValidatorRegistry is Governed {
         emit KeyRevoked(key, r.entity);
     }
 
+    /// Raising the threshold only tightens the quorum, so it takes effect at
+    /// once. LOWERING it weakens the quorum exactly as enrolling a key does,
+    /// and an immediate decrease would let governance step around the
+    /// enrollment timelock entirely: drop the threshold to 1, sign with one
+    /// key, restore it. So a decrease is proposed and executed like a key.
     function setThreshold(uint8 t) external onlyGovernance {
         if (t == 0 || t > _entities.length) {
             revert BadThreshold(t, _entities.length);
         }
+        if (t < threshold) {
+            bytes32 id = keccak256(abi.encode("threshold", t));
+            Proposal memory p = proposals[id];
+            if (!p.exists) revert ThresholdNotProposed(t);
+            if (uint64(block.timestamp) < p.executableAt) {
+                revert TooEarly(uint64(block.timestamp), p.executableAt);
+            }
+            delete proposals[id];
+        }
         emit ThresholdChanged(threshold, t);
         threshold = t;
+    }
+
+    function proposeThreshold(uint8 t) external onlyGovernance {
+        if (t == 0 || t > _entities.length) {
+            revert BadThreshold(t, _entities.length);
+        }
+        bytes32 id = keccak256(abi.encode("threshold", t));
+        uint64 at = uint64(block.timestamp) + delay;
+        proposals[id] = Proposal({exists: true, executableAt: at});
+        emit ThresholdProposed(t, at);
     }
 
     // ---------------------------------------------------------------- quorum

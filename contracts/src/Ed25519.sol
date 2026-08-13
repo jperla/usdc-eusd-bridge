@@ -261,6 +261,58 @@ library Ed25519 {
 
     /// dbl-2008-hwcd for a = -1. Does not read T, which is why the table build
     /// can double a point whose T has not been formed yet.
+    /// True iff `compressed` decodes to a point of small order -- one of the
+    /// eight points killed by the cofactor, including the neutral element.
+    ///
+    /// Such a key admits universal forgery under RFC 8032 cofactorless
+    /// verification: with A neutral, [h]A is neutral for every h, so
+    /// (R = [r]B, s = r) verifies against ANY message. `verify` reproduces that
+    /// deliberately, because rejecting it there would disagree with
+    /// libsodium and ed25519-dalek. Refusing such keys is the job of whatever
+    /// decides which keys are admissible -- see ValidatorRegistry.
+    ///
+    /// A has small order iff [8]A is the neutral element, so this is three
+    /// doublings and a comparison rather than a blacklist of encodings that
+    /// someone has to keep correct.
+    /// Whether `compressed` is admissible as a signing key: it must decode
+    /// canonically AND not be small order.
+    ///
+    /// Two separate rejections, and a caller that checks only one is still
+    /// broken. Non-canonical encodings (y >= p) are refused by `decompress`;
+    /// small-order points decode perfectly well and are refused here. Callers
+    /// deciding which keys may sign want both, so this is the entry point
+    /// rather than making each of them remember to compose the two.
+    function isAdmissiblePublicKey(bytes32 compressed)
+        internal
+        view
+        returns (bool)
+    {
+        (bool ok, uint256 x, uint256 y) = decompress(compressed);
+        if (!ok) return false;
+
+        Point memory p = Point(x, y, 1, mulmod(x, y, P));
+        _dbl(p);
+        _dbl(p);
+        _dbl(p);
+        return p.x != 0;
+    }
+
+    function isSmallOrder(bytes32 compressed) internal view returns (bool) {
+        (bool ok, uint256 x, uint256 y) = decompress(compressed);
+        if (!ok) return false;      // not a point at all; a different rejection
+
+        Point memory p = Point(x, y, 1, mulmod(x, y, P));
+        _dbl(p);
+        _dbl(p);
+        _dbl(p);
+
+        // Neutral in extended coordinates is x == 0 (with z != 0), which is
+        // projectively (0 : z : z). Comparing x alone is sufficient: the only
+        // points with x == 0 are the neutral element and the order-2 point,
+        // and both are small order.
+        return p.x == 0;
+    }
+
     function _dbl(Point memory p) private pure {
         uint256 a = mulmod(p.x, p.x, P);
         uint256 b = mulmod(p.y, p.y, P);
@@ -345,6 +397,18 @@ library Ed25519 {
 /// call -- both to keep a caller under the 24 KB code limit and to give the
 /// tests an external surface with a measurable gas number.
 contract Ed25519Verifier {
+    function isSmallOrder(bytes32 compressed) external view returns (bool) {
+        return Ed25519.isSmallOrder(compressed);
+    }
+
+    function isAdmissiblePublicKey(bytes32 compressed)
+        external
+        view
+        returns (bool)
+    {
+        return Ed25519.isAdmissiblePublicKey(compressed);
+    }
+
     function verify(
         bytes32[2] calldata sig,
         bytes32 pubkey,

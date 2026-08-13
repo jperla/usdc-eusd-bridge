@@ -13,7 +13,6 @@ mod common;
 
 use ceremony::frost::{deal, lagrange, FrostError};
 use ceremony::machine::{Ceremony, Roster};
-use ceremony::store::Receipt;
 use ceremony::{
     Authorizer, BindingStore, Error, MemoryAnchor, MemoryStore, ParticipantId, RoundOnePackage,
     SigningContext, Subset,
@@ -69,7 +68,11 @@ fn a_sub_threshold_quorum_bypassing_the_machine_produces_an_invalid_signature() 
 
     let mut shares = Vec::new();
     for ((id, s), (_, slot)) in signers.iter_mut().zip(slots.iter()) {
-        let receipt = Receipt::issue(*slot, Some(ctx.id()), 1);
+        // Bypassing the machine, not the store: each signer still binds its own
+        // one-time value, since without that it has no receipt and no share.
+        let mut store = MemoryStore::new();
+        store.reserve(*slot).unwrap();
+        let receipt = store.bind(*slot, ctx.id()).unwrap();
         let share = s.round_two(*slot, &ctx, &receipt).unwrap();
         fx.public_verifier()
             .verify_share(&ctx, *id, &share)

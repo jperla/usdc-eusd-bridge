@@ -158,7 +158,7 @@ async function deployBridge() {
 
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
-    addrWord(GOV) + addrWord(AUDITOR));
+    addrWord(GOV) + addrWord(AUDITOR) + word(0));
 
   return { usdc, reg, verifier, escrow };
 }

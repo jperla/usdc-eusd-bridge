@@ -1,7 +1,7 @@
 //! The composite spend root `b = b_owner + b_gate`, and the one-time key and
 //! key image derived from it.
 
-use core::fmt;
+use core::{fmt, marker::PhantomData};
 
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT, ristretto::RistrettoPoint, scalar::Scalar,
@@ -14,34 +14,74 @@ use zeroize::Zeroizing;
 
 use crate::{
     cohort::{random_scalar, Cohort},
+    control::{ControlDomain, Gates, Owners},
     derive::{hash_to_point, hash_to_scalar, subaddress_offset},
     error::Result,
 };
 
 /// How to deal one cohort: who is on it and how many of them are needed.
+///
+/// Parameterised by the control domain, so an owner spec and a gate spec are
+/// different types. Handing [`CompositeSpend::simulate`] its two arguments the
+/// wrong way round is a compile error rather than a scheme that quietly
+/// degrades to one cohort:
+///
+/// ```compile_fail
+/// use two_cohort::{CohortSpec, CompositeSpend, Gates, Owners};
+///
+/// let owners = CohortSpec::<Owners>::sequential(2, 3);
+/// let gates = CohortSpec::<Gates>::sequential(2, 3);
+/// // the two arguments the wrong way round
+/// let _ = CompositeSpend::simulate_from_seed(0, &gates, &owners, 0);
+/// ```
+///
+/// Nor can both halves be drawn from the same domain, which is what "two
+/// cohorts" degenerates into when the separation is only a naming convention:
+///
+/// ```compile_fail
+/// use two_cohort::{CohortSpec, CompositeSpend, Owners};
+///
+/// let a = CohortSpec::<Owners>::sequential(2, 3);
+/// let b = CohortSpec::<Owners>::sequential(2, 3);
+/// let _ = CompositeSpend::simulate_from_seed(0, &a, &b, 0);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CohortSpec {
-    pub name: String,
-    pub threshold: usize,
-    pub ids: Vec<u64>,
+pub struct CohortSpec<C> {
+    threshold: usize,
+    ids: Vec<u64>,
+    domain: PhantomData<C>,
 }
 
-impl CohortSpec {
-    /// A roster of `1..=n`.
-    pub fn sequential(name: &str, threshold: usize, n: usize) -> Self {
+impl<C: ControlDomain> CohortSpec<C> {
+    /// The first `n` ids of this domain's band.
+    pub fn sequential(threshold: usize, n: usize) -> Self {
+        CohortSpec::with_ids(threshold, &(0..n as u64).map(C::nth).collect::<Vec<_>>())
+    }
+
+    /// An explicit roster.
+    ///
+    /// The ids are absolute -- use [`ControlDomain::nth`] to name them by
+    /// position. They are not validated here: a spec is inert data, and the
+    /// rejection belongs where the cohort is actually dealt, so that one error
+    /// path covers specs built by any route.
+    pub fn with_ids(threshold: usize, ids: &[u64]) -> Self {
         CohortSpec {
-            name: name.to_owned(),
             threshold,
-            ids: (1..=n as u64).collect(),
+            ids: ids.to_vec(),
+            domain: PhantomData,
         }
     }
 
-    pub fn with_ids(name: &str, threshold: usize, ids: &[u64]) -> Self {
-        CohortSpec {
-            name: name.to_owned(),
-            threshold,
-            ids: ids.to_vec(),
-        }
+    pub fn name(&self) -> &'static str {
+        C::NAME
+    }
+
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
+
+    pub fn ids(&self) -> &[u64] {
+        &self.ids
     }
 }
 
@@ -91,8 +131,12 @@ impl KeyImageTerms {
 /// subset would let one output be spent twice under two different images, and
 /// consensus deduplicates on the image.
 pub struct CompositeSpend {
-    pub owners: Cohort,
-    pub gates: Cohort,
+    /// Private so the pair cannot be reassigned after construction. The
+    /// disjointness of the two rosters is established once, at
+    /// [`CompositeSpend::simulate`], and a `pub` field would let a caller
+    /// replace one cohort with a clone of the other afterwards.
+    owners: Cohort,
+    gates: Cohort,
     view_private: RistrettoPrivate,
     subaddress_index: u64,
     spend_public: RistrettoPublic,
@@ -111,8 +155,8 @@ impl CompositeSpend {
     /// are generated here, in this process, and the shares never leave it.
     /// See the crate-level limitations.
     pub fn simulate<R: RngCore + CryptoRng>(
-        owners: &CohortSpec,
-        gates: &CohortSpec,
+        owners: &CohortSpec<Owners>,
+        gates: &CohortSpec<Gates>,
         subaddress_index: u64,
         rng: &mut R,
     ) -> Result<CompositeSpend> {
@@ -124,8 +168,8 @@ impl CompositeSpend {
         let tx_private = Zeroizing::new(random_scalar(rng));
 
         let owner_cohort =
-            Cohort::deal(&owners.name, &b_owner, owners.threshold, &owners.ids, rng)?;
-        let gate_cohort = Cohort::deal(&gates.name, &b_gate, gates.threshold, &gates.ids, rng)?;
+            Cohort::deal_in::<Owners, _>(&b_owner, owners.threshold, &owners.ids, rng)?;
+        let gate_cohort = Cohort::deal_in::<Gates, _>(&b_gate, gates.threshold, &gates.ids, rng)?;
 
         let root = *b_owner * RISTRETTO_BASEPOINT_POINT + *b_gate * RISTRETTO_BASEPOINT_POINT;
         Ok(Self::from_parts(
@@ -143,8 +187,8 @@ impl CompositeSpend {
     /// Seeded so failures reproduce; do not mistake it for key generation.
     pub fn simulate_from_seed(
         seed: u64,
-        owners: &CohortSpec,
-        gates: &CohortSpec,
+        owners: &CohortSpec<Owners>,
+        gates: &CohortSpec<Gates>,
         subaddress_index: u64,
     ) -> Result<CompositeSpend> {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -184,6 +228,17 @@ impl CompositeSpend {
             target,
             common,
         }
+    }
+
+    /// The OWNER cohort. Its roster lies in the [`Owners`] id band.
+    pub fn owners(&self) -> &Cohort {
+        &self.owners
+    }
+
+    /// The GATE cohort. Its roster lies in the [`Gates`] id band, which is
+    /// disjoint from the owners', so no owner subset is a gate quorum.
+    pub fn gates(&self) -> &Cohort {
+        &self.gates
     }
 
     pub fn subaddress_index(&self) -> u64 {

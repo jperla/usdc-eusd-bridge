@@ -46,9 +46,9 @@ contract RecipientCheck is IRecipientCheck {
     /// per call; neither costs storage.
     uint256 private immutable _a;
 
-    /// Not a canonical `Scalar` encoding: >= L, or zero. Zero would make the
-    /// shared secret Hs(0) for every output, so every output in MobileCoin
-    /// would appear payable to whichever spend key matched that one constant.
+    /// Not a canonical `Scalar` encoding: >= L, or zero. Zero collapses a*R to
+    /// the identity for every output, so the shared secret becomes one constant
+    /// and the check stops depending on the output at all.
     error InvalidViewPrivateKey(bytes32 key);
 
     constructor(bytes32 viewPrivateKeyLE) {
@@ -83,7 +83,7 @@ contract RecipientCheck is IRecipientCheck {
             Ristretto255.decode(txOutTargetKey);
         if (!okTarget) return false;
 
-        uint256 h = hashToScalarUint(
+        uint256 h = _hashToScalar(
             Ristretto255.encode(Ristretto255.scalarMul(_a, r))
         );
         Ristretto255.Point memory recovered = Ristretto255.sub(
@@ -92,9 +92,8 @@ contract RecipientCheck is IRecipientCheck {
         );
 
         // The ristretto encoding is canonical, so comparing 32 bytes IS point
-        // equality -- and it costs nothing extra to also refuse a
-        // `returnSpendPublicKey` that is not a valid encoding at all, since no
-        // encode output can equal one.
+        // equality. It also disposes of a `returnSpendPublicKey` that is not a
+        // valid encoding at all: `encode` never produces one.
         return Ristretto255.encode(recovered) == returnSpendPublicKey;
     }
 
@@ -109,7 +108,7 @@ contract RecipientCheck is IRecipientCheck {
         view
         returns (bytes32)
     {
-        uint256 s = hashToScalarUint(compressedPoint);
+        uint256 s = _hashToScalar(compressedPoint);
         uint256 le;
         unchecked {
             for (uint256 i = 0; i < 32; ++i) {
@@ -122,7 +121,7 @@ contract RecipientCheck is IRecipientCheck {
 
     // -------------------------------------------------------------- internal
 
-    function hashToScalarUint(bytes32 compressedPoint)
+    function _hashToScalar(bytes32 compressedPoint)
         private
         view
         returns (uint256)

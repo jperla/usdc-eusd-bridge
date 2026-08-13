@@ -9,7 +9,9 @@ use curve25519_dalek::{
 };
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
-use two_cohort::{lagrange_at_zero, CohortSpec, Cohort, CompositeSpend, Error};
+use two_cohort::{
+    lagrange_at_zero, Cohort, CohortSpec, CompositeSpend, ControlDomain, Error, Gates, Owners,
+};
 use zeroize::Zeroize;
 
 fn rng(seed: u64) -> ChaCha20Rng {
@@ -58,7 +60,10 @@ fn an_empty_roster_is_rejected() {
 #[test]
 fn duplicate_participant_ids_are_rejected_at_dealing() {
     let err = deal(2, &[1, 2, 2]).unwrap_err();
-    assert!(matches!(err.kind(), Error::DuplicateParticipant(2)), "{err}");
+    assert!(
+        matches!(err.kind(), Error::DuplicateParticipant(2)),
+        "{err}"
+    );
 }
 
 /// Participant id 0 is refused because 0 is the interpolation point: the
@@ -70,7 +75,11 @@ fn participant_id_zero_is_rejected_because_it_would_hold_the_secret() {
     // code under test: p(x) = secret + c1 * x.
     let c1 = Scalar::from(1234567u64);
     let p = |x: Scalar| secret() + c1 * x;
-    assert_eq!(p(Scalar::ZERO), secret(), "p(0) is the secret by construction");
+    assert_eq!(
+        p(Scalar::ZERO),
+        secret(),
+        "p(0) is the secret by construction"
+    );
     assert_ne!(p(Scalar::ONE), secret(), "p(1) is a share, not the secret");
 
     // So a participant issued id 0 would be handed the secret outright,
@@ -108,12 +117,18 @@ fn duplicate_ids_within_a_signing_subset_are_rejected() {
     assert_ne!(doubled, secret());
 
     let err = cohort.weighted(&[1, 1, 2]).unwrap_err();
-    assert!(matches!(err.kind(), Error::DuplicateParticipant(1)), "{err}");
+    assert!(
+        matches!(err.kind(), Error::DuplicateParticipant(1)),
+        "{err}"
+    );
 
     // A duplicate must not be able to fake a quorum either: {1,1} is one
     // participant, not two.
     let err = cohort.weighted(&[1, 1]).unwrap_err();
-    assert!(matches!(err.kind(), Error::DuplicateParticipant(1)), "{err}");
+    assert!(
+        matches!(err.kind(), Error::DuplicateParticipant(1)),
+        "{err}"
+    );
 }
 
 #[test]
@@ -161,24 +176,49 @@ fn lagrange_at_zero_validates_its_own_arguments() {
 fn errors_name_the_cohort_that_rejected_the_input() {
     // The two cohorts have different rosters and thresholds, so an operator
     // reading the failure needs to know which one it got wrong.
-    let owners = CohortSpec::sequential("owners", 2, 3);
-    let gates = CohortSpec::sequential("gates", 2, 3);
+    let owners = CohortSpec::<Owners>::sequential(2, 3);
+    let gates = CohortSpec::<Gates>::sequential(2, 3);
     let s = CompositeSpend::simulate_from_seed(20, &owners, &gates, 0).unwrap();
+    let (o, g) = (Owners::nth, Gates::nth);
 
-    let owner_err = s.onetime(&[1], &[1, 2]).unwrap_err().to_string();
+    let owner_err = s.onetime(&[o(0)], &[g(0), g(1)]).unwrap_err().to_string();
     assert!(owner_err.contains("owners"), "{owner_err}");
     assert!(!owner_err.contains("gates"), "{owner_err}");
 
-    let gate_err = s.onetime(&[1, 2], &[1]).unwrap_err().to_string();
+    let gate_err = s.onetime(&[o(0), o(1)], &[g(0)]).unwrap_err().to_string();
     assert!(gate_err.contains("gates"), "{gate_err}");
 }
 
+/// A spec is inert data, so every roster rule is enforced where the cohort is
+/// dealt -- and a rejection there takes the whole setup down rather than
+/// leaving a half-built spend around.
 #[test]
 fn a_cohort_spec_with_a_bad_roster_fails_the_whole_setup() {
-    let owners = CohortSpec::sequential("owners", 2, 3);
-    let bad_gates = CohortSpec::with_ids("gates", 1, &[0]);
-    let err = CompositeSpend::simulate_from_seed(21, &owners, &bad_gates, 0).unwrap_err();
-    assert!(matches!(err.kind(), Error::ReservedParticipantId), "{err}");
+    let owners = CohortSpec::<Owners>::sequential(2, 3);
+
+    let dup = Gates::nth(0);
+    let err = CompositeSpend::simulate_from_seed(
+        21,
+        &owners,
+        &CohortSpec::<Gates>::with_ids(2, &[dup, dup]),
+        0,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err.kind(), Error::DuplicateParticipant(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("gates"), "{err}");
+
+    // Id 0 is refused twice over: it is not in the gate band, and it is the
+    // interpolation point. The band check is the outer one.
+    let err =
+        CompositeSpend::simulate_from_seed(21, &owners, &CohortSpec::<Gates>::with_ids(1, &[0]), 0)
+            .unwrap_err();
+    assert!(
+        matches!(err.kind(), Error::IdOutsideDomain { id: 0, .. }),
+        "{err}"
+    );
     assert!(err.to_string().contains("gates"), "{err}");
 }
 
@@ -201,8 +241,8 @@ fn debug_formatting_does_not_leak_shares() {
     let rendered = format!("{term:?}");
     assert!(!rendered.contains(&hex::encode(term.weight().as_bytes())));
 
-    let owners = CohortSpec::sequential("owners", 2, 3);
-    let gates = CohortSpec::sequential("gates", 2, 3);
+    let owners = CohortSpec::<Owners>::sequential(2, 3);
+    let gates = CohortSpec::<Gates>::sequential(2, 3);
     let s = CompositeSpend::simulate_from_seed(22, &owners, &gates, 0).unwrap();
     let rendered = format!("{s:?}");
     assert!(!rendered.contains(&hex::encode(s.common().as_bytes())));

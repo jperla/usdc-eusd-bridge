@@ -16,7 +16,7 @@ use mc_crypto_hashes::{Blake2b256, Digest};
 use ceremony::frost::{binding_factor, challenge, group_commitment, lagrange, scalar_from};
 use ceremony::machine::{Ceremony, State};
 use ceremony::{
-    Authorizer, BindingStore, Commitment, Error, MemoryAnchor, MemoryStore, ParticipantId, Receipt,
+    Authorizer, BindingStore, Commitment, Error, MemoryAnchor, MemoryStore, ParticipantId,
     RoundOnePackage, SignedRoundOne, SigningContext, SlotId, Statement, StoreError, Subset,
 };
 use common::*;
@@ -83,9 +83,17 @@ fn three_responses_under_one_one_time_value_recover_the_long_term_share() {
     let mut rows = [[Scalar::ZERO; 3]; 3];
     let mut rhs = [Scalar::ZERO; 3];
 
+    // The receipts are real, because a forged one would not be accepted: each
+    // replay rolls the store back to before the binding, which is the other
+    // half of the snapshot restore the signer is undergoing.
+    let mut store = MemoryStore::new();
+    store.reserve(slot).expect("reserve");
+    let before_binding = store.snapshot();
+
     for (k, peer_commitment) in peers.iter().enumerate() {
         let ctx = context_with(&stmt, &subset, &mine, peer_commitment);
-        let receipt = Receipt::issue(slot, Some(ctx.id()), 1);
+        store.restore(&before_binding);
+        let receipt = store.bind(slot, ctx.id()).expect("the rewound store binds again");
 
         // A signer restored from a snapshot: same slot, same one-time value.
         let mut restored = victim.clone();
@@ -162,8 +170,13 @@ fn replaying_the_identical_context_is_byte_identical_and_a_narrow_match_is_not()
     let ctx_a = context_with(&stmt, &subset, &mine, &peer.round_one().unwrap().1);
     let ctx_b = context_with(&stmt, &subset, &mine, &peer.round_one().unwrap().1);
 
-    let ra = Receipt::issue(slot, Some(ctx_a.id()), 1);
-    let rb = Receipt::issue(slot, Some(ctx_b.id()), 1);
+    // Two bindings of one slot, which only a rolled-back store will issue.
+    let mut store = MemoryStore::new();
+    store.reserve(slot).unwrap();
+    let before_binding = store.snapshot();
+    let ra = store.bind(slot, ctx_a.id()).unwrap();
+    store.restore(&before_binding);
+    let rb = store.bind(slot, ctx_b.id()).unwrap();
 
     let first = victim.clone().round_two(slot, &ctx_a, &ra).unwrap();
     let again = victim.clone().round_two(slot, &ctx_a, &ra).unwrap();

@@ -3,27 +3,51 @@
 //!
 //! Every test here was carried over from the `m2d-two-cohort` spike; the
 //! asymmetric-cohort, unweighted-sum and per-participant-term tests are new.
+//!
+//! None of these can establish that the two cohorts are held by different
+//! entities -- the algebra is identical either way. That claim lives in
+//! `tests/control_domain.rs`, and these tests only hold their meaning because
+//! it does.
 
 use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT, scalar::Scalar};
 use mc_crypto_keys::{RistrettoPrivate, RistrettoPublic};
 use mc_crypto_ring_signature::{
-    onetime_keys::recover_onetime_private_key, Commitment, CompressedCommitment, KeyImage, RingMLSAG,
+    onetime_keys::recover_onetime_private_key, Commitment, CompressedCommitment, KeyImage,
+    RingMLSAG,
 };
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     derive::subaddress_offset, fixture::make_ring_from_seed, lagrange_at_zero, subsets_of,
-    CohortSpec, CompositeSpend, Error,
+    CohortSpec, CompositeSpend, ControlDomain, Error, Gates, Owners,
 };
 
 fn spend(seed: u64, k: usize, n: usize, g: usize, m: usize, index: u64) -> CompositeSpend {
     CompositeSpend::simulate_from_seed(
         seed,
-        &CohortSpec::sequential("owners", k, n),
-        &CohortSpec::sequential("gates", g, m),
+        &CohortSpec::<Owners>::sequential(k, n),
+        &CohortSpec::<Gates>::sequential(g, m),
         index,
     )
     .expect("well-formed cohort specs")
+}
+
+/// Owner ids by 1-based roster position. Owner and gate ids are drawn from
+/// disjoint bands, so a test that wrote bare integers would be asserting
+/// against the band layout rather than against the scheme.
+fn owner_ids(positions: &[usize]) -> Vec<u64> {
+    positions
+        .iter()
+        .map(|&p| Owners::nth(p as u64 - 1))
+        .collect()
+}
+
+/// Gate ids by 1-based roster position.
+fn gate_ids(positions: &[usize]) -> Vec<u64> {
+    positions
+        .iter()
+        .map(|&p| Gates::nth(p as u64 - 1))
+        .collect()
 }
 
 #[test]
@@ -32,21 +56,29 @@ fn cohorts_carry_independent_rosters_and_thresholds() {
     // A design with one roster and one t/n shared between roles cannot
     // represent this at all.
     let s = spend(1, 2, 3, 1, 1, 0);
-    assert_eq!(s.owners.threshold(), 2);
-    assert_eq!(s.owners.n(), 3);
-    assert_eq!(s.gates.threshold(), 1);
-    assert_eq!(s.gates.n(), 1);
-    assert_ne!(s.owners.n(), s.gates.n());
+    assert_eq!(s.owners().threshold(), 2);
+    assert_eq!(s.owners().n(), 3);
+    assert_eq!(s.gates().threshold(), 1);
+    assert_eq!(s.gates().n(), 1);
+    assert_ne!(s.owners().n(), s.gates().n());
 
     // ...and each cohort's threshold binds only its own roster.
-    assert!(s.owners.public(&[1]).is_err(), "1 of 3 owners is below 2");
-    assert!(s.gates.public(&[1]).is_ok(), "1 of 1 gate is a quorum");
+    assert!(
+        s.owners().public(&owner_ids(&[1])).is_err(),
+        "1 of 3 owners is below 2"
+    );
+    assert!(
+        s.gates().public(&gate_ids(&[1])).is_ok(),
+        "1 of 1 gate is a quorum"
+    );
 }
 
 #[test]
 fn composite_root_is_the_sum_of_the_two_cohort_publics() {
     let s = spend(2, 2, 3, 2, 3, 0);
-    let root = s.composite_root(&[1, 2], &[1, 2]).unwrap();
+    let root = s
+        .composite_root(&owner_ids(&[1, 2]), &gate_ids(&[1, 2]))
+        .unwrap();
     let offset = subaddress_offset(s.view_private().as_ref(), s.subaddress_index());
     // D_i = (B_owner + B_gate) + Hs(a || i) * G
     assert_eq!(
@@ -55,8 +87,8 @@ fn composite_root_is_the_sum_of_the_two_cohort_publics() {
     );
 
     // Neither half alone is the root.
-    assert_ne!(s.owners.public(&[1, 2]).unwrap(), root);
-    assert_ne!(s.gates.public(&[1, 2]).unwrap(), root);
+    assert_ne!(s.owners().public(&owner_ids(&[1, 2])).unwrap(), root);
+    assert_ne!(s.gates().public(&gate_ids(&[1, 2])).unwrap(), root);
 }
 
 /// THE property. A key image that varied with the signing subset would give
@@ -64,11 +96,13 @@ fn composite_root_is_the_sum_of_the_two_cohort_publics() {
 #[test]
 fn key_image_is_invariant_across_every_owner_gate_subset_pair() {
     let s = spend(3, 2, 3, 2, 3, 7);
-    let reference = s.key_image_from_shares(&[1, 2], &[1, 2]).unwrap();
+    let reference = s
+        .key_image_from_shares(&owner_ids(&[1, 2]), &gate_ids(&[1, 2]))
+        .unwrap();
 
     let mut pairs = 0;
-    for osub in subsets_of(s.owners.roster(), 2) {
-        for gsub in subsets_of(s.gates.roster(), 2) {
+    for osub in subsets_of(s.owners().roster(), 2) {
+        for gsub in subsets_of(s.gates().roster(), 2) {
             let assembled = s.key_image_from_shares(&osub, &gsub).unwrap();
             assert_eq!(
                 assembled, reference,
@@ -95,10 +129,12 @@ fn key_image_is_invariant_across_every_owner_gate_subset_pair() {
 #[test]
 fn key_image_is_invariant_across_asymmetric_cohorts() {
     let s = spend(31, 3, 5, 2, 4, 11);
-    let reference = s.key_image_from_shares(&[1, 2, 3], &[1, 2]).unwrap();
+    let reference = s
+        .key_image_from_shares(&owner_ids(&[1, 2, 3]), &gate_ids(&[1, 2]))
+        .unwrap();
 
-    let osubs = subsets_of(s.owners.roster(), 3);
-    let gsubs = subsets_of(s.gates.roster(), 2);
+    let osubs = subsets_of(s.owners().roster(), 3);
+    let gsubs = subsets_of(s.gates().roster(), 2);
     assert_eq!((osubs.len(), gsubs.len()), (10, 6));
 
     let mut pairs = 0;
@@ -118,9 +154,9 @@ fn key_image_is_invariant_across_asymmetric_cohorts() {
 #[test]
 fn one_time_key_is_invariant_and_matches_upstream() {
     let s = spend(4, 2, 3, 2, 3, 1);
-    let x = s.onetime(&[1, 2], &[2, 3]).unwrap();
-    for osub in subsets_of(s.owners.roster(), 2) {
-        for gsub in subsets_of(s.gates.roster(), 2) {
+    let x = s.onetime(&owner_ids(&[1, 2]), &gate_ids(&[2, 3])).unwrap();
+    for osub in subsets_of(s.owners().roster(), 2) {
+        for gsub in subsets_of(s.gates().roster(), 2) {
             assert_eq!(*s.onetime(&osub, &gsub).unwrap(), *x);
         }
     }
@@ -136,8 +172,8 @@ fn one_time_key_is_invariant_and_matches_upstream() {
     // both sides here, and is pinned separately in tests/vectors.rs against
     // MobileCoin's published account-key vectors.
     let offset = subaddress_offset(s.view_private().as_ref(), s.subaddress_index());
-    let b_owner = s.owners.reconstruct(&[1, 2]).unwrap();
-    let b_gate = s.gates.reconstruct(&[1, 2]).unwrap();
+    let b_owner = s.owners().reconstruct(&owner_ids(&[1, 2])).unwrap();
+    let b_gate = s.gates().reconstruct(&gate_ids(&[1, 2])).unwrap();
     let d = RistrettoPrivate::from(offset + *b_owner + *b_gate);
     let upstream = recover_onetime_private_key(s.tx_public(), s.view_private(), &d);
     let upstream_scalar: &Scalar = upstream.as_ref();
@@ -147,21 +183,28 @@ fn one_time_key_is_invariant_and_matches_upstream() {
 #[test]
 fn an_owner_quorum_without_gates_reaches_a_different_key_image() {
     let s = spend(5, 2, 3, 2, 3, 0);
-    let full = s.key_image_from_shares(&[1, 2], &[1, 2]).unwrap();
-    let no_gate = s.key_image_without_gates(&[1, 2]).unwrap();
+    let full = s
+        .key_image_from_shares(&owner_ids(&[1, 2]), &gate_ids(&[1, 2]))
+        .unwrap();
+    let no_gate = s.key_image_without_gates(&owner_ids(&[1, 2])).unwrap();
     assert_ne!(full, no_gate);
 
     // And the difference is exactly the gate cohort's contribution -- checked
     // additively, so this is not merely "two points happened to differ".
-    let terms = s.key_image_terms(&[1, 2], &[1, 2]).unwrap();
+    let terms = s
+        .key_image_terms(&owner_ids(&[1, 2]), &gate_ids(&[1, 2]))
+        .unwrap();
     let gate_term: curve25519_dalek::ristretto::RistrettoPoint =
         terms.gate_terms.iter().map(|(_, p)| p).sum();
     assert_eq!(full, no_gate + gate_term);
 
     // No gate subset is optional: dropping the gates is not a weaker
     // signature, it is a different image, which belongs to no ring member.
-    for gsub in subsets_of(s.gates.roster(), 2) {
-        assert_ne!(s.key_image_from_shares(&[1, 2], &gsub).unwrap(), no_gate);
+    for gsub in subsets_of(s.gates().roster(), 2) {
+        assert_ne!(
+            s.key_image_from_shares(&owner_ids(&[1, 2]), &gsub).unwrap(),
+            no_gate
+        );
     }
 }
 
@@ -171,7 +214,7 @@ fn stock_verifier_accepts_a_two_cohort_signature() {
     let (value, blinding, out_blinding) = (5_000u64, Scalar::from(9u64), Scalar::from(4u64));
     let (ring, gens) = make_ring_from_seed(&s, 11, 5, value, &blinding, 0xD2D);
 
-    let x = RistrettoPrivate::from(*s.onetime(&[1, 3], &[2, 3]).unwrap());
+    let x = RistrettoPrivate::from(*s.onetime(&owner_ids(&[1, 3]), &gate_ids(&[2, 3])).unwrap());
     let mut rng = ChaCha20Rng::seed_from_u64(77);
     let sig = RingMLSAG::sign(
         b"two-cohort",
@@ -194,7 +237,7 @@ fn stock_verifier_accepts_a_two_cohort_signature() {
     // The image the verifier accepted is the one assembled from shares.
     assert_eq!(
         sig.key_image.point,
-        s.key_image_from_shares(&[1, 3], &[2, 3])
+        s.key_image_from_shares(&owner_ids(&[1, 3]), &gate_ids(&[2, 3]))
             .unwrap()
             .compress()
     );
@@ -209,8 +252,8 @@ fn stock_verifier_accepts_every_subset_pair_and_all_agree_on_the_key_image() {
 
     let mut seen: Option<KeyImage> = None;
     let mut count = 0u64;
-    for osub in subsets_of(s.owners.roster(), 2) {
-        for gsub in subsets_of(s.gates.roster(), 2) {
+    for osub in subsets_of(s.owners().roster(), 2) {
+        for gsub in subsets_of(s.gates().roster(), 2) {
             let x = RistrettoPrivate::from(*s.onetime(&osub, &gsub).unwrap());
             // Fresh nonces per signature; only the key image is supposed to
             // repeat across sessions.
@@ -227,7 +270,8 @@ fn stock_verifier_accepts_every_subset_pair_and_all_agree_on_the_key_image() {
                 &mut rng,
             )
             .expect("sign");
-            sig.verify(b"two-cohort", &ring, &out).expect("stock verify");
+            sig.verify(b"two-cohort", &ring, &out)
+                .expect("stock verify");
 
             match &seen {
                 None => seen = Some(sig.key_image),
@@ -247,10 +291,11 @@ fn stock_verifier_accepts_every_subset_pair_and_all_agree_on_the_key_image() {
 fn below_threshold_subsets_are_rejected() {
     let s = spend(8, 2, 3, 2, 3, 0);
     for err in [
-        s.owners.weighted(&[1]).unwrap_err(),
-        s.gates.weighted(&[2]).unwrap_err(),
-        s.onetime(&[1], &[1, 2]).unwrap_err(),
-        s.key_image_from_shares(&[1, 2], &[3]).unwrap_err(),
+        s.owners().weighted(&owner_ids(&[1])).unwrap_err(),
+        s.gates().weighted(&gate_ids(&[2])).unwrap_err(),
+        s.onetime(&owner_ids(&[1]), &gate_ids(&[1, 2])).unwrap_err(),
+        s.key_image_from_shares(&owner_ids(&[1, 2]), &gate_ids(&[3]))
+            .unwrap_err(),
     ] {
         assert!(
             matches!(
@@ -320,25 +365,25 @@ fn unweighted_share_sums_are_subset_dependent_and_weighted_sums_are_not() {
 
     let raw = |ids: &[u64]| -> Scalar {
         ids.iter()
-            .map(|&id| *s.owners.share(id).unwrap())
+            .map(|&id| *s.owners().share(id).unwrap())
             .sum::<Scalar>()
     };
     assert_ne!(
-        raw(&[1, 2]),
-        raw(&[1, 3]),
+        raw(&owner_ids(&[1, 2])),
+        raw(&owner_ids(&[1, 3])),
         "raw share sums are supposed to differ; if they did not, the \
          weighted-sum invariance below would be establishing nothing"
     );
-    assert_ne!(raw(&[1, 2]), raw(&[2, 3]));
+    assert_ne!(raw(&owner_ids(&[1, 2])), raw(&owner_ids(&[2, 3])));
 
-    let weighted = |ids: &[u64]| *s.owners.reconstruct(ids).unwrap();
-    assert_eq!(weighted(&[1, 2]), weighted(&[1, 3]));
-    assert_eq!(weighted(&[1, 2]), weighted(&[2, 3]));
+    let weighted = |ids: &[u64]| *s.owners().reconstruct(ids).unwrap();
+    assert_eq!(weighted(&owner_ids(&[1, 2])), weighted(&owner_ids(&[1, 3])));
+    assert_eq!(weighted(&owner_ids(&[1, 2])), weighted(&owner_ids(&[2, 3])));
 
     // And a raw sum is not the secret: it does not reproduce the public key.
     assert_ne!(
-        raw(&[1, 2]) * RISTRETTO_BASEPOINT_POINT,
-        s.owners.public(&[1, 2]).unwrap()
+        raw(&owner_ids(&[1, 2])) * RISTRETTO_BASEPOINT_POINT,
+        s.owners().public(&owner_ids(&[1, 2])).unwrap()
     );
 }
 
@@ -347,13 +392,17 @@ fn unweighted_share_sums_are_subset_dependent_and_weighted_sums_are_not() {
 #[test]
 fn per_participant_terms_sum_to_the_accepted_key_image() {
     let s = spend(10, 3, 5, 2, 4, 2);
-    let (osub, gsub) = (vec![2u64, 4, 5], vec![1u64, 3]);
+    let (osub, gsub) = (owner_ids(&[2, 4, 5]), gate_ids(&[1, 3]));
 
     let terms = s.key_image_terms(&osub, &gsub).unwrap();
     assert_eq!(terms.owner_terms.len(), 3);
     assert_eq!(terms.gate_terms.len(), 2);
     assert_eq!(
-        terms.owner_terms.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        terms
+            .owner_terms
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
         osub
     );
 

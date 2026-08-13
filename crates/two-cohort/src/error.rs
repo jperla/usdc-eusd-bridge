@@ -49,6 +49,18 @@ pub enum Error {
     #[error("participant {0} is not on this roster")]
     UnknownParticipant(u64),
 
+    /// An id from outside the cohort's control domain. The two domains own
+    /// disjoint id bands so that no subset drawn from one cohort is ever a
+    /// qualifying subset of the other; an id from the wrong band, or from no
+    /// band at all, would punch a hole in exactly that guarantee.
+    #[error("participant id {id} is outside the `{domain}` id namespace {base}..{end}")]
+    IdOutsideDomain {
+        domain: &'static str,
+        id: u64,
+        base: u64,
+        end: u64,
+    },
+
     /// Wrapper that names which cohort rejected the input, since the two
     /// cohorts have separate rosters and thresholds and the caller needs to
     /// know which one it got wrong.

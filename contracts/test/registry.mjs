@@ -10,18 +10,33 @@
 // belong to one validator entity, and counting keys instead of entities lets
 // one operator satisfy any threshold alone.
 
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   Chain, selector, word, addrWord, b32, decodeBool, decodeUint, decodeAddress,
   test, assert, assertEq, summary, revertReason,
 } from './harness.mjs';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const GOV = '0x' + '11'.repeat(20);
 const NEWGOV = '0x' + '33'.repeat(20);
 const MALLORY = '0x' + 'ee'.repeat(20);
 const DELAY = 0n;            // 0 so enrollment is testable in one block
 const H = 1000n;             // a block height inside every enrolled range
 
-const K = (n) => '0x' + n.toString(16).padStart(2, '0').repeat(32);
+// Real Ed25519 public keys, as [n]B for n = 1, 2, 3...
+//
+// The registry refuses anything that is not a canonical, non-small-order curve
+// point, because a small-order key admits universal forgery. Synthetic byte
+// patterns therefore cannot be used here: a test built on them would be
+// exercising the rejection path by accident rather than the logic it names.
+const K = (n) => '0x' + Buffer.from(
+  ed25519.Point.BASE.multiply(BigInt(n)).toBytes()).toString('hex');
+
+/// Validator entities. Opaque to the contract -- it only ever compares them --
+/// so unlike signing keys these need no curve structure.
 const E = (n) => '0x' + ('e' + n.toString(16).padStart(1, '0')).repeat(32);
 
 const dynB32Array = (arr) => word(arr.length) + arr.map((k) => b32(k)).join('');
@@ -245,8 +260,12 @@ await test('the threshold cannot exceed the number of known entities', async () 
   await enroll(chain, reg, K(1), E(1));
   assert(!(await chain.call(reg, selector('setThreshold(uint8)') + word(2), { from: GOV })).ok,
     'threshold above entity count');
-  assert((await chain.call(reg, selector('setThreshold(uint8)') + word(1), { from: GOV })).ok,
-    'threshold equal to entity count is fine');
+  // Lowering is timelocked like an enrollment, so it must be proposed first.
+  assert(!(await chain.call(reg, selector('setThreshold(uint8)') + word(1),
+    { from: GOV })).ok, 'an unproposed decrease must revert');
+  await chain.must(reg, selector('proposeThreshold(uint8)') + word(1), { from: GOV });
+  assert((await chain.call(reg, selector('setThreshold(uint8)') + word(1),
+    { from: GOV })).ok, 'a proposed decrease at zero delay is fine');
   assert(!(await chain.call(reg, selector('setThreshold(uint8)') + word(0), { from: GOV })).ok,
     'zero threshold');
 });
@@ -271,6 +290,56 @@ await test('a zero entity is rejected, so an unenrolled key cannot masquerade as
   assert(!(await chain.call(reg,
     selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
     'zero entity must revert');
+});
+
+await test('a small-order signing key is refused at proposal and at enrollment',
+  async () => {
+  // With A of small order, [h]A is the neutral element for every h, so
+  // (R = [r]B, s = r) verifies against ANY message -- see the identity-key
+  // test in ed25519.mjs. Ed25519.verify reproduces that on purpose to agree
+  // with libsodium and dalek, which makes refusing such keys this contract's
+  // job. All eight, plus the non-canonical encodings that decode to them.
+  const reg = await fresh(chain, { threshold: 1n });
+  const BAD = [
+    '0x0000000000000000000000000000000000000000000000000000000000000000',
+    '0x0100000000000000000000000000000000000000000000000000000000000000',
+    '0x26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+    '0xc7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa',
+    '0xecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    '0xedffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    '0xeeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  ];
+  for (const bad of BAD) {
+    const args = b32(bad) + b32(E(9)) + word(0) + word(0);
+    assert(!(await chain.call(reg,
+      selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args,
+      { from: GOV })).ok, `proposed a forgeable key: ${bad.slice(0, 12)}`);
+  }
+  // A genuine key still goes through, so this is not just refusing everything.
+  await enroll(chain, reg, K(1), E(1));
+  assert(await isQuorum(chain, reg, [K(1)]), 'a real key must still work');
+});
+
+await test('lowering the threshold is timelocked; raising it is not', async () => {
+  // An immediate decrease would step around the enrollment timelock entirely:
+  // drop to 1, sign with one key, restore. Raising only tightens the quorum,
+  // so it needs no delay.
+  const reg = await fresh(chain, { threshold: 1n, delay: 3600n });
+  await chain.must(reg, selector('proposeKey(bytes32,bytes32,uint64,uint64)') +
+    b32(K(1)) + b32(E(1)) + word(0) + word(0), { from: GOV });
+
+  // Two entities so the threshold has room to move.
+  const reg2 = await fresh(chain, { threshold: 1n, delay: 0n });
+  await enroll(chain, reg2, K(1), E(1));
+  await enroll(chain, reg2, K(2), E(2));
+
+  assert((await chain.call(reg2, selector('setThreshold(uint8)') + word(2),
+    { from: GOV })).ok, 'raising must be immediate');
+  assert(!(await chain.call(reg2, selector('setThreshold(uint8)') + word(1),
+    { from: GOV })).ok, 'lowering without a proposal must revert');
+  await chain.must(reg2, selector('proposeThreshold(uint8)') + word(1), { from: GOV });
+  assert((await chain.call(reg2, selector('setThreshold(uint8)') + word(1),
+    { from: GOV })).ok, 'lowering after a proposal is allowed');
 });
 
 summary();

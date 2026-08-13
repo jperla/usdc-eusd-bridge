@@ -3,7 +3,7 @@
 Two independent cohorts over one composite MobileCoin spend root.
 
 ```bash
-cargo test --offline -p two-cohort    # 27 tests
+cargo test --offline -p two-cohort    # 34 tests
 ```
 
 > **Blocked on a one-line fix in the workspace root manifest.** See
@@ -27,6 +27,35 @@ weights. Nothing in `Cohort` refers to the other cohort. A design with one
 roster and one `t/n` shared between roles cannot express operators-and-gates at
 all, because the two cohorts differ in size, in threshold, and in who is behind
 them.
+
+## Control-domain independence
+
+"Different entities" is the premise, and the algebra cannot check it:
+interpolation over `{1,2,3}` is the same arithmetic whichever roster those ids
+were meant to name. Deal both cohorts over `{1,2,3}` and every owner subset is
+also a qualifying gate subset — `gates.weighted(owner_subset)` succeeds, the
+gate argument becomes dead code, and a `CompositeSpend` that never consults it
+passes the whole rest of the suite. That is a real regression the spike had
+already avoided, and it is worth being blunt about it: with equal rosters, the
+key-image invariance tests below cannot tell a live gate cohort from a dead
+one.
+
+`src/control.rs` therefore makes cohort identity structural, in two places at
+once:
+
+* **In the type.** `Owners` and `Gates` are distinct types, so
+  `CohortSpec<Owners>` and `CohortSpec<Gates>` are too. Handing
+  `CompositeSpend::simulate` its arguments the wrong way round, or building
+  both halves from one domain, does not compile —
+  pinned by `compile_fail` doctests on `CohortSpec`.
+* **In the ids.** Each domain owns a disjoint million-wide band
+  (`Owners` from 1, `Gates` from 1_000_001), enforced at `Cohort::deal_in`. An
+  id is an owner id or a gate id, never both, so a subset that reaches the
+  wrong cohort through a bare `&[u64]` is refused as `UnknownParticipant`
+  rather than silently interpolated into a valid answer.
+
+The id bands are what has teeth. The types stop the mistake a human makes at a
+call site; the bands stop the one the algebra would otherwise absorb.
 
 ## The property that matters
 
@@ -54,6 +83,11 @@ subsets is the correctness condition for the scheme, not bookkeeping.
 | `per_participant_terms_sum_to_the_accepted_key_image` | the exposed group terms are the ones the verifier's image is made of, and every term is non-trivial |
 | `composite_root_reproduces_mobilecoin_published_subaddress_keys` | known-answer against MobileCoin's own `subaddr_keys_from_acct_priv_keys.jsonl` (10 cases), with `b` arriving as `b_owner + b_gate` |
 | `the_subaddress_offset_separates_indices` | the offset really depends on the index |
+| **`no_owner_subset_is_ever_a_gate_quorum_or_the_reverse`** | at 2-of-3 × 2-of-3 — same shape both sides — every owner subset is refused by the gate cohort and vice versa, at `Cohort` and at every `CompositeSpend` entry point |
+| `the_two_control_domains_own_disjoint_id_bands` | the bands do not overlap, checked at their endpoints, and 0 is in neither |
+| `a_roster_that_strays_out_of_its_own_band_is_refused` | a gate roster holding an owner id is rejected at dealing, and the mirror case |
+| `a_roster_wider_than_its_band_is_refused` | the id past the owner band is a gate id, so an over-wide roster is refused rather than allowed to collide |
+| `cohort_specs_are_not_interchangeable_at_the_type_level` | the swap and the same-domain pair are compile errors (`compile_fail` doctests); this asserts the right way round still works |
 | 12 tests in `tests/config.rs` | every degenerate configuration is rejected, with the reason demonstrated rather than asserted |
 
 ### Known-answer vectors used
@@ -89,6 +123,7 @@ everything.
 | duplicate roster ids accepted | 2 |
 | threshold > n accepted | 1 |
 | `Debug` prints shares | 1 |
+| **gate subset ignored** (owner subset passed where the gate subset belongs) | **8**, plus the crate-level doctest |
 | view-derived term omits the subaddress offset | 5 |
 | `ParticipantTerm` weight not zeroized | 1 |
 
@@ -96,6 +131,16 @@ Note that the invariance tests alone do *not* kill the `hash_to_point` domain
 tag mutation — a consistently wrong base point is still consistent. It is the
 differential against upstream's `KeyImage` that catches it. That is why both
 kinds of test are here.
+
+The "gate subset ignored" row is the one that changed. Against the overlapping
+`1..=n` rosters this crate was first promoted with, that mutation killed **3**
+tests — and all three died on `UnknownParticipant`, an accident of the two
+asymmetric-cohort tests using an owner id (5) that the smaller gate roster
+happened not to contain. Every load-bearing test survived: all the key-image
+invariance tests, the stock-verifier tests, the owner-quorum-without-gates test
+and the crate-level doctest passed with the gate cohort consulted at the wrong
+subset. With disjoint bands the same mutation kills 8 tests plus the doctest,
+because no owner id is ever a gate id.
 
 ## What this crate does NOT establish
 

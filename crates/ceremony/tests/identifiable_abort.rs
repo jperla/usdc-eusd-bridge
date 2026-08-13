@@ -8,16 +8,22 @@
 
 mod common;
 
+use std::cell::{Cell, RefCell};
+use std::fmt;
+use std::rc::Rc;
+
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::scalar::Scalar;
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
-use ceremony::frost::{challenge, lagrange, scalar_from, FrostSignature};
-use ceremony::machine::{AbortEvidence, EvidenceError, State};
+use ceremony::context::{Commitment, SlotId};
+use ceremony::frost::{challenge, lagrange, scalar_from, FrostSignature, FrostSigner};
+use ceremony::machine::{AbortEvidence, Ceremony, EvidenceError, State};
+use ceremony::store::Receipt;
 use ceremony::{
-    Authorizer, ContextId, Error, IdentityError, ParticipantId, RoundOnePackage, Share,
-    SignedRoundOne, SignedRoundTwo, SigningContext, Subset,
+    Authorizer, ContextId, Error, IdentityError, MemoryAnchor, MemoryStore, ParticipantId,
+    Rejection, RoundOnePackage, Share, SignedRoundOne, SignedRoundTwo, SigningContext, Subset,
 };
 use common::*;
 
@@ -345,5 +351,191 @@ fn evidence_naming_a_context_the_round_one_messages_do_not_produce_is_rejected()
             .verify(&fx.roster, &fx.public_verifier())
             .unwrap_err(),
         EvidenceError::WrongContext
+    );
+}
+
+// -------------------------------------------------- fault versus error
+//
+// Identifiable abort is only worth having if the identification is sound. An
+// accusation that an honest operator cannot distinguish from a config typo or a
+// dropped HSM session is worse than no accusation at all: it is a mechanism for
+// removing whoever happened to be on the roster when the network blipped.
+
+/// The backend could not answer. Not a finding about anybody.
+#[derive(Debug, PartialEq, Eq)]
+struct Outage;
+
+impl fmt::Display for Outage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "signer backend unavailable")
+    }
+}
+
+/// A signer whose verification path can be taken away underneath it -- an HSM
+/// that lost its session, a key service that timed out.
+struct Unavailable {
+    inner: Signer,
+    down: Rc<Cell<bool>>,
+}
+
+impl Authorizer for Unavailable {
+    type Signature = FrostSignature;
+    type Error = Outage;
+
+    fn round_one(&mut self) -> Result<(SlotId, Commitment), Outage> {
+        self.inner.round_one().map_err(|_| Outage)
+    }
+    fn round_two(
+        &mut self,
+        slot: SlotId,
+        context: &SigningContext,
+        receipt: &Receipt,
+    ) -> Result<Share, Outage> {
+        self.inner
+            .round_two(slot, context, receipt)
+            .map_err(|_| Outage)
+    }
+    fn verify_share(
+        &self,
+        context: &SigningContext,
+        participant: ParticipantId,
+        share: &Share,
+    ) -> Result<(), Rejection<Outage>> {
+        if self.down.get() {
+            return Err(Rejection::Error(Outage));
+        }
+        // A fault stays a fault; only the backend's own failures become Outage.
+        self.inner
+            .verify_share(context, participant, share)
+            .map_err(|r| match r {
+                Rejection::Fault(f) => Rejection::Fault(f),
+                Rejection::Error(_) => Rejection::Error(Outage),
+            })
+    }
+    fn aggregate(
+        &self,
+        context: &SigningContext,
+        shares: &[(ParticipantId, Share)],
+    ) -> Result<FrostSignature, Outage> {
+        self.inner.aggregate(context, shares).map_err(|_| Outage)
+    }
+    fn verify_signature(
+        &self,
+        context: &SigningContext,
+        signature: &FrostSignature,
+    ) -> Result<(), Outage> {
+        self.inner
+            .verify_signature(context, signature)
+            .map_err(|_| Outage)
+    }
+}
+
+/// THE GUARD. A backend that cannot check a share must produce no evidence at
+/// all -- and in particular no evidence naming the participant whose share it
+/// happened to be holding when the backend went away.
+#[test]
+fn a_backend_outage_accuses_no_one() {
+    let fx = fixture(2, 3);
+    let subset = Subset::new([P1, P2]);
+    let stmt = statement(b"release 250000 eUSD to R, block 12345");
+
+    let down = Rc::new(Cell::new(false));
+    let mut p1 = Ceremony::new(
+        fx.roster.clone(),
+        P1,
+        identity(P1),
+        Rc::new(RefCell::new(MemoryStore::new())),
+        Rc::new(RefCell::new(MemoryAnchor::new())),
+        Unavailable {
+            inner: fx.signer(P1),
+            down: down.clone(),
+        },
+    );
+    let mut p2 = fx.node(P2);
+
+    let m1 = p1.begin(stmt.clone(), subset.clone()).expect("p1 begins");
+    let m2 = p2
+        .machine
+        .begin(stmt.clone(), subset.clone())
+        .expect("p2 begins");
+    p1.receive_round_one(m2).expect("p1 takes p2's round one");
+    p2.machine
+        .receive_round_one(m1)
+        .expect("p2 takes p1's round one");
+    p1.round_two().expect("p1 signs");
+    let honest = p2.machine.round_two().expect("p2 signs");
+
+    // The session drops between p2 sending and p1 checking.
+    down.set(true);
+    let err = p1
+        .receive_round_two(honest.clone())
+        .expect_err("an unchecked share cannot be accepted either");
+
+    assert!(
+        !matches!(err, Error::IdentifiableAbort { .. }),
+        "a backend outage is not an accusation, got: {err}"
+    );
+    assert!(
+        p1.evidence().is_none(),
+        "no evidence may name a participant on the strength of a backend error"
+    );
+    assert!(
+        !matches!(p1.state(), State::Aborted(_)),
+        "the ceremony must not be aborted against a participant, got: {:?}",
+        p1.state()
+    );
+
+    // And the share really was fine: when the backend comes back it is taken.
+    down.set(false);
+    p1.receive_round_two(honest)
+        .expect("the share was valid all along");
+}
+
+/// The same distinction on the other side of the fence: a third party checking
+/// evidence with key material that cannot check it must not convict. Here the
+/// accused's share genuinely is bad and every signature genuinely is valid --
+/// only the checker's verification-share table is missing an entry, which is
+/// what a roster or epoch mismatch looks like from inside.
+#[test]
+fn a_checker_that_cannot_check_does_not_convict() {
+    let fx = fixture(2, 3);
+    let subset = Subset::new([P1, P2]);
+    let stmt = statement(b"release 250000 eUSD to R, block 12345");
+
+    let mut nodes = vec![fx.node(P1), fx.node(P2)];
+    let r1 = round_one(&mut nodes, &stmt, &subset).expect("round one");
+    let honest_p2 = nodes[1].machine.round_two().expect("p2 signs");
+    let z = scalar_from(&honest_p2.share.0).unwrap();
+    let evidence = AbortEvidence {
+        round_one: r1,
+        accused: SignedRoundTwo::create(
+            &identity(P2),
+            P2,
+            honest_p2.context,
+            Share((z + Scalar::ONE).to_bytes().to_vec()),
+        ),
+    };
+
+    // A checker one key short of being able to answer the question.
+    let mut group = fx.group.clone();
+    group.verification_shares.remove(&P2);
+    let stale = FrostSigner::new(
+        ParticipantId(0),
+        Scalar::ZERO,
+        group,
+        ChaCha20Rng::seed_from_u64(0),
+    );
+
+    assert!(
+        evidence.verify(&fx.roster, &stale).is_err(),
+        "a checker that cannot check a share must not convict on it"
+    );
+    // The properly configured checker still convicts, so this is not a blanket
+    // refusal.
+    assert_eq!(
+        evidence
+            .verify(&fx.roster, &fx.public_verifier())
+            .expect("evidence stands up to a checker that can check"),
+        P2
     );
 }

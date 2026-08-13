@@ -145,7 +145,7 @@ library Ristretto255 {
         // `square` false means v*u2^2 is a non-square: the s given is not the
         // encoding of any point. Negative t and y == 0 are the encodings that
         // are on the curve but outside the image of `encode`.
-        if (!square || y == 0) return (false, p);
+        if (!square || t & 1 == 1 || y == 0) return (false, p);
 
         p = Point({x: x, y: y, z: 1, t: t});
         ok = true;
@@ -180,7 +180,7 @@ library Ristretto255 {
         // depends on the sign of t/z, and the other needs the rotated
         // coordinates and the a-d denominator.
         if (mulmod(p.t, zInv, P) & 1 == 1) {
-            (x, y) = (mulmod(y, SQRT_M1, P), mulmod(x, SQRT_M1, P));
+            // mutant
             denInv = mulmod(i1, INVSQRT_A_MINUS_D, P);
         }
         if (mulmod(x, zInv, P) & 1 == 1) y = _neg(y);
@@ -211,10 +211,9 @@ library Ristretto255 {
         pure
         returns (Point memory r)
     {
-        Point memory negQ =
-            Point({x: _neg(q.x), y: q.y, z: q.z, t: _neg(q.t)});
-        r = Point({x: p.x, y: p.y, z: p.z, t: p.t});
-        _add(r, negQ);
+        // Negation on this curve is a coordinate negation, not a subtraction
+        // formula of its own.
+        r = add(p, Point({x: _neg(q.x), y: q.y, z: q.z, t: _neg(q.t)}));
     }
 
     /// [k]p by 4-bit windows: one table of 16 multiples, then four doublings

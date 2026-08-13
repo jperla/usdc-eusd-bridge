@@ -19,7 +19,7 @@ use mc_crypto_keys::{RistrettoPrivate, RistrettoPublic};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use serde::Deserialize;
-use two_cohort::{derive::subaddress_offset, Cohort};
+use two_cohort::{derive::subaddress_offset, Cohort, ControlDomain, Gates, Owners};
 
 const VECTORS: &str = include_str!(
     "../../../vendor/mobilecoin/test-vectors/vectors/account_keys/subaddr_keys_from_acct_priv_keys.jsonl"
@@ -60,13 +60,15 @@ fn composite_root_reproduces_mobilecoin_published_subaddress_keys() {
         let b_owner = b - b_gate;
 
         let mut rng = ChaCha20Rng::seed_from_u64(0xFACE_0000 + n as u64);
-        let owners = Cohort::deal_sequential("owners", &b_owner, 2, 3, &mut rng).unwrap();
-        let gates = Cohort::deal_sequential("gates", &b_gate, 3, 4, &mut rng).unwrap();
+        let o: Vec<u64> = (0..3).map(Owners::nth).collect();
+        let g: Vec<u64> = (0..4).map(Gates::nth).collect();
+        let owners = Cohort::deal_in::<Owners, _>(&b_owner, 2, &o, &mut rng).unwrap();
+        let gates = Cohort::deal_in::<Gates, _>(&b_gate, 3, &g, &mut rng).unwrap();
 
         // Reconstruct from non-overlapping-shaped subsets to make the point
         // that the subsets are unrelated to each other.
-        let owner_part = owners.reconstruct(&[2, 3]).unwrap();
-        let gate_part = gates.reconstruct(&[1, 3, 4]).unwrap();
+        let owner_part = owners.reconstruct(&[o[1], o[2]]).unwrap();
+        let gate_part = gates.reconstruct(&[g[0], g[2], g[3]]).unwrap();
         assert_eq!(
             *owner_part + *gate_part,
             b,
@@ -102,7 +104,8 @@ fn composite_root_reproduces_mobilecoin_published_subaddress_keys() {
 
         // The cohorts also agree in the group, without either half ever being
         // reconstructed on its own.
-        let root_point = owners.public(&[1, 2]).unwrap() + gates.public(&[2, 3, 4]).unwrap();
+        let root_point =
+            owners.public(&[o[0], o[1]]).unwrap() + gates.public(&[g[1], g[2], g[3]]).unwrap();
         assert_eq!(
             RistrettoPublic::from(root_point + offset * RISTRETTO_BASEPOINT_POINT).to_bytes(),
             case.subaddress_spend_public_key,

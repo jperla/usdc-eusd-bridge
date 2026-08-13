@@ -11,10 +11,12 @@ mod common;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ceremony::authorizer::Authorizer;
+use ceremony::authorizer::{Authorizer, Rejection};
 use ceremony::context::{Commitment, ContextId, Share, SigningContext, SlotId};
 use ceremony::machine::{Ceremony, State};
-use ceremony::store::{Anchor, AnchorError, BindingStore, Receipt, SlotRecord, StoreError};
+use ceremony::store::{
+    Anchor, AnchorError, BindingStore, RecordDigest, Receipt, SlotRecord, StoreError,
+};
 use ceremony::{Error, MemoryAnchor, MemoryStore, ParticipantId, SignedRoundOne, Subset};
 use common::*;
 
@@ -41,6 +43,9 @@ struct LoggingStore {
 impl BindingStore for LoggingStore {
     fn sequence(&self) -> u64 {
         self.inner.borrow().sequence()
+    }
+    fn head(&self) -> Option<RecordDigest> {
+        self.inner.borrow().head()
     }
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError> {
         let r = self.inner.borrow_mut().reserve(slot)?;
@@ -88,7 +93,7 @@ impl Authorizer for LoggingSigner {
         context: &SigningContext,
         participant: ParticipantId,
         share: &Share,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Rejection<Self::Error>> {
         self.inner.verify_share(context, participant, share)
     }
     fn aggregate(
@@ -253,6 +258,195 @@ fn a_rolled_back_store_makes_the_signer_fail_closed() {
         third.begin(stmt, subset).unwrap_err(),
         Error::Terminated,
         "a signer that has seen a rollback does not sign again"
+    );
+}
+
+/// A rollback the counter has already caught up with.
+///
+/// A sequence number says how many writes happened, never which. A signer that
+/// serves many slots pushes the counter back past the high-water mark within a
+/// few writes of a restore, and from that moment the restore is invisible to
+/// anything that only compares numbers -- the store is forked, at the same
+/// sequence, and says so to nobody.
+///
+/// Here the store is rewound to just before a binding, two unrelated
+/// reservations bring the counter back level, and the same one-time value is
+/// then offered to a second statement. What that buys the adversary is the
+/// first test in `one_time_values.rs`: one nonce answering two challenges.
+#[test]
+fn a_rollback_the_counter_has_caught_up_with_is_still_refused() {
+    let fx = fixture(2, 3);
+    let subset = Subset::new([P1, P2]);
+    let store = Rc::new(RefCell::new(MemoryStore::new()));
+    let anchor = Rc::new(RefCell::new(MemoryAnchor::new()));
+    let pristine = fx.signer(P1);
+    let mut peer = fx.signer(P2);
+
+    let stmt_a = statement(b"release 250000 eUSD to R, block 12345");
+    let mut first = Ceremony::new(
+        fx.roster.clone(),
+        P1,
+        identity(P1),
+        store.clone(),
+        anchor.clone(),
+        pristine.clone(),
+    );
+    first.begin(stmt_a.clone(), subset.clone()).expect("begin");
+    // The disk image an operator restores: the reservation is on it, the
+    // binding that follows is not.
+    let fork_point = store.borrow().snapshot();
+    first
+        .receive_round_one(SignedRoundOne::create(
+            &identity(P2),
+            P2,
+            stmt_a.clone(),
+            subset.clone(),
+            peer.round_one().unwrap().1,
+        ))
+        .expect("peer round one");
+    first.round_two().expect("first ceremony signs");
+
+    store.borrow_mut().restore(&fork_point);
+    // Unrelated traffic on other slots, which is all it takes for the counter
+    // to stop being behind.
+    store.borrow_mut().reserve(SlotId(7)).unwrap();
+    store.borrow_mut().reserve(SlotId(8)).unwrap();
+    assert!(
+        store.borrow().sequence() >= anchor.borrow().high_water(),
+        "the counter has caught up, so a bare counter has nothing left to see"
+    );
+
+    // Same signer state, same one-time value, a different statement.
+    let stmt_b = statement(b"release 250000 eUSD to Q, block 12345");
+    let mut second = Ceremony::new(
+        fx.roster.clone(),
+        P1,
+        identity(P1),
+        store.clone(),
+        anchor.clone(),
+        pristine,
+    );
+    let outcome = second
+        .begin(stmt_b.clone(), subset.clone())
+        .and_then(|_| {
+            second.receive_round_one(SignedRoundOne::create(
+                &identity(P2),
+                P2,
+                stmt_b,
+                subset,
+                peer.round_one().unwrap().1,
+            ))
+        })
+        .and_then(|()| second.round_two());
+
+    assert!(
+        outcome.is_err(),
+        "a forked store must be refused even when its counter is level"
+    );
+    assert!(
+        matches!(outcome, Err(Error::Rollback(AnchorError::Forked { .. }))),
+        "and refused as a fork, not as some incidental mismatch: {outcome:?}"
+    );
+    assert_eq!(second.state(), &State::Failed);
+    assert!(anchor.borrow().is_poisoned());
+}
+
+/// The mechanism the test above rests on, on its own: two divergent records
+/// written at the same sequence, of which the anchor accepts exactly one.
+///
+/// Delete the `prev_head` comparison in `MemoryAnchor::commit` and this passes
+/// both writes, because there is nothing left to tell them apart -- they carry
+/// the same sequence number and differ only in what they say.
+#[test]
+fn a_divergent_record_at_the_same_sequence_is_refused() {
+    let mut store = MemoryStore::new();
+    let mut anchor = MemoryAnchor::new();
+    let slot = SlotId(0);
+    let ctx_a = ContextId([1u8; 32]);
+    let ctx_b = ContextId([2u8; 32]);
+
+    let reserved = store.reserve(slot).unwrap();
+    anchor.commit(&reserved).expect("first write anchors");
+    let fork_point = store.snapshot();
+
+    let a = store.bind(slot, ctx_a).unwrap();
+    anchor.commit(&a).expect("the binding anchors");
+
+    store.restore(&fork_point);
+    let b = store.bind(slot, ctx_b).expect("the rewound store has no objection");
+
+    assert_eq!(
+        a.sequence(),
+        b.sequence(),
+        "the two records really are at the same sequence"
+    );
+    assert_ne!(a.head(), b.head(), "and they really do differ");
+    assert_eq!(
+        anchor.commit(&b).unwrap_err(),
+        AnchorError::Forked {
+            presented: b.prev_head(),
+            anchored: Some(a.head()),
+        }
+    );
+    assert!(anchor.is_poisoned());
+
+    // Not a blanket refusal: re-presenting the record the anchor already holds
+    // is a crash between the store's commit and the anchor's, and must resume.
+    let mut fresh = MemoryAnchor::new();
+    fresh.commit(&reserved).unwrap();
+    fresh.commit(&a).unwrap();
+    fresh.commit(&a).expect("re-presenting the anchored record is a replay");
+}
+
+/// A torn record: the log says the slot was bound, storage says it is only
+/// reserved. That is the shape a half-applied write leaves behind, and it is
+/// the one a counter cannot see -- the generation is current, the phase bytes
+/// are stale.
+///
+/// Binding it again would be a second context on a one-time value that already
+/// answered one, so the store must refuse to act on a record it cannot trust.
+#[test]
+fn a_torn_record_is_refused_rather_than_rebound() {
+    let mut store = MemoryStore::new();
+    let slot = SlotId(0);
+    let ctx_a = ContextId([1u8; 32]);
+    let ctx_b = ContextId([2u8; 32]);
+
+    store.reserve(slot).unwrap();
+    store.bind(slot, ctx_a).unwrap();
+
+    // The write that lost half of itself.
+    store.tear_record(slot, SlotRecord::Reserved);
+
+    assert_eq!(
+        store.bind(slot, ctx_b).unwrap_err(),
+        StoreError::TornRecord {
+            slot,
+            logged: SlotRecord::Bound(ctx_a),
+            found: Some(SlotRecord::Reserved),
+        },
+        "a record that disagrees with the log must not be bound over"
+    );
+    // Nor may it be quietly re-reserved back into a bindable state.
+    assert!(matches!(
+        store.reserve(slot),
+        Err(StoreError::TornRecord { .. })
+    ));
+
+    // And the other way round: storage claiming a binding the log never
+    // recorded. Reported as what it is rather than as reuse, because the two
+    // ask different things of an operator -- one is a signer to retire, the
+    // other is a disk to distrust.
+    let mut ahead = MemoryStore::new();
+    ahead.reserve(slot).unwrap();
+    ahead.tear_record(slot, SlotRecord::Bound(ctx_a));
+    assert_eq!(
+        ahead.bind(slot, ctx_b).unwrap_err(),
+        StoreError::TornRecord {
+            slot,
+            logged: SlotRecord::Reserved,
+            found: Some(SlotRecord::Bound(ctx_a)),
+        }
     );
 }
 

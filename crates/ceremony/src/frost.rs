@@ -28,15 +28,15 @@ use mc_crypto_hashes::{Blake2b512, Digest};
 use rand_core::{CryptoRng, RngCore};
 use two_cohort::{lagrange_at_zero, Cohort};
 
-use crate::authorizer::Authorizer;
+use crate::authorizer::{Authorizer, Fault, Rejection};
 use crate::context::{Commitment, ContextId, ParticipantId, Share, SigningContext, SlotId, Subset};
-use crate::store::Receipt;
+use crate::store::{Receipt, SlotRecord};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum FrostError {
     #[error("slot {0:?} holds no one-time value (already consumed, or never issued)")]
     UnknownSlot(SlotId),
-    #[error("receipt does not match the slot and context being signed")]
+    #[error("the durable record does not bind this slot to this context")]
     ReceiptMismatch,
     #[error("commitment for {0:?} is missing or malformed")]
     BadCommitment(ParticipantId),
@@ -143,6 +143,53 @@ impl<R: RngCore + CryptoRng + Clone> FrostSigner<R> {
     pub fn secret_share(&self) -> Scalar {
         self.share
     }
+
+    /// The verification equation, with every failure reported as itself.
+    /// `classify` is what decides which of them is anybody's fault.
+    fn check_share(
+        &self,
+        context: &SigningContext,
+        participant: ParticipantId,
+        share: &Share,
+    ) -> Result<(), FrostError> {
+        let z = scalar_from(&share.0).ok_or(FrostError::BadShare(participant))?;
+        let (big_d, big_e) = commitment_of(context, participant)?;
+        let ctx_id = context.id();
+        let rho = binding_factor(ctx_id, participant);
+        let r = group_commitment(context)?;
+        let c = challenge(&r, &self.group.group_public, ctx_id);
+        let lambda = lagrange(context.subset(), participant)?;
+        let y = self
+            .group
+            .verification_shares
+            .get(&participant)
+            .ok_or(FrostError::UnknownParticipant(participant))?;
+
+        if RISTRETTO_BASEPOINT_POINT * z == big_d + big_e * rho + y * (lambda * c) {
+            Ok(())
+        } else {
+            Err(FrostError::ShareInvalid(participant))
+        }
+    }
+}
+
+/// Which failures of the verification equation are the accused's doing.
+///
+/// Only a defect in `participant`'s own signed bytes -- the share, or the
+/// round-one commitment their signed message carried. A verification share
+/// missing from our table is our key material, a Lagrange weight we cannot form
+/// is our subset, and a malformed commitment belonging to some *other*
+/// participant is that participant's problem: charging any of them to the one
+/// under test would name whoever happened to be next in the loop.
+fn classify(participant: ParticipantId, e: FrostError) -> Rejection<FrostError> {
+    match e {
+        FrostError::BadShare(p) | FrostError::ShareInvalid(p) | FrostError::BadCommitment(p)
+            if p == participant =>
+        {
+            Rejection::Fault(Fault::new(e.to_string()))
+        }
+        other => Rejection::Error(other),
+    }
 }
 
 impl<R: RngCore + CryptoRng + Clone> Authorizer for FrostSigner<R> {
@@ -170,7 +217,10 @@ impl<R: RngCore + CryptoRng + Clone> Authorizer for FrostSigner<R> {
         context: &SigningContext,
         receipt: &Receipt,
     ) -> Result<Share, FrostError> {
-        if receipt.slot() != slot || receipt.context() != Some(context.id()) {
+        // Checked against what the store read back, not against the caller's
+        // own account of it: a receipt that agrees with its caller and with
+        // nothing else is two copies of one claim.
+        if receipt.slot() != slot || receipt.record() != SlotRecord::Bound(context.id()) {
             return Err(FrostError::ReceiptMismatch);
         }
         // Consumed, not merely marked. A correct signer never answers twice for
@@ -193,25 +243,9 @@ impl<R: RngCore + CryptoRng + Clone> Authorizer for FrostSigner<R> {
         context: &SigningContext,
         participant: ParticipantId,
         share: &Share,
-    ) -> Result<(), FrostError> {
-        let z = scalar_from(&share.0).ok_or(FrostError::BadShare(participant))?;
-        let (big_d, big_e) = commitment_of(context, participant)?;
-        let ctx_id = context.id();
-        let rho = binding_factor(ctx_id, participant);
-        let r = group_commitment(context)?;
-        let c = challenge(&r, &self.group.group_public, ctx_id);
-        let lambda = lagrange(context.subset(), participant)?;
-        let y = self
-            .group
-            .verification_shares
-            .get(&participant)
-            .ok_or(FrostError::UnknownParticipant(participant))?;
-
-        if RISTRETTO_BASEPOINT_POINT * z == big_d + big_e * rho + y * (lambda * c) {
-            Ok(())
-        } else {
-            Err(FrostError::ShareInvalid(participant))
-        }
+    ) -> Result<(), Rejection<FrostError>> {
+        self.check_share(context, participant, share)
+            .map_err(|e| classify(participant, e))
     }
 
     fn aggregate(
