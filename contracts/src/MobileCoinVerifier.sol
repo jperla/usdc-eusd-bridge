@@ -206,8 +206,9 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         }
         if (p.beneficiary == address(0)) revert ZeroBeneficiary();
 
-        // The recipient check. See the note on `_payableToBridge`: this is the
-        // one link in the chain that is NOT yet closed on-chain.
+        // Whether this output was payable to the bridge at all. Delegated so
+        // the implementation is visible in the deployment transaction -- see
+        // IRecipientCheck.
         if (!_payableToBridge(p)) revert NotPayableToBridge();
 
         return VerifiedReturn({

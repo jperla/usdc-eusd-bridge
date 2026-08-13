@@ -225,6 +225,7 @@ impl ReturnProof {
             // the crate README. Present so the Solidity side can be written and
             // tested against real numbers while that gap is closed.
             "disclosure": {
+                "view_private_key": hx(self.disclosure.view_private_key.to_bytes().as_ref()),
                 "shared_secret": hx(&self.disclosure.shared_secret.to_bytes()),
                 "blinding": hx(self.disclosure.blinding.as_bytes()),
                 "recovered_subaddress_spend_key":

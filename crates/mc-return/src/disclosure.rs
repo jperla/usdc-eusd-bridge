@@ -42,6 +42,15 @@ pub const BRIDGE_RETURN_MEMO_TYPE: [u8; 2] = [0x80, 0x01];
 /// The plaintext behind a return output.
 #[derive(Clone, Debug)]
 pub struct Disclosure {
+    /// The bridge return address's view private key `a`.
+    ///
+    /// Published on purpose. `R`'s view key is public precisely so an Ethereum
+    /// contract can recompute `Hs(a*R)` and check an output was paid to us --
+    /// which is exactly why the release reserve `F` is a SEPARATE address whose
+    /// view key stays private. Holding `a` lets anyone recognise R's outputs
+    /// and read their amounts; it does not let them spend, which needs the
+    /// subaddress spend private key.
+    pub view_private_key: RistrettoPrivate,
     /// `s = a * R`, the TxOut shared secret. Everything else is derived from it.
     pub shared_secret: RistrettoPublic,
     pub amount: Amount,
@@ -103,6 +112,7 @@ impl Disclosure {
         beneficiary.copy_from_slice(&memo_data[..20]);
 
         Ok(Self {
+            view_private_key: *view_private_key,
             shared_secret,
             amount,
             blinding,

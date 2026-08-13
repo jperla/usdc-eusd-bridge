@@ -285,7 +285,8 @@
     "memo_type": "0x8001",
     "on_chain_verifiable": false,
     "recovered_subaddress_spend_key": "0xdcda2179a97fa2784e29f922e1d26130c7439b3ba4d119f0ebe93b0f0e97585e",
-    "shared_secret": "0x4ae5f77890de397cbfee96d1d7cd285cc1c7478351ca3713db726641b4de8d01"
+    "shared_secret": "0x4ae5f77890de397cbfee96d1d7cd285cc1c7478351ca3713db726641b4de8d01",
+    "view_private_key": "0xea580562651cf326c37d29bf26dc761bac78b0db937be7083e7a7c11f33bfb07"
   },
   "expected": {
     "amount": "1500000",

@@ -127,7 +127,7 @@ const proof = () => ({
 
 const chain = await Chain.create({
   only: ['Escrow.sol', 'MobileCoinVerifier.sol', 'ValidatorRegistry.sol',
-         'TestMocks.sol'],
+         'RecipientCheck.sol', 'TestMocks.sol'],
 });
 
 const balanceOf = async (usdc, who) => decodeUint((await chain.must(
@@ -151,7 +151,12 @@ async function deployBridge() {
       { from: GOV });
   }
 
-  const rc = await chain.deploy('AcceptsAnyRecipient_DO_NOT_DEPLOY');
+  // The REAL recipient check, constructed with the return address's published
+  // view private key. This is the link that decides whether an output was paid
+  // to the bridge at all; with a permissive implementation here, anyone able to
+  // produce a quorum-signed block containing any output could redeem it.
+  const rc = await chain.deploy('RecipientCheck',
+    b32(FIX.disclosure.view_private_key));
   const verifier = await chain.deploy('MobileCoinVerifier',
     addrWord(reg) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
     word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
@@ -260,6 +265,32 @@ await test('LEG 3: an output not in the signed block releases nothing', async ()
   assertEq(await balanceOf(B.usdc, BOB), before, 'no USDC moved');
 });
 
+await test('LEG 3: the recipient check is load-bearing, not decorative',
+  async () => {
+  // Same proof, same quorum, same membership -- but a bridge deployed for a
+  // DIFFERENT return address. The output is genuinely on MobileCoin and
+  // genuinely signed; it simply was not paid to this bridge. If this releases,
+  // anyone able to get any output into a signed block drains the escrow.
+  const usdc = await chain.deploy('MockERC20');
+  const rc = await chain.deploy('RecipientCheck',
+    b32(FIX.disclosure.view_private_key));
+
+  // A spend key that is not the one this output was paid to.
+  const wrongD = '0x' + (BigInt(FIX.disclosure.recovered_subaddress_spend_key) ^ 1n)
+    .toString(16).padStart(64, '0');
+  const verifier = await chain.deploy('MobileCoinVerifier',
+    addrWord(B.reg) + b32(wrongD) + word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
+  const escrow = await chain.deploy('Escrow',
+    addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
+    addrWord(GOV) + addrWord(AUDITOR) + word(0));
+  await chain.must(usdc,
+    selector('mint(address,uint256)') + addrWord(escrow) + word(AMOUNT * 4n));
+
+  assert(!(await release(escrow, proof())).ok,
+    'an output not paid to this bridge must not release funds');
+  assertEq(await balanceOf(usdc, BOB), 0n, 'no USDC moved');
+});
+
 const ok = summary();
 
 console.log('');
@@ -277,20 +308,19 @@ console.log('         real BlockSignature, real TxOut, real membership proof --'
 console.log('         is checked by the REAL on-chain verifier and pays the');
 console.log('         payee named in the proof, not the relayer.');
 console.log('         Replayed: refused. Signature bit flipped: refused.');
-console.log('         Output swapped: refused.');
+console.log('         Output swapped: refused. Paid to another address:');
+console.log('         refused, by the REAL recipient check (Ristretto255,');
+console.log('         target_key == Hs(a*R)*G + D).');
 console.log('');
 console.log('='.repeat(72));
 console.log('NOT ESTABLISHED — THE BRIDGE IS NOT READY TO HOLD FUNDS');
 console.log('='.repeat(72));
-console.log('  * RECIPIENT CHECK. Whether the output is payable to the bridge');
-console.log('    (target_key == Hs(a*R)*G + D) is delegated to IRecipientCheck,');
-console.log('    and this run wires AcceptsAnyRecipient_DO_NOT_DEPLOY.');
-console.log('    Ristretto255 is implemented and agrees with dalek; the check');
-console.log('    itself is not wired yet.');
-console.log('  * AMOUNT. Proof.amount is asserted by the relayer. The TxOut');
-console.log('    digest binds the MASKED value, so the payout figure is not yet');
-console.log('    derived from the output. Unmasking needs the same shared secret');
-console.log('    the recipient check computes; both close together.');
+console.log('  * AMOUNT is the remaining unbound field on the payout path.');
+console.log('    Proof.amount is asserted by the relayer, and the TxOut digest');
+console.log('    binds the MASKED value, so the payout figure is not derived');
+console.log('    from the output. Unmasking needs the shared secret the');
+console.log('    recipient check already computes, so the fix is to have that');
+console.log('    check return the amount rather than only a yes/no.');
 console.log('  * No non-reconstructing two-cohort signing protocol: the');
 console.log('    artifacts reconstruct the composite scalar in one process, so');
 console.log('    the architecture gate is NOT closed and a composite address');

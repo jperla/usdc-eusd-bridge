@@ -33,18 +33,20 @@ interface IMobileCoinVerifier {
         returns (VerifiedReturn memory);
 }
 
-/// The recipient check, factored out because it is the one link in the return
-/// leg that is not yet implementable on-chain.
+/// Whether an output was payable to the bridge: `target_key == Hs(a*R)*G + D`.
 ///
-/// The real check is `target_key == Hs(a * R) * G + D`: the output is payable
-/// to the bridge's return subaddress. It needs Ristretto255 point
-/// decompression and scalar multiplication in Solidity. MobileCoin uses
-/// Ristretto, NOT raw Ed25519, so an Ed25519 implementation cannot be
-/// substituted -- it would be wrong in a way that still passes casual tests.
+/// An interface rather than an internal function so that WHICH implementation
+/// a deployment uses is a constructor argument visible in the deployment
+/// transaction, instead of a detail somebody has to go looking for. That
+/// matters because a permissive implementation makes every other check in the
+/// return leg pointless: anyone able to get any output into a quorum-signed
+/// block could redeem it.
 ///
-/// It is an interface rather than an internal function so that the gap is a
-/// named constructor argument visible in any deployment transaction, instead
-/// of a comment somebody has to notice.
+/// `RecipientCheck` is the real one, built on Ristretto255 -- MobileCoin uses
+/// Ristretto, not raw Ed25519, and substituting Ed25519 decompression here
+/// would be wrong in a way that still passes casual tests.
+/// `AcceptsAnyRecipient_DO_NOT_DEPLOY` exists only so the escrow's own logic
+/// can be tested without the cryptography.
 interface IRecipientCheck {
     function isPayableToBridge(
         bytes32 txOutPublicKey,
