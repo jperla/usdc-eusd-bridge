@@ -239,3 +239,33 @@ fn a_degenerate_roster_threshold_is_refused() {
     );
     assert!(Roster::new(members, 3).is_ok(), "n-of-n is legitimate");
 }
+
+/// Participant id 0 must never be dealt a share.
+///
+/// Shamir evaluates the sharing polynomial at each participant's numeric id,
+/// and `p(0)` is the secret itself -- so a participant numbered 0 does not hold
+/// a share of the key, it holds the key. `ParticipantId` is a public tuple over
+/// `u16`, so nothing in the type stops a caller writing `ParticipantId(0)`; an
+/// operator id left at its default is exactly the config a human types.
+///
+/// Rejection comes from `two-cohort`'s roster validation, one crate away, which
+/// is precisely why it is worth a test here: a refactor there would silently
+/// unguard this one.
+#[test]
+fn participant_id_zero_is_never_dealt_a_share() {
+    let ids = [ParticipantId(0), ParticipantId(1), ParticipantId(2)];
+    let err = deal(2, &ids, &mut ChaCha20Rng::from_seed([9u8; 32])).expect_err(
+        "dealing to participant 0 must be refused: p(0) is the secret, not a share",
+    );
+    // A value, not a panic -- a signing service that aborts on bad config can
+    // be taken down with bad config.
+    assert!(
+        matches!(err, FrostError::Sharing(_)),
+        "expected a typed rejection, got {err:?}"
+    );
+
+    // The same roster without the zero is fine, so this is not just refusing
+    // every roster.
+    deal(2, &[ParticipantId(1), ParticipantId(2)], &mut ChaCha20Rng::from_seed([9u8; 32]))
+        .expect("a roster with no zero id must deal");
+}
