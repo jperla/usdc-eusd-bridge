@@ -58,34 +58,50 @@ contract RecipientCheck is IRecipientCheck {
         _a = a;
     }
 
-    /// True iff `txOutTargetKey - Hs(a * txOutPublicKey)*G == returnSpendPublicKey`.
+    /// True iff `txOutTargetKey - Hs(a * txOutPublicKey)*G == returnSpendPublicKey`,
+    /// together with `S = compressed(a * txOutPublicKey)`.
     ///
     /// Returns false, rather than reverting, on any input that is not a valid
     /// ristretto255 encoding: the question asked is about attacker-supplied
     /// bytes, and "these do not describe an output payable to the bridge" is
     /// the answer for a malformed key as much as for a mismatched one.
+    ///
+    /// `S` IS THE TxOut SHARED SECRET, and it is returned because `[a]R` has
+    /// to be computed to answer the question at all -- see IRecipientCheck.
+    /// It is emitted only on the true branch. On every false branch the secret
+    /// is zero, including the branches that computed it: an output that was
+    /// not paid to the bridge has a shared secret this contract can compute,
+    /// and handing it out would be handing out material for opening someone
+    /// else's output.
+    ///
+    /// Note that `S` is `[a]R` and NOT `Hs([a]R)`. The one-time-key scalar is
+    /// a different construction for a different purpose; using it to open an
+    /// amount would produce well-formed masks that open nothing.
     function isPayableToBridge(
         bytes32 txOutPublicKey,
         bytes32 txOutTargetKey,
         bytes32 returnSpendPublicKey
-    ) external view returns (bool) {
+    ) external view returns (bool, bytes32) {
         // D = identity would make the relation solvable by anyone: `a` is
         // public, so an attacker could pick any R, compute h = Hs(a*R) and
         // publish an output with target_key = h*G. Refusing it here means a
         // verifier misconfigured with a zero spend key redeems nothing rather
         // than everything.
-        if (returnSpendPublicKey == bytes32(0)) return false;
+        if (returnSpendPublicKey == bytes32(0)) return (false, bytes32(0));
 
         (bool okR, Ristretto255.Point memory r) =
             Ristretto255.decode(txOutPublicKey);
-        if (!okR) return false;
+        if (!okR) return (false, bytes32(0));
         (bool okTarget, Ristretto255.Point memory target) =
             Ristretto255.decode(txOutTargetKey);
-        if (!okTarget) return false;
+        if (!okTarget) return (false, bytes32(0));
 
-        uint256 h = _hashToScalar(
-            Ristretto255.encode(Ristretto255.scalarMul(_a, r))
-        );
+        // The one scalar multiplication by `a`, and the only one anywhere in
+        // the return leg.
+        bytes32 sharedSecret =
+            Ristretto255.encode(Ristretto255.scalarMul(_a, r));
+
+        uint256 h = _hashToScalar(sharedSecret);
         Ristretto255.Point memory recovered = Ristretto255.sub(
             target,
             Ristretto255.scalarMul(h, Ristretto255.basepoint())
@@ -94,7 +110,10 @@ contract RecipientCheck is IRecipientCheck {
         // The ristretto encoding is canonical, so comparing 32 bytes IS point
         // equality. It also disposes of a `returnSpendPublicKey` that is not a
         // valid encoding at all: `encode` never produces one.
-        return Ristretto255.encode(recovered) == returnSpendPublicKey;
+        if (Ristretto255.encode(recovered) != returnSpendPublicKey) {
+            return (false, bytes32(0));
+        }
+        return (true, sharedSecret);
     }
 
     /// MobileCoin's `hash_to_scalar`: Blake2b-512 over the domain tag and the

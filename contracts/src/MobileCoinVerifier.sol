@@ -6,6 +6,7 @@ import {ValidatorRegistry} from "./ValidatorRegistry.sol";
 import {Ed25519} from "./Ed25519.sol";
 import {MobileCoinBlock, MobileCoinTxOut} from "./Merlin.sol";
 import {Blake2b256} from "./Blake2b256.sol";
+import {AmountOpener, MemoOpener} from "./AmountOpener.sol";
 
 /// Verifies that an eUSD output was paid to the bridge's return address and
 /// finalized in a MobileCoin block, for the Ethereum side of the return leg.
@@ -15,19 +16,41 @@ import {Blake2b256} from "./Blake2b256.sol";
 ///   1. these signatures are over THIS block          (Merlin digest + Ed25519)
 ///   2. the signers are a real quorum                 (ValidatorRegistry)
 ///   3. this output is IN that block                  (membership proof)
-///   4. this output is payable to US, in eUSD         (recipient + token)
-///   5. it names a beneficiary, and only once ever    (memo + escrow replay set)
+///   4. this output is payable to US                  (recipient check)
+///   5. what it is worth, in which token              (masked amount + commitment)
+///   6. who it names, and only once ever              (memo + escrow replay set)
 ///
 /// Any link left open is a way to take the escrow's USDC, so each is a
 /// separate, individually testable step and none is inferred from another.
+///
+/// NOTHING IN THE PAYOUT IS SUPPLIED BY THE CALLER. Steps 5 and 6 used to be
+/// three plaintext fields of `Proof` -- the amount, the token id and the
+/// beneficiary -- checked against nothing but a constant, which meant one
+/// genuine, quorum-signed, provably-included return could be resubmitted
+/// naming any payee and any amount up to the escrow's balance. They are now
+/// derived from the output's own encrypted fields with the bridge's view key,
+/// and the `Proof` struct has no place left to put them.
 contract MobileCoinVerifier is IMobileCoinVerifier {
     /// Domain tag MobileCoin signs block digests under.
     bytes constant BLOCK_SIG_DOMAIN = "block-sig";
 
-    /// Domain tag for this bridge's memo schema. Binding the memo to a domain
-    /// is what stops a memo written for some other purpose -- or for a
-    /// different deployment of this bridge -- from being replayed here as a
-    /// redemption instruction.
+    /// Memo type for "pay the USDC to this Ethereum address" -- this repo's
+    /// schema, `crates/mc-return/src/disclosure.rs`.
+    ///
+    /// A CONSTANT, and read out of the DECRYPTED memo. It is what actually
+    /// binds a memo to this bridge's purpose: only the party who created the
+    /// output could have written its memo, so a payload that does not carry
+    /// this type is not a redemption instruction and its first 20 bytes are
+    /// not an address.
+    bytes2 public constant BRIDGE_RETURN_MEMO_TYPE = 0x8001;
+
+    /// A tag naming this DEPLOYMENT, echoed by the proof.
+    ///
+    /// Not to be confused with BRIDGE_RETURN_MEMO_TYPE above, which is the
+    /// binding that involves the memo. This one is nowhere in the MobileCoin
+    /// data: it is a constant the submitter must restate, so a proof assembled
+    /// for one deployment cannot be handed to another. It carries no
+    /// information an attacker does not have and defends nothing on its own.
     bytes32 public immutable memoDomain;
 
     ValidatorRegistry public immutable registry;
@@ -37,6 +60,31 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
 
     /// eUSD token id.
     uint64 public immutable eusdTokenId;
+
+    /// `B_token` for `eusdTokenId`: the Pedersen value generator, compressed.
+    ///
+    /// Pinned at construction because MobileCoin derives it by hashing to the
+    /// curve and this contract accepts exactly one token id -- see
+    /// `AmountOpener.decodeGenerator`. Public so a deployment transaction, and
+    /// any later reader, can check it against MobileCoin's own
+    /// `generators(eusdTokenId)`.
+    ///
+    /// THE PAIR IS A DEPLOYMENT OBLIGATION THE CODE CANNOT DISCHARGE. The
+    /// constructor can check that this is a point and is not the identity; it
+    /// cannot check that it is the generator for `eusdTokenId`, because doing
+    /// so means running the Elligator hash-to-curve this contract deliberately
+    /// does not implement. A mismatched pair does not fail closed, it fails
+    /// OPEN in a specific way: the contract then verifies commitments in the
+    /// wrong group, so an amount MobileCoin rejects as `InconsistentCommitment`
+    /// verifies here. Deploying `(8192, generators(1))` and pairing fixture
+    /// case 4 with the commitment recomputed under `generators(1)` yields
+    /// 250,000,000,000 on chain against MobileCoin's refusal --
+    /// `test/verifier.mjs`, "a MISPAIRED token id and generator verifies an
+    /// amount MobileCoin refuses", which exists so this cannot be forgotten.
+    ///
+    /// So: check this against `generators(eusdTokenId)` before funding an
+    /// escrow that points at this verifier. Both are public getters.
+    bytes32 public immutable eusdValueGenerator;
 
     /// See IRecipientCheck. A deployment that passes a permissive
     /// implementation here has NOT closed the return leg.
@@ -76,12 +124,16 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         // redeemed repeatedly under invented identities. Recomputing the
         // digest from these fields is what makes the proof about the output it
         // claims to be about.
+        //
+        // THE PAYOUT IS NOT IN HERE. There is deliberately no `amount`, no
+        // `tokenId` and no `beneficiary`: those were plaintext claims about
+        // what the encrypted fields above open to, and nothing related them to
+        // the output the Merkle path proved. They are derived in
+        // `verifyReturn` instead. A field that is accepted and then ignored
+        // invites someone to start honouring it again, so there is no field.
         TxOutFields txOut;
-        uint64 amount;
-        uint64 tokenId;
-        // --- memo, domain-bound ---
+        // --- the deployment this proof was assembled for ---
         bytes32 memoDomainTag;
-        address beneficiary;
         // --- membership ---
         bytes32[] merklePath;
         uint64 merkleIndex;
@@ -92,6 +144,7 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
     error SignerCountMismatch();
     error WrongTokenId(uint64 got, uint64 want);
     error WrongMemoDomain(bytes32 got, bytes32 want);
+    error WrongMemoType(bytes2 got, bytes2 want);
     error ZeroBeneficiary();
     error NotPayableToBridge();
     error MembershipFailed();
@@ -101,14 +154,26 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         ValidatorRegistry _registry,
         bytes32 _returnSpendPublicKey,
         uint64 _eusdTokenId,
+        bytes32 _eusdValueGenerator,
         bytes32 _memoDomain,
         IRecipientCheck _recipientCheck
     ) {
         require(address(_recipientCheck) != address(0), "recipientCheck required");
+        // Fail at deployment, not at the first redemption. A generator that is
+        // not a point -- or is the identity, which makes the commitment
+        // independent of the value -- would otherwise sit in the code until
+        // somebody tried to redeem against it.
+        //
+        // What this does NOT establish is that the generator is the one for
+        // `_eusdTokenId`; see `eusdValueGenerator` for why that is not
+        // checkable here and what a mispaired deployment does.
+        AmountOpener.decodeGenerator(_eusdValueGenerator);
+
         recipientCheck = _recipientCheck;
         registry = _registry;
         returnSpendPublicKey = _returnSpendPublicKey;
         eusdTokenId = _eusdTokenId;
+        eusdValueGenerator = _eusdValueGenerator;
         memoDomain = _memoDomain;
     }
 
@@ -183,10 +248,100 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
                 : Blake2b256.hashNodes(p.merklePath[i], node);
             idx >>= 1;
         }
+        // THE INDEX MUST BE FULLY CONSUMED BY THE PATH. Only the low
+        // `merklePath.length` bits of `merkleIndex` steer the walk, so without
+        // this any index congruent to the real one modulo 2^length -- 11 for a
+        // real 3 over a three-level path -- reproduces the same root and is
+        // accepted. That makes the claimed global position of the output
+        // malleable while the leaf itself stays bound, which is a divergence
+        // from upstream: `is_membership_proof_valid` rejects it as
+        // `HighestIndexMismatch`
+        // (transaction/core/src/membership_proofs/mod.rs). Requiring the
+        // residue to be zero costs one comparison and removes the alias class.
+        if (idx != 0) return false;
         return node == p.rootHash;
     }
 
-    /// Steps 4 and 5, then hand the escrow a value it can act on.
+    /// Step 4: was this output paid to the bridge, and what shared secret says
+    /// so.
+    ///
+    /// `S = compressed([a]R)` comes back with the answer because every
+    /// remaining step needs it and it costs one scalar multiplication -- see
+    /// IRecipientCheck.
+    function sharedSecretOf(Proof memory p)
+        public
+        view
+        returns (bytes32 sharedSecret)
+    {
+        bool paidToBridge;
+        // Delegated so the implementation is visible in the deployment
+        // transaction rather than being a detail somebody has to go looking
+        // for.
+        (paidToBridge, sharedSecret) = recipientCheck.isPayableToBridge(
+            p.txOut.publicKey, p.txOut.targetKey, returnSpendPublicKey
+        );
+        if (!paidToBridge) revert NotPayableToBridge();
+    }
+
+    /// Step 5: what this output is worth, in which token.
+    ///
+    /// Public, and taking the shared secret as an argument, for the same
+    /// reason `verifyQuorum` and `verifyMembership` are public: every branch
+    /// below has to be reachable by a test on the code path production uses,
+    /// not on a parallel copy of it. Passing a secret here proves nothing on
+    /// its own -- the commitment check is what decides whether it was the
+    /// right one.
+    function openAmount(bytes32 sharedSecret, TxOutFields memory txOut)
+        public
+        view
+        returns (uint64 amount, uint64 tokenId)
+    {
+        uint256 blinding;
+        (amount, tokenId, blinding) = AmountOpener.unmask(
+            sharedSecret, txOut.maskedValue, txOut.maskedTokenId
+        );
+
+        // THE TOKEN ID IS CHECKED BEFORE THE COMMITMENT, and that order is
+        // load-bearing rather than stylistic. `eusdValueGenerator` is `B_token`
+        // for `eusdTokenId` and for no other id; recomputing the commitment
+        // with it while the amount is denominated in something else would be
+        // comparing against the wrong curve point. Upstream checks the
+        // commitment for whatever id came out because it can compute every
+        // generator; this contract has one, so it establishes the id first.
+        if (tokenId != eusdTokenId) revert WrongTokenId(tokenId, eusdTokenId);
+
+        // And this is what makes `amount` mean anything -- see
+        // AmountOpener.InconsistentCommitment. Without it, `amount` is just
+        // some number XOR-ed out of a mask, with nothing tying it to the
+        // output the membership proof covered.
+        AmountOpener.requireCommitment(
+            txOut.commitment, amount, blinding, eusdValueGenerator
+        );
+    }
+
+    /// Step 6: who this output names.
+    function openMemo(bytes32 sharedSecret, bytes memory eMemo)
+        public
+        pure
+        returns (address beneficiary)
+    {
+        bytes2 memoType;
+        (memoType, beneficiary) = MemoOpener.open(sharedSecret, eMemo);
+        if (memoType != BRIDGE_RETURN_MEMO_TYPE) {
+            revert WrongMemoType(memoType, BRIDGE_RETURN_MEMO_TYPE);
+        }
+        // A memo of the right type whose first 20 bytes are zero names nobody.
+        // The escrow refuses this too; refusing it here as well means the
+        // failure is attributable to the proof rather than to the payout.
+        if (beneficiary == address(0)) revert ZeroBeneficiary();
+    }
+
+    /// The whole chain, then hand the escrow a value it can act on.
+    ///
+    /// Every field of the returned `VerifiedReturn` is derived: the public key
+    /// and block index from the header the quorum signed, the value and token
+    /// id from the masked amount, the beneficiary from the memo. The argument
+    /// contributes bytes to be checked and nothing that is paid out.
     function verifyReturn(bytes calldata proof)
         external
         view
@@ -198,34 +353,20 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
 
         if (!verifyMembership(p)) revert MembershipFailed();
 
-        if (p.tokenId != eusdTokenId) {
-            revert WrongTokenId(p.tokenId, eusdTokenId);
-        }
         if (p.memoDomainTag != memoDomain) {
             revert WrongMemoDomain(p.memoDomainTag, memoDomain);
         }
-        if (p.beneficiary == address(0)) revert ZeroBeneficiary();
 
-        // Whether this output was payable to the bridge at all. Delegated so
-        // the implementation is visible in the deployment transaction -- see
-        // IRecipientCheck.
-        if (!_payableToBridge(p)) revert NotPayableToBridge();
+        bytes32 sharedSecret = sharedSecretOf(p);
+        (uint64 amount, uint64 tokenId) = openAmount(sharedSecret, p.txOut);
+        address beneficiary = openMemo(sharedSecret, p.txOut.eMemo);
 
         return VerifiedReturn({
             outputPublicKey: p.txOut.publicKey,
-            beneficiary: p.beneficiary,
-            amount: p.amount,
-            tokenId: p.tokenId,
+            beneficiary: beneficiary,
+            amount: amount,
+            tokenId: tokenId,
             blockIndex: p.index
         });
     }
-
-    // -------------------------------------------------------------- internal
-
-    function _payableToBridge(Proof memory p) internal view returns (bool) {
-        return recipientCheck.isPayableToBridge(
-            p.txOut.publicKey, p.txOut.targetKey, returnSpendPublicKey
-        );
-    }
-
 }

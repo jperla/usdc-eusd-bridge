@@ -98,19 +98,36 @@ it accepts a header whose id was chosen freely.
 
 ## Limitations
 
-**The disclosure is not verifiable on Ethereum.** `disclosure` carries the
-recovered shared secret, blinding, memo and the resulting amount / token id /
-beneficiary, and `Disclosure::open` proves they match the chain — but it proves
-it *here*, with the bridge's view private key. Ethereum has no view key and
-must never have one. Convincing it would require, at minimum, a
-discrete-log-equality proof that the supplied `s` really is `a·R` for the
-bridge's published view public key `V = a·G`, plus Ristretto arithmetic to open
-the Pedersen commitment. **This crate constructs no such proof, and the fixture
-implies none** — `disclosure.on_chain_verifiable` is `false` in the file to
-keep that from being assumed. Until it is closed, an Ethereum verifier built
-on this fixture is trusting the relayer for `amount`, `tokenId` and
-`beneficiary`, which is the whole payout. This is the largest open gap in the
-return leg.
+**The disclosure is a convenience, not the on-chain mechanism.** `disclosure`
+carries the recovered shared secret, blinding, memo and the resulting amount /
+token id / beneficiary, and `Disclosure::open` proves they match the chain —
+here, in Rust. **Ethereum does not consume any of it.**
+
+An earlier version of this section claimed the amount and beneficiary could not
+be established on chain without a discrete-log-equality proof that the supplied
+`s` really is `a·R`. That was wrong, and the assumption behind it was that
+Ethereum would be *given* `s`. It is not. The bridge's view private key `a` is
+public by design — a view key confers the ability to recognize payments, never
+to spend them — so `contracts/src/RecipientCheck.sol` holds `a` and computes
+`S = [a]R` itself, as a by-product of the recipient check it already had to
+perform. There is no supplied `s` to prove anything about. From that one point,
+`contracts/src/AmountOpener.sol` re-derives the MaskedAmountV2 masks and the
+memo key, and *requires* `value·B_token + blinding·B_blinding` to equal the
+block's Pedersen commitment — so a wrong `S` is fatal rather than merely
+unattested. See `contracts/test/verifier.mjs`.
+
+`disclosure.on_chain_verifiable` is still `false` in the fixture, and that flag
+is now narrower than it sounds: it means this crate does not *emit* an on-chain
+proof object, not that the quantities are unverifiable on chain. The Ethereum
+verifier derives `amount`, `tokenId` and `beneficiary` from the output's own
+encrypted fields and trusts the relayer for none of them.
+
+What remains genuinely open here is the **pairing of `eusdTokenId` with
+`eusdValueGenerator`** at deployment: the contract does not implement
+hash-to-curve, so it cannot check that its pinned `B_token` is
+`generators(eusdTokenId)`, and a mispaired deployment verifies commitments in
+the wrong group. That is a deployment-configuration obligation, not something a
+proof submitter can reach.
 
 **The Merkle tree is a mirror, not upstream's code.** `merkle.rs` reproduces
 `mc-ledger-db`'s `tx_out_store.rs` (rev 05cb699f) rather than depending on it,

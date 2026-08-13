@@ -1,0 +1,493 @@
+{
+  "bridgeReturnMemoType": "0x8001",
+  "domainSeparators": {
+    "amountBlindingFactorsSalt": "mc_amount_blinding_factors",
+    "amountBlindingInfo": "mc_amount_blinding",
+    "amountSharedSecret": "mc_amount_shared_secret",
+    "amountTokenIdInfo": "mc_amount_token_id",
+    "amountValueInfo": "mc_amount_value",
+    "memoOkmSalt": "mc-memo-okm"
+  },
+  "eusdTokenId": "8192",
+  "generators": {
+    "bBlinding": "0xe2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
+    "basepointCompressed": "0xe2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
+    "byTokenId": [
+      {
+        "bToken": "0x806024d8f41f25e280a0ca45fa2fa28c0529f7b0cbaf182dc195fa23cc58c82b",
+        "preimage": "0xe2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
+        "tokenId": "0"
+      },
+      {
+        "bToken": "0x6e736cab24540ffd7a74ea23db4d394e3a8290c2d62cf944c56dd63669cc593b",
+        "preimage": "0xe3f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
+        "tokenId": "1"
+      },
+      {
+        "bToken": "0x68481a0a0ed5252b3d030f6e5f015fe647ffb83aa4b798361111036b29286272",
+        "preimage": "0xe2d2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
+        "tokenId": "8192"
+      },
+      {
+        "bToken": "0x3c065e721d6c23d8e06a70ae00f6c1a12a2c708858ff7cd8b3244c54aaae3526",
+        "preimage": "0x1d0d51f59543b18ea884a961c500515f58e30b6aa582dd8db6a65945e08d2d76",
+        "tokenId": "18446744073709551615"
+      }
+    ],
+    "hashToPointDomainTag": "mc_onetime_key_hash_to_point"
+  },
+  "hkdf": [
+    {
+      "hash": "SHA-512",
+      "ikm": "0xa8371ef0229bb6a04fe72980798ba969cbef09dd68593fd6f98a645bf1be9e57",
+      "info": "0x6d635f616d6f756e745f76616c7565",
+      "length": 8,
+      "name": "mc-amount-value-mask",
+      "okm": "0x84638052a1ba2e23",
+      "salt": "0x6d635f616d6f756e745f626c696e64696e675f666163746f7273"
+    },
+    {
+      "hash": "SHA-512",
+      "ikm": "0xa8371ef0229bb6a04fe72980798ba969cbef09dd68593fd6f98a645bf1be9e57",
+      "info": "0x6d635f616d6f756e745f746f6b656e5f6964",
+      "length": 8,
+      "name": "mc-amount-token-id-mask",
+      "okm": "0xe1c50367b1ec6419",
+      "salt": "0x6d635f616d6f756e745f626c696e64696e675f666163746f7273"
+    },
+    {
+      "hash": "SHA-512",
+      "ikm": "0xa8371ef0229bb6a04fe72980798ba969cbef09dd68593fd6f98a645bf1be9e57",
+      "info": "0x6d635f616d6f756e745f626c696e64696e67",
+      "length": 64,
+      "name": "mc-amount-blinding",
+      "okm": "0xcc32ad8e6fb19c4b2a2139dc36f71c4d0c69692a308d07e28b3e06ead65ca9bf7ea883f9aedc233b81c2ecf79ac9ce022d71d63dce2f22e4be273403169501d1",
+      "salt": "0x6d635f616d6f756e745f626c696e64696e675f666163746f7273"
+    },
+    {
+      "hash": "SHA-512",
+      "ikm": "0x90e6f87661d3af6a8e0a6f9db106a5c14a0d7e3da067efa68056203760ef545b",
+      "info": "0x",
+      "length": 48,
+      "name": "mc-memo-okm",
+      "okm": "0xa41238fb8c7d5c094d65738e5402b93428c29fb1a4a5407b90936f3533fe0dd8dc0c42a618109166944f19dfa78b9939",
+      "salt": "0x6d632d6d656d6f2d6f6b6d"
+    },
+    {
+      "hash": "SHA-256",
+      "ikm": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "info": "0xf0f1f2f3f4f5f6f7f8f9",
+      "length": 42,
+      "name": "rfc5869-tc1",
+      "okm": "0x3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+      "salt": "0x000102030405060708090a0b0c"
+    },
+    {
+      "hash": "SHA-512",
+      "ikm": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "info": "0xf0f1f2f3f4f5f6f7f8f9",
+      "length": 42,
+      "name": "rfc5869-tc1-sha512",
+      "okm": "0x832390086cda71fb47625bb5ceb168e4c8e26a1a16ed34d9fc7fe92c1481579338da362cb8d9f925d7cb",
+      "salt": "0x000102030405060708090a0b0c"
+    },
+    {
+      "hash": "SHA-256",
+      "ikm": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "info": "0xb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "length": 82,
+      "name": "rfc5869-tc2",
+      "okm": "0xb11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71cc30c58179ec3e87c14c01d5c1f3434f1d87",
+      "salt": "0x606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+    },
+    {
+      "hash": "SHA-512",
+      "ikm": "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "info": "0xb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "length": 82,
+      "name": "rfc5869-tc2-sha512",
+      "okm": "0xce6c97192805b346e6161e821ed165673b84f400a2b514b2fe23d84cd189ddf1b695b48cbd1c8388441137b3ce28f16aa64ba33ba466b24df6cfcb021ecff235f6a2056ce3af1de44d572097a8505d9e7a93",
+      "salt": "0x606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+    },
+    {
+      "hash": "SHA-256",
+      "ikm": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "info": "0x",
+      "length": 42,
+      "name": "rfc5869-tc3",
+      "okm": "0x8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8",
+      "salt": "0x"
+    },
+    {
+      "hash": "SHA-512",
+      "ikm": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "info": "0x",
+      "length": 42,
+      "name": "rfc5869-tc3-sha512",
+      "okm": "0xf5fa02b18298a72a8c23898a8703472c6eb179dc204c03425c970e3b164bf90fff22d04836d0e2343bac",
+      "salt": "0x"
+    }
+  ],
+  "maskedAmountRejects": [
+    {
+      "amountSharedSecret": "0x59a8dc714cad4135d2c3528c5be29d1c9134ff49fa39b62d84afe3fc39a6f984",
+      "commitment": "0xa8b8f7dc61f06c01364a87ce028991fdfac784588f37f4611e08a26b3ebc9411",
+      "commitmentCommitsToValue": "1000000",
+      "expectedError": "InconsistentCommitment",
+      "maskedTokenId": "0x7cf009dad2b97ff4",
+      "maskedValue": "3727377856557211369",
+      "name": "commitment-does-not-open-to-masked-value",
+      "sharedSecret": "0x2caec0cc985c3744ba3841c05ce856ebffd695a57c89e67cb1a686b42c41245f",
+      "tokenId": "8192",
+      "unmasksToValue": "500000000000",
+      "why": "masked_value unmasks to forgedValue but the commitment commits to trueValue; without the commitment check the verifier pays out forgedValue"
+    },
+    {
+      "commitment": "0xa0841eb5e4c30aba948481faf6654f84c3a9a7152923ee87f21180ebcc47456c",
+      "expectedError": "InvalidMaskedTokenId",
+      "maskedTokenId": "0x",
+      "maskedTokenIdLength": 0,
+      "maskedValue": "7214406222263334173",
+      "name": "masked-token-id-length-0",
+      "sharedSecret": "0x32da6d4f2fc047597b89bf58b4957333d9f46475bf18f31428d0ea9637a18b03",
+      "why": "MaskedAmountV2 requires exactly 8 bytes; anything else is malformed"
+    },
+    {
+      "commitment": "0xa0841eb5e4c30aba948481faf6654f84c3a9a7152923ee87f21180ebcc47456c",
+      "expectedError": "InvalidMaskedTokenId",
+      "maskedTokenId": "0xf7757e16",
+      "maskedTokenIdLength": 4,
+      "maskedValue": "7214406222263334173",
+      "name": "masked-token-id-length-4",
+      "sharedSecret": "0x32da6d4f2fc047597b89bf58b4957333d9f46475bf18f31428d0ea9637a18b03",
+      "why": "MaskedAmountV2 requires exactly 8 bytes; anything else is malformed"
+    },
+    {
+      "commitment": "0xa0841eb5e4c30aba948481faf6654f84c3a9a7152923ee87f21180ebcc47456c",
+      "expectedError": "InvalidMaskedTokenId",
+      "maskedTokenId": "0xf7757e168bb217",
+      "maskedTokenIdLength": 7,
+      "maskedValue": "7214406222263334173",
+      "name": "masked-token-id-length-7",
+      "sharedSecret": "0x32da6d4f2fc047597b89bf58b4957333d9f46475bf18f31428d0ea9637a18b03",
+      "why": "MaskedAmountV2 requires exactly 8 bytes; anything else is malformed"
+    },
+    {
+      "commitment": "0xa0841eb5e4c30aba948481faf6654f84c3a9a7152923ee87f21180ebcc47456c",
+      "expectedError": "InvalidMaskedTokenId",
+      "maskedTokenId": "0xf7757e168bb217b8f7",
+      "maskedTokenIdLength": 9,
+      "maskedValue": "7214406222263334173",
+      "name": "masked-token-id-length-9",
+      "sharedSecret": "0x32da6d4f2fc047597b89bf58b4957333d9f46475bf18f31428d0ea9637a18b03",
+      "why": "MaskedAmountV2 requires exactly 8 bytes; anything else is malformed"
+    },
+    {
+      "commitment": "0xbe3c8583fca6fd94cedbdf41c507476edf4ac8c8e3af681b9ac5537cd1296e7f",
+      "expectedError": null,
+      "maskedTokenId": "0x9e9aed75f07be514",
+      "maskedValue": "7590828223267772455",
+      "name": "well-formed-but-wrong-token-id",
+      "opensToTokenId": "1",
+      "opensToValue": "123456",
+      "sharedSecret": "0x629c1552fc82cf1cecd10f23a9e11ab6422b6bd79963cee19db9ca4f1564f74e",
+      "why": "opens cleanly under MobileCoin; the bridge verifier must still reject it because the token id is not eusdTokenId"
+    }
+  ],
+  "maskedAmounts": [
+    {
+      "amountSharedSecret": "0xff650e83659b8d95c94dd9024760a5656f1754d45359322ff12dc7c8d67990e2",
+      "blinding": "0x71ed6680992ea7f7acec518615efd7e79be6cc3dd483adaeecad3aed897faf07",
+      "blindingWide": "0x8605f3d56c6cef0c77b258d3060b25705b929c92a393090061e4a6ab5018f97f74ac4bd12dd7b6cc03499d693ccdbd371f01b6b102a2829832c9c64f5ba12e8d",
+      "case": 0,
+      "commitment": "0xa8a0200a309b7cfcac67805c100dd7c811d1855f757b8fe717eec6c8c6b6411e",
+      "label": "token id 0 (MOB), value 0",
+      "maskedTokenId": "0xf97cf993f290ed56",
+      "maskedValue": "14606454819447015521",
+      "maskedValueBytes": "0x6188ee1c458db4ca",
+      "sharedSecret": "0xf41ecb7e195df98b736cfcaf1a603f9eaaa856272ad180aed5fdf29783354a5a",
+      "tokenId": "0",
+      "tokenIdMask": "6263822028281314553",
+      "tokenIdMaskBytes": "0xf97cf993f290ed56",
+      "txPublicKey": "0xfeaeba458b2c6c45565b55a6b74dfc89fc7dfc7442a51a688a8bd19fb7caae77",
+      "value": "0",
+      "valueMask": "14606454819447015521",
+      "valueMaskBytes": "0x6188ee1c458db4ca",
+      "viewPrivateKey": "0x9da96bfc5260c4b3558026ffe453c0bc98124404e3bf8db956492e8e6f417700"
+    },
+    {
+      "amountSharedSecret": "0xf73af37ad2f75dbcc70539421dc129245b11c02cf5dfb2524a2675cb708b6b95",
+      "blinding": "0xd74a7a5d90c22b59b2e5a080d078987da1a21c150c60dbdbd7c031d0c2746a08",
+      "blindingWide": "0x29c5184a38a4a0a60f014a3615aca7a556043961ae8a775414daf524c68c1c64c2620d0f813d94b8dc2740dcb9524b1cf66edd4207a092d1ac2f1ecdaeb2098f",
+      "case": 1,
+      "commitment": "0x06f3871bbdbef6b5aa93d7b5715e242b4c5e88f2d7fda65c0518d988ae2d3d6d",
+      "label": "token id 0 (MOB), value 1",
+      "maskedTokenId": "0xad3504a7d22bf7f7",
+      "maskedValue": "7139239491251100440",
+      "maskedValueBytes": "0x185b76f27dac1363",
+      "sharedSecret": "0x7a29552604401c84f91d3e16c49aae5f8ae60da28157ad38b7703e0ab42faf45",
+      "tokenId": "0",
+      "tokenIdMask": "17867798230360929709",
+      "tokenIdMaskBytes": "0xad3504a7d22bf7f7",
+      "txPublicKey": "0x74e662576d93eb993c5fae0edad608c762c06f2e536a43ba74f8e48f51952e17",
+      "value": "1",
+      "valueMask": "7139239491251100441",
+      "valueMaskBytes": "0x195b76f27dac1363",
+      "viewPrivateKey": "0x8b4a52b2a4c312884649ec8951e6c4a88b1622076223670764bded7b00f59304"
+    },
+    {
+      "amountSharedSecret": "0xe505d8d359a38887dd896b82cf82c8387d837bde0332b8c28303d69d5e6dc17c",
+      "blinding": "0x279953ec3c7014be9ee103270c94ce8e404c19c1cedec7587c2ae390be735f02",
+      "blindingWide": "0x6e8ad6a9efe26291fe10e0904fb8d863a8329e893e7a44363ae6e9e3710cc6c0047ae98be08a8a3ce75af4ce5d86cbd0627d483adbfe32212276dc74fe991abe",
+      "case": 2,
+      "commitment": "0x56e595fa6bc8be60c2fda7982f555cf9ad3037908ef615b40e943848ae1fe469",
+      "label": "eUSD, value 0",
+      "maskedTokenId": "0x5445a56c27e55f1d",
+      "maskedValue": "10847152620320440877",
+      "maskedValueBytes": "0x2dc2a566d6d38896",
+      "sharedSecret": "0x8c81b7584bda082d501ee28a94bde19a13b156f30bb33508b365d9a56bdacf03",
+      "tokenId": "8192",
+      "tokenIdMask": "2116662307376686420",
+      "tokenIdMaskBytes": "0x5465a56c27e55f1d",
+      "txPublicKey": "0x424eec0628a46305893066551b421c5d6e08836ff2d1398e109b68c9b87b4f79",
+      "value": "0",
+      "valueMask": "10847152620320440877",
+      "valueMaskBytes": "0x2dc2a566d6d38896",
+      "viewPrivateKey": "0x77e89e899a5485a7b94161f54273c7625df7c240b289019e885d9180f6160f0b"
+    },
+    {
+      "amountSharedSecret": "0xa8371ef0229bb6a04fe72980798ba969cbef09dd68593fd6f98a645bf1be9e57",
+      "blinding": "0x90709723f66c072d9e2f4caeafbb86f06ee59c861393b782453b689278da1900",
+      "blindingWide": "0xcc32ad8e6fb19c4b2a2139dc36f71c4d0c69692a308d07e28b3e06ead65ca9bf7ea883f9aedc233b81c2ecf79ac9ce022d71d63dce2f22e4be273403169501d1",
+      "case": 3,
+      "commitment": "0x8c21932f4c9e13e95aa06100f5858d0279c39b14b70a6e49d80a93df8a9b747a",
+      "label": "eUSD, value 1",
+      "maskedTokenId": "0xe1e50367b1ec6419",
+      "maskedValue": "2535168842292814725",
+      "maskedValueBytes": "0x85638052a1ba2e23",
+      "sharedSecret": "0x4aabe132c8a70382dbb67f448edb5ad81948cf63ffc671acb1456eb29c0a121b",
+      "tokenId": "8192",
+      "tokenIdMask": "1829847595300931041",
+      "tokenIdMaskBytes": "0xe1c50367b1ec6419",
+      "txPublicKey": "0xa4cc93c8272b9593b3d7245ae74477b655f639b26999b2a51897e9f4eee27f1b",
+      "value": "1",
+      "valueMask": "2535168842292814724",
+      "valueMaskBytes": "0x84638052a1ba2e23",
+      "viewPrivateKey": "0x04d1d0422e054021ac22353db34c5f8ee731764ac75a895df85c387e3f44b605"
+    },
+    {
+      "amountSharedSecret": "0x79eb1ffd744f8483febacced1d1d30f0e2acae9f8f334bdbdde6254273f2b515",
+      "blinding": "0xa46bd6c1cdab1d1bb4c0fe5378e8d59c43eaaec8f5a0513342a6009aeb84d101",
+      "blindingWide": "0x9cc42e302cec00454c010fccdd8584b40f132dbf0b77882146bdd7b44c4abbbfb6a8a098844131c18a9cadb67f3501b9cef77021890b41c49dbcdd88d4eef014",
+      "case": 4,
+      "commitment": "0xb620efd4455b90cbd3849a69cd024d4411441e25d60078fd2a786e49262b5427",
+      "label": "eUSD, 250000.000000 in 1e-6 base units",
+      "maskedTokenId": "0x22385727b943ed43",
+      "maskedValue": "13274017711844008072",
+      "maskedValueBytes": "0x88a0b4b8c7c836b8",
+      "sharedSecret": "0x1eb0a7a9c92b6a3d1a5dfedf631a4a85e51ce2c71218c07cfb187ba946ce1726",
+      "tokenId": "8192",
+      "tokenIdMask": "4894642832529627170",
+      "tokenIdMaskBytes": "0x22185727b943ed43",
+      "txPublicKey": "0x465a49b001c72aaf6404eebe414bdb57522b0a1396094ffdaf22594436fc4942",
+      "value": "250000000000",
+      "valueMask": "13274017943049331848",
+      "valueMaskBytes": "0x88e49d8dfdc836b8",
+      "viewPrivateKey": "0xdb6aa198790f844b0974d969cb36adeb5c90bd2040d9cc892bfd3690cb1db201"
+    },
+    {
+      "amountSharedSecret": "0xeeecc3ceffc1e74672e0d403b7ee4f86269e0f1eaa50ef4b30018967274f099a",
+      "blinding": "0x89c76ab846935f9d9ff634d4099696bbda542a86fee22672ab6cbe9e5d6ad301",
+      "blindingWide": "0xc197e59dac825d1b25faeeafbeb10e47a8eb6076fca14e41053b6f23ddcdbfd832194324135650d3f43f7f70b50c47bb04e49adc5cae4a3630c27f079914235e",
+      "case": 5,
+      "commitment": "0x1a4dfde3b41bdcfd51aeb3566cff3f692167528f66533a6bafbb716f15af9059",
+      "label": "eUSD, u64::MAX -- the largest value expressible",
+      "maskedTokenId": "0x2293d65f17fa223a",
+      "maskedValue": "15331109971534504287",
+      "maskedValueBytes": "0x5f61c3994a0bc3d4",
+      "sharedSecret": "0x8e131f1887013493d28e56542d9b1f05db42b562af2b728ec58520566569544a",
+      "tokenId": "8192",
+      "tokenIdMask": "4189185581707080482",
+      "tokenIdMaskBytes": "0x22b3d65f17fa223a",
+      "txPublicKey": "0xcaa85bbde4a37340157b5984c711c31aa9cf99ce3b07dfa6920c8917c66fd826",
+      "value": "18446744073709551615",
+      "valueMask": "3115634102175047328",
+      "valueMaskBytes": "0xa09e3c66b5f43c2b",
+      "viewPrivateKey": "0x859639aefae6e4d2bb7a24e5c6e7339ece8e9d86567ef1a504415c7f4626660a"
+    },
+    {
+      "amountSharedSecret": "0x7dc6f00731d3c97b08ad9b5aca07d5c15a9adec2babce5a5c541edee8443db61",
+      "blinding": "0x4732610b6e43df6dcb0a34bbbd0a4457ed8b16ef9b8d7edc1d2633d1bfda180d",
+      "blindingWide": "0x8c299a616382a6914bdb72d7ba91ce98b3505e0cac7401c7c571191b4d96cc6b610b6345799acdb259a0b89161028dfb0069ebe283ec24e3ed8843ca61a70cf7",
+      "case": 6,
+      "commitment": "0xf8fb21a5b8dc17e621a1d285de3b0759cd7a0a5ef86edebd15a08d461e9ffa03",
+      "label": "token id 1, mid-range value",
+      "maskedTokenId": "0x651ce74ddb61190a",
+      "maskedValue": "10568688460706332940",
+      "maskedValueBytes": "0x0cc12be22886ab92",
+      "sharedSecret": "0x9c12690bb770181040180f40286b9bad03110c2b4cc0357bb1501d57e20b1d3b",
+      "tokenId": "1",
+      "tokenIdMask": "727720409329769572",
+      "tokenIdMaskBytes": "0x641ce74ddb61190a",
+      "txPublicKey": "0x92ef16e9b52728d3433baa4e60ffbcf0fb884f4e1f329afcbc8f92de2b9cf917",
+      "value": "81985529216486895",
+      "valueMask": "10630961666281442531",
+      "valueMaskBytes": "0xe30c806b4fc38893",
+      "viewPrivateKey": "0x139e555efe2b0d54614b9220493b6c32f2aa42bc60be0e4ff75851dc6157ec02"
+    },
+    {
+      "amountSharedSecret": "0x97b368c2dabd6d9ff633e02c9abc7d06d2e02c23ee95885cdd225e67df6ac9ea",
+      "blinding": "0x78be4c92fa4432456a55a4bfdeae3bc8ffc49b371ef99dc7aa122b2de074d009",
+      "blindingWide": "0xa83d86f811261b2b4e9bba210dfcb614ae33c8f067437c0eb4a2e967afb37783240e2cc1f1eb6f7fb6edb0c297f5ed2e78e5e81dbdf1e8ecbd5c39c0e69519dd",
+      "case": 7,
+      "commitment": "0x1a442eb7d0c03f82f23532ebb7c18152d8e8016ba4edd9d04a517440abe56c1e",
+      "label": "token id u64::MAX -- every byte of the id XORed into B",
+      "maskedTokenId": "0x20b1f370c6eae629",
+      "maskedValue": "7039724644972595714",
+      "maskedValueBytes": "0x028a273c4420b261",
+      "sharedSecret": "0x9a87e3e5f989da7931bf3bec0d0ac0228bc8e7eab1a6923fd85c9fed0302475d",
+      "tokenId": "18446744073709551615",
+      "tokenIdMask": "15427385335491612383",
+      "tokenIdMaskBytes": "0xdf4e0c8f391519d6",
+      "txPublicKey": "0x7079ae8a389498a583d3eaad7ea39387f1dcb6535e3b2c08a82ab07e45c3c54c",
+      "value": "4294967296",
+      "valueMask": "7039724649267563010",
+      "valueMaskBytes": "0x028a273c4520b261",
+      "viewPrivateKey": "0xd5188aca7f44030c2fe9b0e298f17be495db9e05389ca97d9e459adbb3ed6707"
+    }
+  ],
+  "memoCipher": {
+    "cases": [
+      {
+        "counterBlocks": [
+          "0x000102030405060708090a0b0c0d0e0f",
+          "0x000102030405060708090a0b0c0d0e10",
+          "0x000102030405060708090a0b0c0d0e11",
+          "0x000102030405060708090a0b0c0d0e12",
+          "0x000102030405060708090a0b0c0d0e13"
+        ],
+        "keystream": "0xc22e0bd966ce82674262c16bed4b162f92709e025c73896a6e3aac6ebc68e946a6b96c5b0aceb226290fc34d4115b8928e7947c627cd45557219a62a17d40f0ee9cf9196873cbeb42fd1451d59a6e938",
+        "nonce": "0x000102030405060708090a0b0c0d0e0f",
+        "wrapsCounter": false
+      },
+      {
+        "counterBlocks": [
+          "0xa1a2a3a4a5a6a7a8fffffffffffffffd",
+          "0xa1a2a3a4a5a6a7a8fffffffffffffffe",
+          "0xa1a2a3a4a5a6a7a8ffffffffffffffff",
+          "0xa1a2a3a4a5a6a7a80000000000000000",
+          "0xa1a2a3a4a5a6a7a80000000000000001"
+        ],
+        "keystream": "0x7742b686afe570845a346a9f0f5c96e149a3c0f0b59c88dccb2dec73bff3776bd310f165ff4bba2cef58c2de8996ec82680771c67f3176914914f5dddb68f76b42f598404607a9aff6fdfbb27e26deae",
+        "nonce": "0xa1a2a3a4a5a6a7a8fffffffffffffffd",
+        "wrapsCounter": true
+      },
+      {
+        "counterBlocks": [
+          "0x00000000000000ffffffffffffffffff",
+          "0x00000000000000ff0000000000000000",
+          "0x00000000000000ff0000000000000001",
+          "0x00000000000000ff0000000000000002",
+          "0x00000000000000ff0000000000000003"
+        ],
+        "keystream": "0x6beea054a4ab1f121d27f8ee796f089077b535a34ef09bce5514c57882f0bd0ee6d065a240bf2b55450731c07b70d9de54990847540b5019246ef78f2509ac2e9c69a76e886b0ea0e6d36d0569a81a6c",
+        "nonce": "0x00000000000000ffffffffffffffffff",
+        "wrapsCounter": true
+      }
+    ],
+    "key": "0x616d6f756e742d66697874757265732061657320637472206b65792030303031",
+    "mode": "Ctr64BE<Aes256>",
+    "note": "bytes 8..16 of the nonce are a big-endian counter; bytes 0..8 are fixed and take no carry. A Ctr128BE implementation passes the non-wrapping case and fails the two marked wrapsCounter."
+  },
+  "memos": [
+    {
+      "aesKey": "0xa41238fb8c7d5c094d65738e5402b93428c29fb1a4a5407b90936f3533fe0dd8",
+      "aesNonce": "0xdc0c42a618109166944f19dfa78b9939",
+      "beneficiary": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "ciphertext": "0x3b7a9950b492e3cd1139a03603a0b124c86efb5f7c0e5d9e554b5206bb5348a27a0f8eeb89854355b9a9315d69644290ac03cd71b68dd5d249d08f488001ee17ea6b",
+      "counterBlocks": [
+        "0xdc0c42a618109166944f19dfa78b9939",
+        "0xdc0c42a618109166944f19dfa78b993a",
+        "0xdc0c42a618109166944f19dfa78b993b",
+        "0xdc0c42a618109166944f19dfa78b993c",
+        "0xdc0c42a618109166944f19dfa78b993d"
+      ],
+      "keystream": "0xbb7b418adf608aa9bea4dedb9da35410ddbd81f61c4b5d9e554b5206bb5348a27a0f8eeb89854355b9a9315d69644290ac03cd71b68dd5d249d08f488001ee17ea6b",
+      "memoData": "0xd8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "memoType": "0x8001",
+      "name": "bridge-return-real-address",
+      "okm": "0xa41238fb8c7d5c094d65738e5402b93428c29fb1a4a5407b90936f3533fe0dd8dc0c42a618109166944f19dfa78b9939",
+      "plaintext": "0x8001d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "sharedSecret": "0x90e6f87661d3af6a8e0a6f9db106a5c14a0d7e3da067efa68056203760ef545b",
+      "txPublicKey": "0x9a657d96635fa0db6ddc1f13974ec782c824179839f57f22c25e3e1090a83633",
+      "viewPrivateKey": "0xe9c3b4b6e44f4b369a27432ecbc12c009c8348af86a9a3c1477c954f4554dd0e"
+    },
+    {
+      "aesKey": "0x37429209eb2e13429765d5ce13e5717cab63c2dc2066476853fefc7c573b32df",
+      "aesNonce": "0xf5469138ea92d79de9bef32a0d8fa712",
+      "beneficiary": "0x0000000000000000000000000000000000000000",
+      "ciphertext": "0xc41c9418e7add9640cbeec4a318e078748c8aa19d2e97e01167178ea2204e8711dc8b410180ac34d683161d309d037d177a47d1356deb82cd0d7eaa3d3135d7b3604",
+      "counterBlocks": [
+        "0xf5469138ea92d79de9bef32a0d8fa712",
+        "0xf5469138ea92d79de9bef32a0d8fa713",
+        "0xf5469138ea92d79de9bef32a0d8fa714",
+        "0xf5469138ea92d79de9bef32a0d8fa715",
+        "0xf5469138ea92d79de9bef32a0d8fa716"
+      ],
+      "keystream": "0x441d9418e7add9640cbeec4a318e078748c8aa19d2e97e01167178ea2204e8711dc8b410180ac34d683161d309d037d177a47d1356deb82cd0d7eaa3d3135d7b3604",
+      "memoData": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "memoType": "0x8001",
+      "name": "bridge-return-zero-address",
+      "okm": "0x37429209eb2e13429765d5ce13e5717cab63c2dc2066476853fefc7c573b32dff5469138ea92d79de9bef32a0d8fa712",
+      "plaintext": "0x800100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "sharedSecret": "0xd236418b6e767ec5ea6ce289c2813e469b479f3ffc2afb949ae9203bb58a6028",
+      "txPublicKey": "0x22e868f042b8349c890d232b5c0b63021ca5c58c447251e1da39b71fb0f7d166",
+      "viewPrivateKey": "0xa33cf61bcfef5e228be80f94e14ed2d42d98c864dce47912e32a60b71cc5d20a"
+    },
+    {
+      "aesKey": "0x2496bf59575e91ba84017f4014372a305598dce0f0854b802d43d314799ca9de",
+      "aesNonce": "0x8aa8a791a55304191e284f04df2d48a5",
+      "beneficiary": "0xffffffffffffffffffffffffffffffffffffffff",
+      "ciphertext": "0x037fab1dad372f7f2a2d6847a73f6f5554c095d5c96a17dec78b194447bd6b3b3109f01e8902125bdb684f3fd7203ed9b69c86d291a1b3ef3d5459938195fdbf201f",
+      "counterBlocks": [
+        "0x8aa8a791a55304191e284f04df2d48a5",
+        "0x8aa8a791a55304191e284f04df2d48a6",
+        "0x8aa8a791a55304191e284f04df2d48a7",
+        "0x8aa8a791a55304191e284f04df2d48a8",
+        "0x8aa8a791a55304191e284f04df2d48a9"
+      ],
+      "keystream": "0x837e54e252c8d080d5d297b858c090aaab3f6a2a36954d849dd1431e1de731616b53aa44d3584801813215658d7a6483ecc6dc88cbfbe9b5670e03c9dbcfa7e57a45",
+      "memoData": "0xffffffffffffffffffffffffffffffffffffffff5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "memoType": "0x8001",
+      "name": "bridge-return-all-ones-beneficiary",
+      "okm": "0x2496bf59575e91ba84017f4014372a305598dce0f0854b802d43d314799ca9de8aa8a791a55304191e284f04df2d48a5",
+      "plaintext": "0x8001ffffffffffffffffffffffffffffffffffffffff5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "sharedSecret": "0xdeea7e0dd41cf4c6d99fac7b24defc76a70dce08498c74aaf4bd455274518415",
+      "txPublicKey": "0xaedec49674245e2487a110ae438bcb3b0ddbb88f80252e8638851569fb8f5831",
+      "viewPrivateKey": "0xf540cea9ce4bb67cd48eea22c5876457f8746cd10e91942abadd514c8e1f9c06"
+    },
+    {
+      "aesKey": "0x174644838be24a9de2c241bf3e3e6807a1274aba67adee48a91fc7d8f608ca79",
+      "aesNonce": "0xca5ea37b7045b55e2a3e355da18230eb",
+      "beneficiary": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "ciphertext": "0x6f4f69b9e3a62b1cc5d97351d359e845f76e077631bfec22b35f47ed63d41c24759c0bb2a603d8c2a1b346278e7e9c94b77835c3944c6f82ca5319a4da5a40b995a9",
+      "counterBlocks": [
+        "0xca5ea37b7045b55e2a3e355da18230eb",
+        "0xca5ea37b7045b55e2a3e355da18230ec",
+        "0xca5ea37b7045b55e2a3e355da18230ed",
+        "0xca5ea37b7045b55e2a3e355da18230ee",
+        "0xca5ea37b7045b55e2a3e355da18230ef"
+      ],
+      "keystream": "0x6e4fb163885442786a440dbc4d5a0d71e2bd7ddf51faec22b35f47ed63d41c24759c0bb2a603d8c2a1b346278e7e9c94b77835c3944c6f82ca5319a4da5a40b995a9",
+      "memoData": "0xd8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "memoType": "0x0100",
+      "name": "wrong-memo-type-0x0100",
+      "okm": "0x174644838be24a9de2c241bf3e3e6807a1274aba67adee48a91fc7d8f608ca79ca5ea37b7045b55e2a3e355da18230eb",
+      "plaintext": "0x0100d8da6bf26964af9d7eed9e03e53415d37aa960450000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "sharedSecret": "0xf817f0ab610c9216db71827d78afd84224f1b8aa4aa86ccd0d273dd1c9341f21",
+      "txPublicKey": "0x4a87ef69fe44403a3eef72268f997ebbfce88ae6a22159682a381d77f8a0e758",
+      "viewPrivateKey": "0x3afa1c5d163c6a8fd25e666375dae1d7c9bebd6ed2999159fccf66c9dfcf5009"
+    }
+  ],
+  "note": "Generated by tools/amount-fixtures from MobileCoin's own crates (MaskedAmountV2, generators, MemoPayload) and curve25519-dalek. Do not hand-edit. Regenerate: cd tools/amount-fixtures && cargo run --offline"
+}

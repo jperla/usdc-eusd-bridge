@@ -126,18 +126,19 @@ contract ReentrantToken {
 /// and believe the return leg is complete.
 ///
 /// It answers "is this output payable to the bridge?" with an unconditional
-/// yes. The real answer requires Ristretto255 arithmetic in Solidity, which
-/// does not exist in this repo yet. Any deployment passing this to
-/// MobileCoinVerifier's constructor can be drained by anyone who can produce a
-/// quorum-signed block containing ANY eUSD output -- including one paying
-/// themselves.
+/// yes. Any deployment passing this to MobileCoinVerifier's constructor has
+/// not closed the recipient link.
+///
+/// Note that saying yes is no longer enough to redeem anything: the shared
+/// secret it hands back is zero, and the amount opened under a zero secret
+/// does not reproduce the output's commitment. `test/verifier.mjs` pins that.
 contract AcceptsAnyRecipient_DO_NOT_DEPLOY is IRecipientCheck {
     function isPayableToBridge(bytes32, bytes32, bytes32)
         external
         pure
-        returns (bool)
+        returns (bool, bytes32)
     {
-        return true;
+        return (true, bytes32(0));
     }
 }
 
@@ -147,8 +148,28 @@ contract RejectsEveryRecipient is IRecipientCheck {
     function isPayableToBridge(bytes32, bytes32, bytes32)
         external
         pure
-        returns (bool)
+        returns (bool, bytes32)
     {
-        return false;
+        return (false, bytes32(0));
+    }
+}
+
+/// TEST ONLY. Says yes and hands back a shared secret chosen at construction,
+/// so a test can drive the amount and memo openers with a secret that is right
+/// for the output while the curve check is out of the picture -- or with one
+/// that is deliberately wrong.
+contract FixedSecretRecipient_DO_NOT_DEPLOY is IRecipientCheck {
+    bytes32 public immutable secret;
+
+    constructor(bytes32 _secret) {
+        secret = _secret;
+    }
+
+    function isPayableToBridge(bytes32, bytes32, bytes32)
+        external
+        view
+        returns (bool, bytes32)
+    {
+        return (true, secret);
     }
 }
