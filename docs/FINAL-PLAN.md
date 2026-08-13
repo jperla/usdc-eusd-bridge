@@ -25,48 +25,60 @@ verify Ethereum. So the return leg is cryptographically verified and the deposit
 
 ---
 
-## 2. The one open item
+## 2. The access structure — DECIDED
 
-**Recommendation, revised after Josh said six entities is too many:** 3 operators (2-of-3)
-**AND** 1 independent gate — **four entities**, and an attacker must compromise **three** of
-them. Going from six entities to four costs T=4 → T=3.
+**Decided: 3 operators (2-of-3) AND 1 independent gate. Four entities, and an
+attacker must compromise three of them.**
 
-Machine-checked in `spec/AccessStructure.tla`, which proves `T = max(k, g, k+g−r)` tight
-across configurations, where `r` is the operator/gate overlap:
+Machine-checked in `proofs/tla/AccessStructure.tla`, which proves
+`T = max(k, g, k+g−r)` is both a lower bound and achievable, where `r` is the
+operator/gate overlap. Every row below has been model-checked for bound,
+tightness, and that some coalition can actually authorize:
 
-| configuration | entities | T |
-|---|---|---|
-| 3 principals holding **both** roles | 3 | **2** — no benefit at all |
-| 2-of-3 operators + 1 gate | **4** | **3** |
-| 2-of-3 operators + 2-of-3 gates | 6 | 4 |
+| configuration | entities | T | survives one lost operator key |
+|---|---|---|---|
+| 3 principals holding **both** roles, 2-of-3 | 3 | **2** | yes |
+| 3 principals holding **both** roles, 3-of-3 | 3 | 3 | no — *and the gate contributes nothing* |
+| 2-of-2 operators + 1 gate | 3 | 3 | **no** |
+| **2-of-3 operators + 1 gate** ← **decided** | **4** | **3** | **yes** |
 
-**Entity count is about compromise domains, not machines.** One gate entity can hold its key
-with internal redundancy — several HSMs, several people — without becoming multiple
-principals. That buys availability without buying entities.
+**Why the fourth entity.** Three entities *can* reach `T = 3` — as 2-of-2
+operators plus a gate — so the constraint "three parties" was never in conflict
+with the security target. What three entities cannot do is survive a lost
+operator key, and there is deliberately no recovery path. The fourth entity
+buys exactly that and nothing else: identical compromise threshold, one
+tolerated key loss.
 
-**What does not work:** an HSM that an operator organization administers or can recover from
-is *not* an independent gate. It is the same compromise domain in different hardware.
+**The 3-of-3 row is a trap.** It reaches `T = 3` on paper, but when the same
+parties hold both roles the structure reduces to an ordinary `max(k,g)`-of-n
+multisig — the split contributes nothing at the entity level. It is 3-of-3
+multisig with extra steps.
 
-Two things make this sharper than it looks:
+**Entity count is about compromise domains, not machines.** The gate entity can
+hold its key with internal redundancy — several HSMs, several people — without
+becoming multiple principals. That buys availability without buying entities.
 
-**The gate co-signs every release.** It is not an emergency key — its share is in the key
-image, so nothing moves without it. Gates therefore need routine availability, and the gate
-threshold trades against liveness exactly as the operator threshold does.
+**What does not work:** an HSM that an operator organization administers, or can
+recover from, is not an independent gate. It is the same compromise domain in
+different hardware.
 
-**Shared parties collapse the structure entirely.** If the same parties hold both roles, a
-coalition spends iff it reaches `max(k,g)` — so the access structure is *exactly* a
-`max(k,g)`-of-n multisig, and the split provides no **entity-level compromise-threshold**
-benefit. That rules out every threshold assignment over three shared parties: operators 2-of-3
-with gates 3-of-3 over the same three is 3-of-3 multisig wearing a costume. *(Narrower than
-"no benefit at all" — a separately administered, non-bypassable system may still resist a
-compromise limited to one role's credentials.)*
+**Still open, and it is not a parameter.** *Who* the gate is. Model-checking
+shows gates under operator control sign straight through a pause and the
+arrangement buys nothing, so this is an organizational fact about real
+administrative boundaries — no model can see it and no code review can verify
+it.
 
-**Consequence worth stating before it is discovered:** under *(operators AND gates)* there
-are now **two independent ways to lose the funds** — losing either cohort's threshold is
-terminal. It does **not** follow that the probability doubles: the two cohorts have different
-loss profiles, and a 1-of-2 gate is far harder to lose than a 2-of-3 operator set. The
-operational point stands regardless — gate key management needs the same rigor as operator key
-management, and `m` should be sized for availability rather than treated as a formality.
+**The gate co-signs every release.** It is not an emergency key: its share is in
+the key image, so nothing moves without it. Gates therefore need routine
+availability, and the gate threshold trades against liveness exactly as the
+operator threshold does.
+
+**Consequence worth stating before it is discovered:** under *(operators AND
+gates)* there are two independent ways to lose the funds — losing either
+cohort's threshold is terminal. It does **not** follow that the probability
+doubles: a 1-of-1 gate held with internal redundancy is far harder to lose than
+a 2-of-3 operator set. The operational point stands regardless: gate key
+management needs the same rigor as operator key management.
 
 **This blocks funding, not building.** The address derives from `B = B_owner + B_gate`, so a
 production address cannot be funded before the holders are known. Everything in §5 proceeds

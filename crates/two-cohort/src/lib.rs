@@ -103,6 +103,7 @@
 //!   compiler in registers or on the stack are outside this crate's reach.
 //!   Zeroization here reduces the residue; it does not eliminate it.
 
+pub mod production;
 pub mod cohort;
 pub mod composite;
 pub mod control;
