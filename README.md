@@ -179,10 +179,10 @@ footnote:
    MobileCoin uses and Ed25519 cannot substitute for. It is a **constructor
    argument** (`IRecipientCheck`), so no deployment can omit it silently, and
    the test double is named `AcceptsAnyRecipient_DO_NOT_DEPLOY`.
-2. **The block digest framing** in `MobileCoinVerifier.blockDigest` is a
-   hypothesis about Digestible encoding, not yet checked against a
-   node-produced digest. (`MobileCoinBlockId` in `Merlin.sol` *is* checked, and
-   passes — the two need reconciling.)
+2. ~~The block digest framing is unvalidated.~~ **Closed.** Both the block id
+   and the digest a validator's `BlockSignature` covers are now reproduced
+   byte-for-byte against a `Block` built and signed by MobileCoin's own crates,
+   with a per-field test asserting every header field is bound.
 
 Also absent: a live signing ceremony, DKG with proof-of-possession, and any
 mainnet deployment.
