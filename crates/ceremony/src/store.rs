@@ -152,17 +152,31 @@ mod sealed {
     /// are private, so this does not compile:
     ///
     /// ```compile_fail
-    /// use ceremony::store::Receipt;
-    /// use ceremony::{ContextId, SlotId};
-    /// let forged = Receipt::issue(SlotId(0), Some(ContextId([0u8; 32])), 1);
+    /// // Reads a private field off a GENUINE receipt. Nothing else can make
+    /// // this fail, so it compiles exactly when the fields stop being private.
+    /// //
+    /// // Two earlier versions of this doctest were red for the wrong reason --
+    /// // one named a constructor that no longer exists, the other omitted
+    /// // fields and needed a `Default` that RecordDigest does not have -- so
+    /// // both stayed red with the seal opened and pinned nothing. Verified by
+    /// // making the fields `pub` and watching this one turn green.
+    /// use ceremony::store::{BindingStore, MemoryStore};
+    /// use ceremony::SlotId;
+    /// let mut store = MemoryStore::new();
+    /// let receipt = store.reserve(SlotId(0)).unwrap();
+    /// let _forged = receipt.head;
     /// ```
     ///
-    /// and neither does this:
+    /// and neither does reaching the constructor, which is `pub(super)`:
     ///
     /// ```compile_fail
-    /// use ceremony::store::{Receipt, SlotRecord};
+    /// use ceremony::store::{BindingStore, MemoryStore, Receipt, SlotRecord};
     /// use ceremony::SlotId;
-    /// let forged = Receipt { slot: SlotId(0), record: SlotRecord::Reserved };
+    /// let mut store = MemoryStore::new();
+    /// let real = store.reserve(SlotId(0)).unwrap();
+    /// let _forged = Receipt::seal(
+    ///     SlotId(1), SlotRecord::Reserved, real.sequence(), None, real.head(),
+    /// );
     /// ```
     ///
     /// The only way to hold one is to have written through a store:

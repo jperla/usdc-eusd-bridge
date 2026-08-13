@@ -424,6 +424,13 @@ impl Authorizer for Unavailable {
         context: &SigningContext,
         signature: &FrostSignature,
     ) -> Result<(), Outage> {
+        // A backend that is down cannot verify a signature either. Without
+        // this the outage is only half-modelled: aggregation succeeds, the
+        // signature verifies, and finish() never reaches the branch that goes
+        // looking for a culprit -- which is the branch under test.
+        if self.down.get() {
+            return Err(Outage);
+        }
         self.inner
             .verify_signature(context, signature)
             .map_err(|_| Outage)
@@ -489,6 +496,73 @@ fn a_backend_outage_accuses_no_one() {
     down.set(false);
     p1.receive_round_two(honest)
         .expect("the share was valid all along");
+}
+
+/// The same rule at the LAST place it can be broken.
+///
+/// `finish` re-checks every share when the aggregate signature fails to
+/// verify, which is the one moment the machine is actively looking for someone
+/// to blame. A backend that cannot answer there must still produce no
+/// accusation -- and this is where getting it wrong is most tempting, because
+/// something has demonstrably gone wrong and a culprit would be convenient.
+///
+/// Pinned separately from the round-two case because the two paths have
+/// separate `match` arms: mutating only `finish`'s arm to convict on any
+/// rejection left the round-two tests green.
+#[test]
+fn a_backend_that_fails_during_finish_still_accuses_no_one() {
+    let fx = fixture(2, 3);
+    let subset = Subset::new([P1, P2]);
+    let stmt = statement(b"release 250000 eUSD to R, block 12345");
+
+    let down = Rc::new(Cell::new(false));
+    let mut p1 = Ceremony::new(
+        fx.roster.clone(),
+        P1,
+        identity(P1),
+        Rc::new(RefCell::new(MemoryStore::new())),
+        Rc::new(RefCell::new(MemoryAnchor::new())),
+        Unavailable {
+            inner: fx.signer(P1),
+            down: down.clone(),
+        },
+    );
+    let mut p2 = fx.node(P2);
+
+    let m1 = p1.begin(stmt.clone(), subset.clone()).expect("p1 begins");
+    let m2 = p2
+        .machine
+        .begin(stmt.clone(), subset.clone())
+        .expect("p2 begins");
+    p1.receive_round_one(m2).expect("p1 takes p2's round one");
+    p2.machine
+        .receive_round_one(m1)
+        .expect("p2 takes p1's round one");
+    p1.round_two().expect("p1 signs");
+    let honest = p2.machine.round_two().expect("p2 signs");
+
+    // Both shares arrive and are checked while the backend is up, so nothing
+    // is known to be wrong when finish() is entered.
+    p1.receive_round_two(honest).expect("p1 takes p2's share");
+
+    // The backend drops before aggregation. finish() will fail to verify the
+    // aggregate and go looking for a culprit with a checker that cannot check.
+    down.set(true);
+    let err = p1.finish().expect_err("finish cannot succeed with the backend down");
+
+    assert!(
+        !matches!(err, Error::IdentifiableAbort { .. }),
+        "finish must not accuse anyone on a backend error, got: {err}"
+    );
+    assert!(
+        p1.evidence().is_none(),
+        "no evidence may be emitted from an uncheckable share in finish"
+    );
+    assert!(
+        !matches!(p1.state(), State::Aborted(_)),
+        "the ceremony must not be aborted against a participant, got: {:?}",
+        p1.state()
+    );
 }
 
 /// The same distinction on the other side of the fence: a third party checking
