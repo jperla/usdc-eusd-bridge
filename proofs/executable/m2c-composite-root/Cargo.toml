@@ -1,0 +1,26 @@
+[package]
+name = "m2c-composite-root-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mc-crypto-ring-signature = { path = "/Users/jperla/josh/repos/mobilecoin/crypto/ring-signature", default-features = false, features = ["alloc"] }
+mc-crypto-keys = { path = "/Users/jperla/josh/repos/mobilecoin/crypto/keys", default-features = false, features = ["alloc"] }
+mc-core-types = { path = "/Users/jperla/josh/repos/mobilecoin/core/types", default-features = false }
+mc-crypto-hashes = { path = "/Users/jperla/josh/repos/mobilecoin/crypto/hashes", default-features = false }
+
+modular-frost = { path = "/Users/jperla/josh/repos/serai/crypto/frost", default-features = false, features = ["ristretto"] }
+dalek-ff-group = { path = "/Users/jperla/josh/repos/serai/crypto/dalek-ff-group", default-features = false, features = ["std"] }
+dkg-dealer = { path = "/Users/jperla/josh/repos/serai/crypto/dkg/dealer" }
+flexible-transcript = { path = "/Users/jperla/josh/repos/serai/crypto/transcript", default-features = false, features = ["std", "recommended"] }
+
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "rand_core"] }
+ciphersuite = { path = "/Users/jperla/josh/repos/serai/crypto/ciphersuite", default-features = false, features = ["std"] }
+group = "0.13"
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
+rand_chacha = "0.3"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+[patch.crates-io]
+schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }
