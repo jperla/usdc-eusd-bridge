@@ -4,7 +4,10 @@ resolver = "2"
 # cargo walks up from vendor/mobilecoin/crypto/* and resolves THIS manifest as
 # their workspace root -- then fails on the workspace.package keys they inherit
 # from MobileCoin's own root. They are separate workspaces, not members.
-exclude = ["vendor", "tools"]
+# proofs/ holds archived spikes, each with its own pinned lockfile: they are
+# evidence of what was true when they were run, so they must resolve
+# independently rather than float with this workspace.
+exclude = ["vendor", "tools", "proofs"]
 members = [
     "crates/two-cohort",
     "crates/ceremony",

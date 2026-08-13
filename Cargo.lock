@@ -191,7 +191,7 @@ dependencies = [
  "rand_chacha",
  "rand_core",
  "thiserror",
- "zeroize",
+ "two-cohort",
 ]
 
 [[package]]

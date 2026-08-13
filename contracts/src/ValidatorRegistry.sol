@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {Governed} from "./Governed.sol";
+
 /// Maps MobileCoin block-signing keys to validator ENTITIES, scoped to the
 /// block heights each key was valid for, and decides what counts as a quorum.
 ///
@@ -28,7 +30,7 @@ pragma solidity ^0.8.26;
 /// controls this registry can therefore forge returns and drain the escrow,
 /// which is why changes are timelocked and why this is a named component
 /// rather than a mapping hidden inside the verifier.
-contract ValidatorRegistry {
+contract ValidatorRegistry is Governed {
     struct KeyRecord {
         /// The validator entity this signing key belongs to. Quorum is counted
         /// over these, never over keys.
@@ -40,8 +42,6 @@ contract ValidatorRegistry {
         bool present;
         bool revoked;
     }
-
-    address public governance;
 
     /// Distinct entities required for a quorum.
     uint8 public threshold;
@@ -64,30 +64,33 @@ contract ValidatorRegistry {
 
     mapping(bytes32 => Proposal) public proposals;
 
-    event KeyProposed(bytes32 indexed key, bytes32 indexed entity, uint64 executableAt);
+    /// The height range is in the event because it is part of what the timelock
+    /// commits to: a watcher that only saw key and entity could not tell that a
+    /// proposal grants signing authority over past blocks.
+    event KeyProposed(
+        bytes32 indexed key,
+        bytes32 indexed entity,
+        uint64 fromHeight,
+        uint64 toHeight,
+        uint64 executableAt
+    );
     event KeyEnrolled(bytes32 indexed key, bytes32 indexed entity, uint64 fromHeight, uint64 toHeight);
     event KeyRevoked(bytes32 indexed key, bytes32 indexed entity);
     event ThresholdChanged(uint8 from, uint8 to);
-    event GovernanceTransferred(address indexed from, address indexed to);
 
-    error NotGovernance();
-    error ZeroAddress();
     error KeyAlreadyEnrolled(bytes32 key);
     error KeyNotEnrolled(bytes32 key);
-    error NotProposed(bytes32 key);
+    /// Carries the proposal id, since the id commits to the height range too:
+    /// enrolling a proposed key with different heights lands here.
+    error NotProposed(bytes32 key, bytes32 proposalId);
     error TooEarly(uint64 nowTs, uint64 executableAt);
     error BadThreshold(uint8 threshold, uint256 entityCount);
     error BadHeightRange(uint64 fromHeight, uint64 toHeight);
     error ZeroEntity();
 
-    modifier onlyGovernance() {
-        if (msg.sender != governance) revert NotGovernance();
-        _;
-    }
-
-    constructor(address _governance, uint8 _threshold, uint64 _delay) {
-        if (_governance == address(0)) revert ZeroAddress();
-        governance = _governance;
+    constructor(address _governance, uint8 _threshold, uint64 _delay)
+        Governed(_governance)
+    {
         delay = _delay;
         // Threshold is checked against the entity count on every change; at
         // construction the roster is empty, so only zero is rejected here.
@@ -120,6 +123,18 @@ contract ValidatorRegistry {
 
     // -------------------------------------------------------------- mutation
 
+    /// A proposal is identified by everything it grants, not by the key. So
+    /// enrolling a proposed key over a different height range is a different,
+    /// unproposed grant, and has to wait out its own delay.
+    function _proposalId(
+        bytes32 key,
+        bytes32 entity,
+        uint64 fromHeight,
+        uint64 toHeight
+    ) private pure returns (bytes32) {
+        return keccak256(abi.encode(key, entity, fromHeight, toHeight));
+    }
+
     /// Enrollment is two-step and timelocked. `entity` is the off-chain
     /// attestation result: that this enclave key belongs to that validator.
     function proposeKey(
@@ -133,10 +148,10 @@ contract ValidatorRegistry {
         if (toHeight != 0 && toHeight <= fromHeight) {
             revert BadHeightRange(fromHeight, toHeight);
         }
-        bytes32 id = keccak256(abi.encode(key, entity, fromHeight, toHeight));
         uint64 at = uint64(block.timestamp) + delay;
-        proposals[id] = Proposal({exists: true, executableAt: at});
-        emit KeyProposed(key, entity, at);
+        proposals[_proposalId(key, entity, fromHeight, toHeight)] =
+            Proposal({exists: true, executableAt: at});
+        emit KeyProposed(key, entity, fromHeight, toHeight, at);
     }
 
     function enrollKey(
@@ -145,9 +160,9 @@ contract ValidatorRegistry {
         uint64 fromHeight,
         uint64 toHeight
     ) external onlyGovernance {
-        bytes32 id = keccak256(abi.encode(key, entity, fromHeight, toHeight));
+        bytes32 id = _proposalId(key, entity, fromHeight, toHeight);
         Proposal memory p = proposals[id];
-        if (!p.exists) revert NotProposed(key);
+        if (!p.exists) revert NotProposed(key, id);
         if (uint64(block.timestamp) < p.executableAt) {
             revert TooEarly(uint64(block.timestamp), p.executableAt);
         }
@@ -188,12 +203,6 @@ contract ValidatorRegistry {
         }
         emit ThresholdChanged(threshold, t);
         threshold = t;
-    }
-
-    function transferGovernance(address to) external onlyGovernance {
-        if (to == address(0)) revert ZeroAddress();
-        emit GovernanceTransferred(governance, to);
-        governance = to;
     }
 
     // ---------------------------------------------------------------- quorum

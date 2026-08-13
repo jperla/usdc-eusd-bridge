@@ -20,13 +20,13 @@
 //! and is out of this crate's scope; the `Authorizer` trait is the seam.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use mc_crypto_hashes::{Blake2b512, Digest};
 use rand_core::{CryptoRng, RngCore};
+use two_cohort::{lagrange_at_zero, Cohort};
 
 use crate::authorizer::Authorizer;
 use crate::context::{Commitment, ContextId, ParticipantId, Share, SigningContext, SlotId, Subset};
@@ -50,6 +50,11 @@ pub enum FrostError {
     SignatureInvalid,
     #[error("participant {0:?} appears twice")]
     Duplicate(ParticipantId),
+    /// A roster or subset the Shamir layer refused: threshold zero, threshold
+    /// above the roster, a repeated id, or id 0 -- which is the interpolation
+    /// point, so a participant issued it would hold the group secret outright.
+    #[error(transparent)]
+    Sharing(#[from] two_cohort::Error),
 }
 
 /// Public key material: the group key and each participant's verification share.
@@ -62,44 +67,43 @@ pub struct GroupKey {
 
 /// Trusted-dealer Shamir sharing of a fresh secret.
 ///
-/// A trusted dealer, not a DKG, and no attempt at secret hygiene: the
-/// polynomial coefficients are dropped rather than erased. Both are out of
-/// scope and stated as such -- this crate is about ceremony sequencing, and key
-/// generation is a separate ceremony with a separate threat model.
+/// A trusted dealer, not a DKG: this crate is about ceremony sequencing, and
+/// key generation is a separate ceremony with a separate threat model. The
+/// sharing itself is `two_cohort::Cohort`, which is where the roster rules and
+/// the Lagrange arithmetic live for the whole workspace -- a second copy here
+/// would be a second chance to get the interpolation wrong, and only one of the
+/// two would be pinned by that crate's hand-computed weight vectors.
+///
+/// Returned as a `Result` rather than asserted: a threshold copied from the
+/// wrong cohort or an operator id left at its default is config a human types,
+/// and a signing service that aborts on bad config can be taken down by bad
+/// config.
 pub fn deal<R: RngCore + CryptoRng>(
     threshold: u16,
     ids: &[ParticipantId],
     rng: &mut R,
-) -> (GroupKey, BTreeMap<ParticipantId, Scalar>) {
-    assert!(threshold >= 1 && (threshold as usize) <= ids.len());
-    let coeffs: Vec<Scalar> = (0..threshold).map(|_| Scalar::random(rng)).collect();
-    let secret = coeffs[0];
+) -> Result<(GroupKey, BTreeMap<ParticipantId, Scalar>), FrostError> {
+    let roster: Vec<u64> = ids.iter().map(|id| id.0 as u64).collect();
+    let secret = Scalar::random(rng);
+    let cohort = Cohort::deal("ceremony", &secret, threshold as usize, &roster, rng)?;
 
     let mut shares = BTreeMap::new();
     for id in ids {
-        let x = Scalar::from(id.0 as u64);
-        // Horner, high coefficient first.
-        let mut acc = Scalar::ZERO;
-        for c in coeffs.iter().rev() {
-            acc = acc * x + c;
-        }
-        shares.insert(*id, acc);
+        shares.insert(*id, *cohort.share(id.0 as u64)?);
     }
-
-    let group_public = RISTRETTO_BASEPOINT_POINT * secret;
     let verification_shares = shares
         .iter()
         .map(|(id, s)| (*id, RISTRETTO_BASEPOINT_POINT * *s))
         .collect();
 
-    (
+    Ok((
         GroupKey {
             threshold,
-            group_public,
+            group_public: RISTRETTO_BASEPOINT_POINT * secret,
             verification_shares,
         },
         shares,
-    )
+    ))
 }
 
 /// One participant's signer.
@@ -178,7 +182,7 @@ impl<R: RngCore + CryptoRng + Clone> Authorizer for FrostSigner<R> {
         let rho = binding_factor(ctx_id, self.me);
         let r = group_commitment(context)?;
         let c = challenge(&r, &self.group.group_public, ctx_id);
-        let lambda = lagrange(context.subset(), self.me);
+        let lambda = lagrange(context.subset(), self.me)?;
 
         let z = d + e * rho + lambda * c * self.share;
         Ok(Share(z.to_bytes().to_vec()))
@@ -196,7 +200,7 @@ impl<R: RngCore + CryptoRng + Clone> Authorizer for FrostSigner<R> {
         let rho = binding_factor(ctx_id, participant);
         let r = group_commitment(context)?;
         let c = challenge(&r, &self.group.group_public, ctx_id);
-        let lambda = lagrange(context.subset(), participant);
+        let lambda = lagrange(context.subset(), participant)?;
         let y = self
             .group
             .verification_shares
@@ -288,19 +292,14 @@ pub fn group_commitment(context: &SigningContext) -> Result<RistrettoPoint, Fros
 }
 
 /// Lagrange coefficient at zero for `participant` over `subset`.
-pub fn lagrange(subset: &Subset, participant: ParticipantId) -> Scalar {
-    let xi = Scalar::from(participant.0 as u64);
-    let mut num = Scalar::ONE;
-    let mut den = Scalar::ONE;
-    for other in subset.iter() {
-        if other == participant {
-            continue;
-        }
-        let xj = Scalar::from(other.0 as u64);
-        num *= xj;
-        den *= xj - xi;
-    }
-    num * den.invert()
+///
+/// Fallible because the weight is only meaningful for a participant that is in
+/// the subset: computed for one that is not, the formula still returns a
+/// perfectly well-formed scalar, and a share built on it would be wrong in a
+/// way nothing downstream can attribute.
+pub fn lagrange(subset: &Subset, participant: ParticipantId) -> Result<Scalar, FrostError> {
+    let ids: Vec<u64> = subset.iter().map(|id| id.0 as u64).collect();
+    Ok(lagrange_at_zero(participant.0 as u64, &ids)?)
 }
 
 pub fn commitment_of(
@@ -341,13 +340,4 @@ pub fn scalar_from(bytes: &[u8]) -> Option<Scalar> {
     let mut b = [0u8; 32];
     b.copy_from_slice(bytes);
     Option::from(Scalar::from_canonical_bytes(b))
-}
-
-impl fmt::Debug for FrostSigner<rand_chacha::ChaCha20Rng> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrostSigner")
-            .field("me", &self.me)
-            .field("live_slots", &self.nonces.len())
-            .finish_non_exhaustive()
-    }
 }

@@ -12,13 +12,38 @@ import {Sha512} from "./Sha512.sol";
 /// that decompression needs; everything else is `mulmod`/`addmod` against
 /// p = 2^255 - 19.
 ///
-/// Verification is the cofactorless equation [s]B = R + [H(R,A,M)]A. That is
-/// the equation RFC 8032 s5.1.7 states, and the one ref10/libsodium and
-/// MobileCoin's own ed25519-dalek `verify` implement; the cofactored variant
-/// ([8][s]B = [8]R + [8][h]A) accepts a strict superset of signatures, so
-/// choosing cofactorless here can never accept something a cofactored verifier
-/// would reject. See the LIMITATIONS note at the foot of this file for what
-/// that does and does not pin down.
+/// Verification is the cofactorless equation [s]B = R + [H(R,A,M)]A of RFC
+/// 8032 s5.1.7 -- the equation ref10, libsodium and MobileCoin's own
+/// ed25519-dalek `verify` implement.
+///
+/// LIMITATIONS -- what this library does NOT establish.
+///
+/// * NO KEY VALIDATION. `verify` accepts any public key that decodes to a
+///   curve point, including the identity and the seven other points of order
+///   dividing 8. Against the identity, [h]A is the identity for every h, so
+///   (R = [r]B, s = r) verifies for ANY message: universal forgery, and the
+///   same is true of ed25519-dalek and libsodium. This is pinned by a test
+///   rather than left implicit. The caller -- the validator registry -- is
+///   what must refuse such keys; this library deliberately does not, because
+///   silently filtering keys would make it disagree with the reference
+///   implementations.
+/// * Cofactorless. The cofactored variant ([8][s]B = [8]R + [8][h]A) accepts a
+///   strict superset, so nothing accepted here would be rejected by a
+///   cofactored verifier; the converse does not hold. Ed25519 is not strongly
+///   binding under either rule, so a signature is not a unique identifier for
+///   a message.
+/// * STRICTER THAN ref10 on encodings. `decompress` rejects y >= p and the
+///   negative-zero form, matching libsodium and noble-ed25519 but not the
+///   original ref10, which masks the sign bit and lets some non-canonical y
+///   through. The divergence is in the safe direction (this accepts fewer
+///   signatures), but it is a divergence: a signature that some other
+///   implementation accepts can be rejected here. Untested against ref10
+///   directly -- no ref10 oracle is available here -- so this is stated, not
+///   demonstrated.
+/// * Not constant time, and does not try to be. Every input is public:
+///   signatures, public keys and block digests are all on-chain already.
+/// * Single signatures only. No batch verification, which is where the real
+///   per-signature saving would be for a validator quorum.
 library Ed25519 {
     // --------------------------------------------------------------- constants
 
@@ -312,32 +337,6 @@ library Ed25519 {
         }
     }
 }
-
-// LIMITATIONS -- what this library does NOT establish.
-//
-// * NO KEY VALIDATION. `verify` accepts any public key that decodes to a curve
-//   point, including the identity and the seven other points of order dividing
-//   8. Against the identity, [h]A is the identity for every h, so (R = [r]B,
-//   s = r) verifies for ANY message: universal forgery, and the same is true
-//   of ed25519-dalek and libsodium. This is pinned by a test rather than left
-//   implicit. The caller -- the validator registry -- is what must refuse such
-//   keys; this library deliberately does not, because silently filtering keys
-//   would make it disagree with the reference implementations.
-// * Cofactorless, per RFC 8032 s5.1.7. Cofactored verification accepts a
-//   strict superset, so nothing accepted here would be rejected by a cofactored
-//   verifier; the converse does not hold. Ed25519 is not strongly binding under
-//   either rule, so a signature is not a unique identifier for a message.
-// * STRICTER THAN ref10 on encodings. `decompress` rejects y >= p and the
-//   negative-zero form, matching libsodium and @noble but not the original
-//   ref10, which masks the sign bit and lets some non-canonical y through. The
-//   divergence is in the safe direction (this accepts fewer signatures), but it
-//   is a divergence: a signature that some other implementation accepts can be
-//   rejected here. Untested against ref10 directly -- no ref10 oracle is
-//   available in this repo -- so this is stated, not demonstrated.
-// * Not constant time, and does not try to be. Every input is public:
-//   signatures, public keys and block digests are all on-chain already.
-// * Single signatures only. No batch verification, which is where the real
-//   per-signature saving would be for a validator quorum.
 
 /// Thin deployed wrapper.
 ///

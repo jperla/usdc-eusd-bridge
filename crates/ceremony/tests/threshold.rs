@@ -4,10 +4,15 @@
 //! guards something: below threshold the backend's shares still verify
 //! individually and the aggregate still does not verify. The machine's refusal
 //! is an early, attributable version of a failure that is real either way.
+//!
+//! The second half of the file is about the thresholds themselves: a roster or
+//! a dealing that is degenerate on its face must be refused, and refused as a
+//! value rather than a process abort.
 
 mod common;
 
-use ceremony::machine::Ceremony;
+use ceremony::frost::{deal, lagrange, FrostError};
+use ceremony::machine::{Ceremony, Roster};
 use ceremony::store::Receipt;
 use ceremony::{
     Authorizer, BindingStore, Error, MemoryAnchor, MemoryStore, ParticipantId, RoundOnePackage,
@@ -15,6 +20,8 @@ use ceremony::{
 };
 use common::*;
 
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -134,4 +141,98 @@ fn a_quorum_that_drops_a_member_mid_ceremony_cannot_finish() {
         machine.finish().unwrap_err(),
         Error::IncompleteRoundTwo { have: 1, need: 3 }
     );
+}
+
+// ------------------------------------------------- degenerate configurations
+
+/// The underlying roster complaint, with the cohort-name wrapper stripped.
+fn refusal(err: &FrostError) -> &two_cohort::Error {
+    match err {
+        FrostError::Sharing(e) => e.kind(),
+        other => panic!("expected a sharing refusal, got {other}"),
+    }
+}
+
+fn dealt(threshold: u16, ids: &[ParticipantId]) -> Result<(), FrostError> {
+    deal(threshold, ids, &mut ChaCha20Rng::seed_from_u64(4)).map(|_| ())
+}
+
+/// Every one of these is reachable from a config file a human types, so each
+/// has to come back as a value the caller can act on. A signing service that
+/// aborts the process on bad config can be taken down by bad config.
+///
+/// Participant id 0 is the sharpest of them: 0 is the interpolation point, so
+/// the polynomial's value there IS the group secret and a participant issued
+/// that id holds the whole signing key alone, whatever the threshold says.
+/// `two-cohort`'s `participant_id_zero_is_rejected_because_it_would_hold_the_secret`
+/// demonstrates that from the polynomial; what this asserts is that the
+/// ceremony's dealer inherits the refusal instead of issuing the key.
+#[test]
+fn degenerate_dealings_are_refused_rather_than_aborting() {
+    let ids = [P1, P2, P3];
+    assert!(dealt(3, &ids).is_ok(), "n-of-n is a legitimate dealing");
+
+    let empty: [ParticipantId; 0] = [];
+    let cases: [(&[ParticipantId], u16, two_cohort::Error); 4] = [
+        (&ids, 0, two_cohort::Error::ThresholdZero),
+        (
+            &ids,
+            4,
+            two_cohort::Error::ThresholdExceedsRoster {
+                threshold: 4,
+                roster: 3,
+            },
+        ),
+        (&empty, 1, two_cohort::Error::EmptyRoster),
+        (
+            &[ParticipantId(0), P1, P2],
+            2,
+            two_cohort::Error::ReservedParticipantId,
+        ),
+    ];
+
+    for (roster, threshold, want) in cases {
+        let err = dealt(threshold, roster).unwrap_err();
+        assert_eq!(refusal(&err), &want, "dealing {threshold} over {roster:?}");
+    }
+}
+
+/// A weight is only meaningful for a participant that is in the subset. The
+/// formula happily returns a well-formed scalar for one that is not, and a
+/// share built on it would be silently wrong -- not invalid, wrong.
+#[test]
+fn a_lagrange_weight_outside_the_subset_is_an_error_not_a_number() {
+    let subset = Subset::new([P1, P2]);
+    assert!(lagrange(&subset, P1).is_ok());
+    let err = lagrange(&subset, P4).unwrap_err();
+    assert_eq!(
+        refusal(&err),
+        &two_cohort::Error::UnknownParticipant(P4.0 as u64)
+    );
+}
+
+/// Zero authorises every subset; a threshold above the roster authorises none
+/// and strands the funds. Neither is a state the machine should be able to
+/// start in.
+#[test]
+fn a_degenerate_roster_threshold_is_refused() {
+    let fx = fixture(2, 3);
+    let members: Vec<_> = fx
+        .ids
+        .iter()
+        .map(|id| (*id, identity(*id).public()))
+        .collect();
+
+    assert_eq!(
+        Roster::new(members.clone(), 0).unwrap_err(),
+        Error::ThresholdZero
+    );
+    assert_eq!(
+        Roster::new(members.clone(), 4).unwrap_err(),
+        Error::ThresholdExceedsRoster {
+            threshold: 4,
+            roster: 3
+        }
+    );
+    assert!(Roster::new(members, 3).is_ok(), "n-of-n is legitimate");
 }

@@ -25,9 +25,6 @@ impl IdentityPublic {
     pub fn as_bytes(&self) -> &[u8; 32] {
         self.0.as_ref()
     }
-    pub fn inner(&self) -> &Ed25519Public {
-        &self.0
-    }
 }
 
 impl From<Ed25519Public> for IdentityPublic {

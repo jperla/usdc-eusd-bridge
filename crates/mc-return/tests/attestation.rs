@@ -169,18 +169,37 @@ fn no_two_validators_sign_the_same_metadata_message() {
 
 #[test]
 fn the_two_routes_disagree_about_how_much_work_scales() {
-    // Same quorum size, same block. Under `block_signature` the verifier drives
-    // one transcript no matter how many signers; under `block_metadata` it
+    // Same block, quorums of 1, 3 and 5. Under `block_signature` the verifier
+    // drives one transcript however many signed; under `block_metadata` it
     // drives one per signer.
+    //
+    // The block-sig half is stated as an experiment rather than as an equality
+    // between two copies of the same expression: for each k, ONE replayed
+    // digest is verified against every signature in the quorum. If any node
+    // were signing something of its own the loop would fail, and the route
+    // would not amortize.
     let s = Scenario::build();
     let anchor = s.ledger.block(2);
-
     let sig_ops = block_sig_script(anchor).ops.len();
     let mut meta_ops = Vec::new();
 
     for k in [1usize, 3, 5] {
         let signing: Vec<usize> = (0..k).collect();
+
+        let digest = block_sig_script(anchor).replay();
+        for (i, sig) in block_signature_quorum(&s.validators, &signing, 3, anchor)
+            .signatures
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                sig.signer().verify(&digest, sig.signature()).is_ok(),
+                "at k={k}, signer {i} did not sign the one shared block digest"
+            );
+        }
+
         let meta = block_metadata_quorum(&s.validators, &signing, 3, anchor);
+        assert_eq!(meta.metadata.len(), k, "one metadata message per signer");
         meta_ops.push(
             meta.metadata
                 .iter()
@@ -189,10 +208,8 @@ fn the_two_routes_disagree_about_how_much_work_scales() {
         );
     }
 
-    // block-sig work does not depend on k at all -- there is only ever one
-    // transcript, whoever signed it.
-    assert_eq!(block_sig_script(anchor).ops.len(), sig_ops);
-    // metadata work strictly increases with k.
+    // Metadata work strictly increases with k; the single block-sig transcript
+    // is already smaller than the metadata cost of the smallest quorum.
     assert!(
         meta_ops[0] < meta_ops[1] && meta_ops[1] < meta_ops[2],
         "metadata transcript work did not grow with the quorum size: {meta_ops:?}"

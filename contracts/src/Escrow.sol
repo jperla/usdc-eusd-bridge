@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {IMobileCoinVerifier, VerifiedReturn} from "./IMobileCoinVerifier.sol";
+import {Governed} from "./Governed.sol";
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -27,7 +28,7 @@ interface IERC20 {
 ///
 /// The asymmetry is structural: Ethereum can verify MobileCoin, MobileCoin
 /// cannot verify Ethereum.
-contract Escrow {
+contract Escrow is Governed {
     // ------------------------------------------------------------------ types
 
     struct Deposit {
@@ -53,7 +54,6 @@ contract Escrow {
 
     IMobileCoinVerifier public verifier;
 
-    address public governance;
     address public auditor;
 
     /// Releases are blocked while frozen. Deposits are NOT: freezing the
@@ -102,29 +102,31 @@ contract Escrow {
     event Unfrozen(address indexed by);
     event VerifierChanged(address indexed from, address indexed to);
     event DepositCapChanged(uint256 from, uint256 to);
-    event GovernanceTransferred(address indexed from, address indexed to);
     event AuditorChanged(address indexed from, address indexed to);
 
     // ---------------------------------------------------------------- errors
+    //
+    // One selector per failure SITE, not per failure shape: the first thing an
+    // auditor has from a reverted trace is four bytes, and a shared
+    // `ZeroAddress()` across config, deposit and payout would make those four
+    // bytes say nothing about which of them happened.
 
-    error NotGovernance();
-    error NotAuditorOrGovernance();
+    error NotAuditorOrGovernance(address caller, address auditor, address governance);
     error IsFrozen();
     error ZeroAmount();
-    error ZeroAddress();
+    error ZeroPayout(uint64 mobAmount);
+    error ZeroUsdc();
+    error ZeroVerifier();
+    error ZeroDestination();
+    error ZeroBeneficiary();
     error CapExceeded(uint256 attempted, uint256 cap);
     error AlreadyRedeemed(bytes32 outputPublicKey);
     error WrongToken(uint64 got, uint64 want);
-    error TransferFailed();
+    error TransferFailed(bytes reason);
     error Reentrancy();
     error InsufficientEscrow(uint256 need, uint256 have);
 
     // ------------------------------------------------------------- modifiers
-
-    modifier onlyGovernance() {
-        if (msg.sender != governance) revert NotGovernance();
-        _;
-    }
 
     modifier nonReentrant() {
         if (_entered == 1) revert Reentrancy();
@@ -142,15 +144,13 @@ contract Escrow {
         uint256 _depositCap,
         address _governance,
         address _auditor
-    ) {
-        if (address(_usdc) == address(0)) revert ZeroAddress();
-        if (address(_verifier) == address(0)) revert ZeroAddress();
-        if (_governance == address(0)) revert ZeroAddress();
+    ) Governed(_governance) {
+        if (address(_usdc) == address(0)) revert ZeroUsdc();
+        if (address(_verifier) == address(0)) revert ZeroVerifier();
         usdc = _usdc;
         verifier = _verifier;
         eusdTokenId = _eusdTokenId;
         depositCap = _depositCap;
-        governance = _governance;
         auditor = _auditor;
         // 1:1 today. Present as state so a future re-denomination is a
         // deployment parameter and not a code change under time pressure.
@@ -172,12 +172,10 @@ contract Escrow {
         returns (uint256 depositId)
     {
         if (amount == 0) revert ZeroAmount();
-        if (mobDestination == bytes32(0)) revert ZeroAddress();
+        if (mobDestination == bytes32(0)) revert ZeroDestination();
 
-        uint256 held = totalDeposited - totalReleased;
-        if (held + amount > depositCap) {
-            revert CapExceeded(held + amount, depositCap);
-        }
+        uint256 attempted = outstanding() + amount;
+        if (attempted > depositCap) revert CapExceeded(attempted, depositCap);
 
         depositId = nextDepositId++;
         deposits[depositId] = Deposit({
@@ -189,7 +187,11 @@ contract Escrow {
         totalDeposited += amount;
 
         // Interaction last.
-        _pull(msg.sender, amount);
+        _move(
+            abi.encodeCall(
+                IERC20.transferFrom, (msg.sender, address(this), amount)
+            )
+        );
 
         emit Deposited(depositId, msg.sender, amount, mobDestination);
     }
@@ -219,12 +221,13 @@ contract Escrow {
         if (redeemed[r.outputPublicKey]) {
             revert AlreadyRedeemed(r.outputPublicKey);
         }
-        if (r.beneficiary == address(0)) revert ZeroAddress();
-        if (r.amount == 0) revert ZeroAmount();
+        if (r.beneficiary == address(0)) revert ZeroBeneficiary();
 
         usdcAmount =
             (uint256(r.amount) * conversionNumerator) / conversionDenominator;
-        if (usdcAmount == 0) revert ZeroAmount();
+        // Also the r.amount == 0 case; the error carries the pre-conversion
+        // amount so a dust return is distinguishable from an empty one.
+        if (usdcAmount == 0) revert ZeroPayout(r.amount);
 
         uint256 have = usdc.balanceOf(address(this));
         if (usdcAmount > have) revert InsufficientEscrow(usdcAmount, have);
@@ -235,7 +238,7 @@ contract Escrow {
         beneficiary = r.beneficiary;
 
         // --- interaction ---
-        _push(beneficiary, usdcAmount);
+        _move(abi.encodeCall(IERC20.transfer, (beneficiary, usdcAmount)));
 
         emit Released(r.outputPublicKey, beneficiary, usdcAmount, r.blockIndex);
     }
@@ -251,7 +254,7 @@ contract Escrow {
     /// someone would otherwise assume otherwise.
     function freeze(string calldata reason) external {
         if (msg.sender != auditor && msg.sender != governance) {
-            revert NotAuditorOrGovernance();
+            revert NotAuditorOrGovernance(msg.sender, auditor, governance);
         }
         frozen = true;
         emit Frozen(msg.sender, reason);
@@ -267,7 +270,7 @@ contract Escrow {
     // ------------------------------------------------------------- governance
 
     function setVerifier(IMobileCoinVerifier v) external onlyGovernance {
-        if (address(v) == address(0)) revert ZeroAddress();
+        if (address(v) == address(0)) revert ZeroVerifier();
         emit VerifierChanged(address(verifier), address(v));
         verifier = v;
     }
@@ -282,37 +285,35 @@ contract Escrow {
         auditor = a;
     }
 
-    function transferGovernance(address to) external onlyGovernance {
-        if (to == address(0)) revert ZeroAddress();
-        emit GovernanceTransferred(governance, to);
-        governance = to;
-    }
-
     // ----------------------------------------------------------------- views
 
     /// USDC currently backing outstanding eUSD, by this contract's accounting.
-    function outstanding() external view returns (uint256) {
-        return totalDeposited - totalReleased;
+    ///
+    /// Saturates at zero rather than subtracting. Releases are NOT bounded by
+    /// deposits: the float can be seeded directly, and eUSD issued against an
+    /// earlier escrow can be returned here. A plain subtraction underflows the
+    /// moment cumulative releases pass cumulative deposits, which panics this
+    /// view AND the cap check in `deposit`, bricking the deposit leg until
+    /// deposits catch up.
+    function outstanding() public view returns (uint256) {
+        return totalDeposited > totalReleased
+            ? totalDeposited - totalReleased
+            : 0;
     }
 
     // --------------------------------------------------------------- internal
 
-    function _pull(address from, uint256 amount) private {
-        (bool ok, bytes memory data) = address(usdc).call(
-            abi.encodeCall(IERC20.transferFrom, (from, address(this), amount))
-        );
-        // USDC returns a bool; some tokens return nothing. Accept both, reject
-        // an explicit false.
+    /// Move USDC, treating a `false` return as a failure.
+    ///
+    /// USDC returns a bool; some tokens return nothing. Accept both, reject an
+    /// explicit false. Whatever the token said -- its revert reason, or the
+    /// `false` -- is carried into `TransferFailed`: without it, "allowance too
+    /// low" and "recipient blacklisted" are the same four bytes to whoever is
+    /// on call at the time.
+    function _move(bytes memory call) private {
+        (bool ok, bytes memory data) = address(usdc).call(call);
         if (!ok || (data.length > 0 && !abi.decode(data, (bool)))) {
-            revert TransferFailed();
-        }
-    }
-
-    function _push(address to, uint256 amount) private {
-        (bool ok, bytes memory data) =
-            address(usdc).call(abi.encodeCall(IERC20.transfer, (to, amount)));
-        if (!ok || (data.length > 0 && !abi.decode(data, (bool)))) {
-            revert TransferFailed();
+            revert TransferFailed(data);
         }
     }
 }

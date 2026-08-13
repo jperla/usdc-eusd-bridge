@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import {IMobileCoinVerifier, VerifiedReturn, IRecipientCheck} from "./IMobileCoinVerifier.sol";
 import {ValidatorRegistry} from "./ValidatorRegistry.sol";
 import {Ed25519} from "./Ed25519.sol";
-import {MobileCoinBlock} from "./Merlin.sol";
+import {MobileCoinBlock, MobileCoinTxOut} from "./Merlin.sol";
 import {Blake2b256} from "./Blake2b256.sol";
 
 /// Verifies that an eUSD output was paid to the bridge's return address and
@@ -42,6 +42,17 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
     /// implementation here has NOT closed the return leg.
     IRecipientCheck public immutable recipientCheck;
 
+    /// A MobileCoin `TxOut`, exactly the fields its own digest covers.
+    struct TxOutFields {
+        bytes32 commitment;
+        uint64 maskedValue;
+        bytes maskedTokenId;
+        bytes32 targetKey;
+        bytes32 publicKey;
+        bytes eFogHint;
+        bytes eMemo;
+    }
+
     struct Proof {
         // --- block header fields, in Digestible order ---
         bytes32 blockId;
@@ -56,12 +67,16 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         // --- quorum ---
         bytes32[] signerKeys;      // ordered by validator entity, ascending
         bytes32[2][] signatures;   // parallel to signerKeys
-        // --- the output being redeemed ---
-        bytes32 txOutPublicKey;
-        bytes32 txOutTargetKey;
-        /// The TxOut's own hash, as MobileCoin computes it. The Merkle leaf
-        /// covers this, so it is what the membership walk starts from.
-        bytes32 txOutHash;
+        // --- the output being redeemed, in full ---
+        //
+        // The TxOut's own fields, NOT its hash. Taking the hash directly meant
+        // the Merkle path proved that SOME output was in the block while the
+        // caller named a different one -- the redeemed public key and amount
+        // were unconstrained, so one genuinely included output could be
+        // redeemed repeatedly under invented identities. Recomputing the
+        // digest from these fields is what makes the proof about the output it
+        // claims to be about.
+        TxOutFields txOut;
         uint64 amount;
         uint64 tokenId;
         // --- memo, domain-bound ---
@@ -146,10 +161,21 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
     /// MobileCoin's TxOut Merkle tree hashes with Blake2b-256 under domain
     /// tags, which Ethereum exposes only as the compression function F at
     /// precompile 0x09 (EIP-152), so `Blake2b256` reconstructs the whole hash.
-    /// `txOutHash` is the TxOut's own hash as MobileCoin computes it -- the
-    /// leaf hashes THAT, not the raw key material.
+    /// The leaf preimage: recomputed here rather than accepted from the caller.
+    function txOutDigest(Proof memory p) public pure returns (bytes32) {
+        return MobileCoinTxOut.digest(
+            p.txOut.commitment,
+            p.txOut.maskedValue,
+            p.txOut.maskedTokenId,
+            p.txOut.targetKey,
+            p.txOut.publicKey,
+            p.txOut.eFogHint,
+            p.txOut.eMemo
+        );
+    }
+
     function verifyMembership(Proof memory p) public view returns (bool) {
-        bytes32 node = Blake2b256.hashLeaf(p.txOutHash);
+        bytes32 node = Blake2b256.hashLeaf(txOutDigest(p));
         uint64 idx = p.merkleIndex;
         for (uint256 i = 0; i < p.merklePath.length; i++) {
             node = (idx & 1 == 0)
@@ -185,7 +211,7 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         if (!_payableToBridge(p)) revert NotPayableToBridge();
 
         return VerifiedReturn({
-            outputPublicKey: p.txOutPublicKey,
+            outputPublicKey: p.txOut.publicKey,
             beneficiary: p.beneficiary,
             amount: p.amount,
             tokenId: p.tokenId,
@@ -197,7 +223,7 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
 
     function _payableToBridge(Proof memory p) internal view returns (bool) {
         return recipientCheck.isPayableToBridge(
-            p.txOutPublicKey, p.txOutTargetKey, returnSpendPublicKey
+            p.txOut.publicKey, p.txOut.targetKey, returnSpendPublicKey
         );
     }
 

@@ -447,6 +447,32 @@ await test('report the cost of one block id', async () => {
       assert(got !== ref, `field ${wordIdx} is not bound into the digest`);
     }
   });
+
+  await test('TxOut digest matches the leaf preimage MobileCoin computes', async () => {
+    // This is what makes a membership proof about a SPECIFIC output. The
+    // fixture's tx_out_digest is produced by MobileCoin's own TxOut::hash.
+    const tx = RET.tx_out;
+    const ma = tx.masked_amount;
+    const enc = (hex) => {
+      const h = hex.replace(/^0x/, '');
+      return word(h.length / 2) + h.padEnd(Math.ceil(h.length / 64) * 64, '0');
+    };
+    // Three trailing dynamic args: maskedTokenId, eFogHint, eMemo.
+    const head = b32(ma.commitment) + word(ma.masked_value) + word(0) +
+      b32(tx.target_key) + b32(tx.public_key) + word(0) + word(0);
+    const tails = [enc(ma.masked_token_id), enc(tx.e_fog_hint), enc(tx.e_memo)];
+    let off = 7 * 32;
+    const words = head.match(/.{64}/g);
+    for (const [slot, tail] of [[2, tails[0]], [5, tails[1]], [6, tails[2]]]) {
+      words[slot] = word(off);
+      off += tail.length / 2;
+    }
+    const r = await chain.must(mp, selector(
+      'txOutDigest(bytes32,uint64,bytes,bytes32,bytes32,bytes,bytes)')
+      + words.join('') + tails.join(''));
+    assertEq(r.ret, RET.tx_out_digest.digest, 'TxOut digest');
+  });
+
 }
 
 summary();

@@ -40,7 +40,7 @@ fn a_quorum_can_forge_a_valid_signature_with_no_ceremony_at_all() {
     // Lagrange interpolation at zero over the quorum's own shares.
     let secret: Scalar = quorum
         .iter()
-        .map(|id| lagrange(&quorum, id) * fx.shares[&id])
+        .map(|id| lagrange(&quorum, id).unwrap() * fx.shares[&id])
         .sum();
     assert_eq!(
         RISTRETTO_BASEPOINT_POINT * secret,

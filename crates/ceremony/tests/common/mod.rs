@@ -50,11 +50,12 @@ pub struct Fixture {
 pub fn fixture(threshold: u16, n: u16) -> Fixture {
     let ids: Vec<ParticipantId> = (1..=n).map(ParticipantId).collect();
     let mut rng = ChaCha20Rng::seed_from_u64(0xB1D6E_u64 ^ ((threshold as u64) << 16) ^ n as u64);
-    let (group, shares) = deal(threshold, &ids, &mut rng);
+    let (group, shares) = deal(threshold, &ids, &mut rng).expect("well-formed roster");
     let roster = Roster::new(
         ids.iter().map(|id| (*id, identity(*id).public())),
         threshold,
-    );
+    )
+    .expect("well-formed roster");
     Fixture {
         roster,
         group,

@@ -11,11 +11,12 @@
 // one operator satisfy any threshold alone.
 
 import {
-  Chain, selector, word, addrWord, b32, decodeBool, decodeUint,
+  Chain, selector, word, addrWord, b32, decodeBool, decodeUint, decodeAddress,
   test, assert, assertEq, summary, revertReason,
 } from './harness.mjs';
 
 const GOV = '0x' + '11'.repeat(20);
+const NEWGOV = '0x' + '33'.repeat(20);
 const MALLORY = '0x' + 'ee'.repeat(20);
 const DELAY = 0n;            // 0 so enrollment is testable in one block
 const H = 1000n;             // a block height inside every enrolled range
@@ -42,6 +43,9 @@ const isQuorum = async (chain, reg, keys, height = H) => {
   assert(r.ok, `isQuorum reverted: ${revertReason(r.ret)}`);
   return decodeBool(r.ret);
 };
+
+const addressAt = async (chain, reg, sig) =>
+  decodeAddress((await chain.must(reg, selector(sig))).ret);
 
 /// Order keys by the entity they map to, as isQuorum requires.
 const byEntity = (pairs) => pairs.slice()
@@ -167,6 +171,73 @@ await test('only governance can propose, enroll, revoke or retune', async () => 
     assert(!(await chain.call(reg, selector(sig) + arg, { from: MALLORY })).ok,
       `${sig} must reject non-governance`);
   }
+});
+
+await test('a proposal commits to the height range, so enrolling other heights is unproposed', async () => {
+  const reg = await fresh(chain);
+  await chain.must(reg, selector('proposeKey(bytes32,bytes32,uint64,uint64)') +
+    b32(K(1)) + b32(E(1)) + word(0) + word(1000), { from: GOV });
+  assert(!(await chain.call(reg, selector('enrollKey(bytes32,bytes32,uint64,uint64)') +
+    b32(K(1)) + b32(E(1)) + word(0) + word(0), { from: GOV })).ok,
+    'widening the range at enrollment must revert');
+  assert((await chain.call(reg, selector('enrollKey(bytes32,bytes32,uint64,uint64)') +
+    b32(K(1)) + b32(E(1)) + word(0) + word(1000), { from: GOV })).ok,
+    'the proposed range enrolls');
+});
+
+// ------------------------------------------------------- governance handover
+
+await test('a governance nomination confers no authority until it is accepted', async () => {
+  // Registry governance can enroll a key and thereby forge a quorum, so a
+  // one-step transfer to an unusable address is both unrecoverable and total.
+  const reg = await fresh(chain);
+  await chain.must(reg, selector('transferGovernance(address)') + addrWord(NEWGOV), { from: GOV });
+
+  assertEq(await addressAt(chain, reg, 'governance()'), GOV,
+    'nomination must not move governance');
+  assertEq(await addressAt(chain, reg, 'pendingGovernance()'), NEWGOV, 'nominee recorded');
+
+  const args = b32(K(1)) + b32(E(1)) + word(0) + word(0);
+  assert(!(await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: NEWGOV })).ok,
+    'the nominee must not be able to enroll keys before accepting');
+  assert(!(await chain.call(reg, selector('acceptGovernance()'), { from: MALLORY })).ok,
+    'only the nominee may accept');
+  assert((await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
+    'the incumbent keeps every power while a nomination is pending');
+});
+
+await test('accepting moves governance, and the previous holder loses it', async () => {
+  const reg = await fresh(chain);
+  await chain.must(reg, selector('transferGovernance(address)') + addrWord(NEWGOV), { from: GOV });
+  await chain.must(reg, selector('acceptGovernance()'), { from: NEWGOV });
+
+  assertEq(await addressAt(chain, reg, 'governance()'), NEWGOV, 'governance moved');
+  assertEq(await addressAt(chain, reg, 'pendingGovernance()'), '0x' + '00'.repeat(20),
+    'nomination cleared on acceptance');
+  const args = b32(K(1)) + b32(E(1)) + word(0) + word(0);
+  assert((await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: NEWGOV })).ok,
+    'the new holder can act');
+  assert(!(await chain.call(reg,
+    selector('proposeKey(bytes32,bytes32,uint64,uint64)') + args, { from: GOV })).ok,
+    'the previous holder must lose authority');
+  assert(!(await chain.call(reg, selector('acceptGovernance()'), { from: NEWGOV })).ok,
+    'the nomination is spent, so accepting again must revert');
+});
+
+await test('the zero address cannot be nominated, and is rejected at construction', async () => {
+  const reg = await fresh(chain);
+  assert(!(await chain.call(reg,
+    selector('transferGovernance(address)') + addrWord('0x' + '00'.repeat(20)),
+    { from: GOV })).ok, 'zero nominee must revert');
+  let deployed = true;
+  try {
+    await chain.deploy('ValidatorRegistry',
+      addrWord('0x' + '00'.repeat(20)) + word(1) + word(0));
+  } catch { deployed = false; }
+  assert(!deployed, 'a registry with no governance must not deploy');
 });
 
 await test('the threshold cannot exceed the number of known entities', async () => {

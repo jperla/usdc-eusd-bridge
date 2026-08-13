@@ -215,7 +215,6 @@ pub trait Anchor {
     /// Record an observation of the store's sequence. Errors -- and poisons --
     /// if the store has gone backwards.
     fn observe(&mut self, sequence: u64) -> Result<(), AnchorError>;
-    fn poison(&mut self);
 }
 
 #[derive(Clone, Default, Debug)]
@@ -251,9 +250,6 @@ impl Anchor for MemoryAnchor {
         self.high_water = sequence;
         Ok(())
     }
-    fn poison(&mut self) {
-        self.poisoned = true;
-    }
 }
 
 impl<A: Anchor> Anchor for Rc<RefCell<A>> {
@@ -265,8 +261,5 @@ impl<A: Anchor> Anchor for Rc<RefCell<A>> {
     }
     fn observe(&mut self, sequence: u64) -> Result<(), AnchorError> {
         self.borrow_mut().observe(sequence)
-    }
-    fn poison(&mut self) {
-        self.borrow_mut().poison()
     }
 }

@@ -33,8 +33,9 @@ library Sha512 {
     /// Ed25519 hashes R || A || M and nothing else, and `abi.encodePacked`
     /// would allocate a second copy of M to build that. The prefix instead
     /// goes straight into the padded buffer the compression function was
-    /// always going to need. Avoiding the compiler's memory-to-memory copy
-    /// also keeps this deployable below Cancun, where MCOPY does not exist.
+    /// always going to need. Avoiding the compiler's memory-to-memory copy is
+    /// also what keeps this runnable pre-Cancun: solc lowers such a copy to
+    /// MCOPY, and the EVM the test harness runs is Shanghai.
     function hashPrefixed(bytes32 p0, bytes32 p1, bytes memory message)
         internal
         pure

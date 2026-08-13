@@ -472,6 +472,57 @@ library MobileCoinBlock {
 }
 
 
+/// A MobileCoin `TxOut`'s own digest -- the preimage of its Merkle leaf.
+///
+/// This is what binds a membership proof to a SPECIFIC output. Without it a
+/// verifier is told "some output is in this block" by the Merkle path and
+/// "here is its public key and value" by the caller, with nothing relating the
+/// two: one genuinely included output could then be redeemed repeatedly under
+/// invented public keys and amounts. Recomputing the leaf preimage from the
+/// output's own fields is what makes the proof about the output it claims.
+///
+/// Mirrors `TxOut::hash` -> `digest32::<MerlinTranscript>(b"mobilecoin-txout")`
+/// in mobilecoin 05cb699f transaction/core/src/tx.rs, expanded through the
+/// Digestible derive. `MaskedAmountV2` and `EncryptedMemo` are ordinary derived
+/// structs, so each is an aggregate node named after the Rust type; the memo's
+/// single tuple field is appended under the context "0".
+library MobileCoinTxOut {
+    using Merlin for Merlin.Transcript;
+
+    /// `eFogHint` and `eMemo` are fixed-width upstream (84 and 66 bytes) but
+    /// are taken as `bytes` so a future block version that resizes them does
+    /// not silently truncate here.
+    function digest(
+        bytes32 commitment,
+        uint64 maskedValue,
+        bytes memory maskedTokenId,
+        bytes32 targetKey,
+        bytes32 publicKey,
+        bytes memory eFogHint,
+        bytes memory eMemo
+    ) internal pure returns (bytes32) {
+        Merlin.Transcript memory t = Merlin.init("digestible");
+        t.appendAggHeader("mobilecoin-txout", "TxOut");
+
+        t.appendAggHeader("amount", "MaskedAmountV2");
+        t.appendPrimitive("commitment", "ristretto", abi.encodePacked(commitment));
+        t.appendPrimitive("masked_value", "uint", LE.le64(maskedValue));
+        t.appendPrimitive("masked_token_id", "bytes", maskedTokenId);
+        t.appendAggCloser("amount", "MaskedAmountV2");
+
+        t.appendPrimitive("target_key", "ristretto", abi.encodePacked(targetKey));
+        t.appendPrimitive("public_key", "ristretto", abi.encodePacked(publicKey));
+        t.appendPrimitive("e_fog_hint", "bytes", eFogHint);
+
+        t.appendAggHeader("e_memo", "EncryptedMemo");
+        t.appendPrimitive("0", "bytes", eMemo);
+        t.appendAggCloser("e_memo", "EncryptedMemo");
+
+        t.appendAggCloser("mobilecoin-txout", "TxOut");
+        return t.extractDigest();
+    }
+}
+
 /// Test-facing surface: a tiny interpreter so a fixture can drive an arbitrary
 /// sequence of transcript operations without a bespoke contract per case.
 ///
@@ -594,6 +645,21 @@ contract MerlinProbe {
             rootRangeTo,
             rootHash,
             contentsHash
+        );
+    }
+
+    function txOutDigest(
+        bytes32 commitment,
+        uint64 maskedValue,
+        bytes calldata maskedTokenId,
+        bytes32 targetKey,
+        bytes32 publicKey,
+        bytes calldata eFogHint,
+        bytes calldata eMemo
+    ) external pure returns (bytes32) {
+        return MobileCoinTxOut.digest(
+            commitment, maskedValue, maskedTokenId,
+            targetKey, publicKey, eFogHint, eMemo
         );
     }
 

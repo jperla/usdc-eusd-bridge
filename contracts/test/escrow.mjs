@@ -14,6 +14,7 @@ import {
 
 const GOV      = '0x' + '11'.repeat(20);
 const AUDITOR  = '0x' + '22'.repeat(20);
+const NEWGOV   = '0x' + '33'.repeat(20);
 const ALICE    = '0x' + 'a1'.repeat(20);
 const BOB      = '0x' + 'b0'.repeat(20);
 const RELAYER  = '0x' + 'de'.repeat(20);
@@ -45,6 +46,8 @@ const balanceOf = async (chain, usdc, who) =>
   decodeUint((await chain.must(usdc, selector('balanceOf(address)') + addrWord(who))).ret);
 const deposit = (chain, escrow, from, amt, dest = MOB_DEST) =>
   chain.call(escrow, selector('deposit(uint256,bytes32)') + word(amt) + b32(dest), { from });
+const addressAt = async (chain, escrow, sig) =>
+  decodeAddress((await chain.must(escrow, selector(sig))).ret);
 const release = (chain, escrow, from, retStruct) =>
   chain.call(escrow,
     selector('release(bytes)') + word(32) + dynBytes(retStruct),
@@ -178,6 +181,26 @@ await test('a zero beneficiary is rejected, so a malformed memo cannot burn fund
   assert(!r.ok, 'zero beneficiary must revert');
 });
 
+await test('a release funded from float does not brick the deposit leg', async () => {
+  // Releases are NOT bounded by deposits: the float can be seeded directly, and
+  // eUSD issued against an earlier escrow can be returned here. Subtracting
+  // totalReleased from totalDeposited underflowed as soon as releases ran
+  // ahead, which panicked both `outstanding()` and the cap check in `deposit`.
+  const { usdc, escrow } = await fixture(chain);
+  await mint(chain, usdc, escrow, 100_000000n);
+  assert((await release(chain, escrow, RELAYER, encReturn({
+    outKey: '0x' + '0b'.repeat(32), beneficiary: BOB, amount: 7_000000n,
+  }))).ok, 'release from float');
+
+  assertEq(decodeUint((await chain.must(escrow, selector('outstanding()'))).ret), 0n,
+    'outstanding saturates at zero');
+
+  await mint(chain, usdc, ALICE, 5_000000n);
+  await approve(chain, usdc, ALICE, escrow, 5_000000n);
+  assert((await deposit(chain, escrow, ALICE, 5_000000n)).ok,
+    'deposits must still work once releases exceed deposits');
+});
+
 // ------------------------------------------------------------------- freeze
 
 await test('the auditor can freeze, and a freeze blocks releases', async () => {
@@ -235,6 +258,55 @@ await test('only governance can change the verifier, cap, auditor and governance
     assert((await chain.call(escrow, selector(sig) + arg, { from: GOV })).ok,
       `${sig} must accept governance`);
   }
+});
+
+await test('a governance nomination confers no authority until it is accepted', async () => {
+  // A one-step transfer to an address nobody controls is unrecoverable, and
+  // escrow governance picks the verifier. So the nominee must transact first --
+  // and until it does, it is nobody.
+  const { escrow } = await fixture(chain);
+  await chain.must(escrow,
+    selector('transferGovernance(address)') + addrWord(NEWGOV), { from: GOV });
+
+  assertEq(await addressAt(chain, escrow, 'governance()'), GOV,
+    'nomination must not move governance');
+  assertEq(await addressAt(chain, escrow, 'pendingGovernance()'), NEWGOV,
+    'nominee recorded');
+
+  assert(!(await chain.call(escrow,
+    selector('setDepositCap(uint256)') + word(1n), { from: NEWGOV })).ok,
+    'the nominee must not be able to act before accepting');
+  assert(!(await chain.call(escrow, selector('acceptGovernance()'), { from: ALICE })).ok,
+    'only the nominee may accept');
+  assert((await chain.call(escrow,
+    selector('setDepositCap(uint256)') + word(1n), { from: GOV })).ok,
+    'the incumbent keeps every power while a nomination is pending');
+});
+
+await test('accepting moves governance, and the previous holder loses it', async () => {
+  const { escrow } = await fixture(chain);
+  await chain.must(escrow,
+    selector('transferGovernance(address)') + addrWord(NEWGOV), { from: GOV });
+  await chain.must(escrow, selector('acceptGovernance()'), { from: NEWGOV });
+
+  assertEq(await addressAt(chain, escrow, 'governance()'), NEWGOV, 'governance moved');
+  assertEq(await addressAt(chain, escrow, 'pendingGovernance()'), '0x' + '00'.repeat(20),
+    'nomination cleared on acceptance');
+  assert((await chain.call(escrow,
+    selector('setDepositCap(uint256)') + word(1n), { from: NEWGOV })).ok,
+    'the new holder can act');
+  assert(!(await chain.call(escrow,
+    selector('setDepositCap(uint256)') + word(1n), { from: GOV })).ok,
+    'the previous holder must lose authority');
+  assert(!(await chain.call(escrow, selector('acceptGovernance()'), { from: NEWGOV })).ok,
+    'the nomination is spent, so accepting again must revert');
+});
+
+await test('the zero address cannot be nominated', async () => {
+  const { escrow } = await fixture(chain);
+  assert(!(await chain.call(escrow,
+    selector('transferGovernance(address)') + addrWord('0x' + '00'.repeat(20)),
+    { from: GOV })).ok, 'zero nominee must revert');
 });
 
 // ------------------------------------------------------------- reentrancy

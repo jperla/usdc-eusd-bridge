@@ -26,7 +26,6 @@
 //! that decision should be visible at the call site.
 
 use mc_blockchain_types::{Block, BlockID, BlockMetadata, BlockSignature};
-use mc_common::NodeID;
 use mc_crypto_digestible::Digestible;
 use mc_crypto_keys::Ed25519Public;
 use mc_transaction_core::tx::TxOut;
@@ -174,17 +173,6 @@ impl BlockMetadataQuorum {
         self.validator_set
             .verify_block_id_signatures(block_id, &self.metadata)
             .map_err(|e| Error::MetadataQuorum(format!("{e:?}")))
-    }
-
-    /// The node ids upstream would credit for this evidence.
-    pub fn signers(&self) -> Vec<NodeID> {
-        self.metadata
-            .iter()
-            .map(|m| NodeID {
-                responder_id: m.contents().responder_id().clone(),
-                public_key: *m.node_key(),
-            })
-            .collect()
     }
 }
 

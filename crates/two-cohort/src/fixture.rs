@@ -10,7 +10,7 @@ use mc_crypto_ring_signature::{
     generators, Commitment, CompressedCommitment, PedersenGens, ReducedTxOut,
 };
 use rand_chacha::ChaCha20Rng;
-use rand_core::{CryptoRng, RngCore};
+use rand_core::{CryptoRng, RngCore, SeedableRng};
 
 use crate::{cohort::random_scalar, composite::CompositeSpend, EUSD_TOKEN_ID};
 
@@ -71,6 +71,6 @@ pub fn make_ring_from_seed(
     blinding: &Scalar,
     seed: u64,
 ) -> (Vec<ReducedTxOut>, PedersenGens) {
-    let mut rng = <ChaCha20Rng as rand_core::SeedableRng>::seed_from_u64(seed);
+    let mut rng = ChaCha20Rng::seed_from_u64(seed);
     make_ring(spend, size, real_index, value, blinding, &mut rng)
 }

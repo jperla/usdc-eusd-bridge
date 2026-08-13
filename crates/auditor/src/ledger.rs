@@ -155,16 +155,6 @@ impl Ledger {
         self.deposits.get(&id)
     }
 
-    /// Total deposited, per the Ethereum side.
-    pub fn total_deposited(&self) -> Amount {
-        self.deposits.values().fold(Amount::ZERO, |a, d| a.saturating_add(d.amount))
-    }
-
-    /// Total released, per the MobileCoin side.
-    pub fn total_released(&self) -> Amount {
-        self.releases.values().fold(Amount::ZERO, |a, r| a.saturating_add(r.amount))
-    }
-
     /// Match releases to deposits one-to-one and report every mismatch.
     pub fn reconcile(&self, policy: &MatchPolicy, now: u64) -> MatchReport {
         matcher::reconcile(self, policy, now)

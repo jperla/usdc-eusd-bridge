@@ -9,6 +9,10 @@ pragma solidity ^0.8.26;
 /// top of it. This library exists because MobileCoin digests block headers
 /// through Merlin, Merlin is STROBE, and STROBE is this permutation.
 ///
+/// NOT a hash. There is no padding, no rate and no domain separation here --
+/// those belong to whatever sponge wraps this, and omitting them makes the
+/// output of `f1600` alone meaningless as a digest.
+///
 /// The body is a port of the implementation gated in gas-measurement's
 /// Primitives.sol. It is kept structurally identical to that version rather
 /// than optimised, because the whole value of a port is that it is the same

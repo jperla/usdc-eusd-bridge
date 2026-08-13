@@ -31,14 +31,24 @@ pub struct Roster {
 }
 
 impl Roster {
+    /// Checked because both degenerate thresholds are reachable from a config
+    /// file: zero authorises every subset, and one above the roster authorises
+    /// none, which strands the funds rather than protecting them.
     pub fn new(
         members: impl IntoIterator<Item = (ParticipantId, IdentityPublic)>,
         threshold: u16,
-    ) -> Self {
-        Roster {
-            members: members.into_iter().collect(),
-            threshold,
+    ) -> Result<Self, Error> {
+        let members: BTreeMap<ParticipantId, IdentityPublic> = members.into_iter().collect();
+        if threshold == 0 {
+            return Err(Error::ThresholdZero);
         }
+        if threshold as usize > members.len() {
+            return Err(Error::ThresholdExceedsRoster {
+                threshold,
+                roster: members.len(),
+            });
+        }
+        Ok(Roster { members, threshold })
     }
     pub fn threshold(&self) -> u16 {
         self.threshold
@@ -76,6 +86,12 @@ pub enum Error {
 
     #[error("subset of {have} cannot reach threshold {need}")]
     SubThreshold { have: usize, need: u16 },
+
+    #[error("roster threshold must be at least 1")]
+    ThresholdZero,
+
+    #[error("roster threshold {threshold} exceeds roster size {roster}")]
+    ThresholdExceedsRoster { threshold: u16, roster: usize },
 
     #[error("participant {0:?} is not on the roster")]
     UnknownParticipant(ParticipantId),

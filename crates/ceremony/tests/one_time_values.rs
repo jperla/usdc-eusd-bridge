@@ -79,7 +79,7 @@ fn three_responses_under_one_one_time_value_recover_the_long_term_share() {
     let mut peer = fx.signer(P2);
     let peers: Vec<Commitment> = (0..3).map(|_| peer.round_one().unwrap().1).collect();
 
-    let lambda = lagrange(&subset, P1);
+    let lambda = lagrange(&subset, P1).unwrap();
     let mut rows = [[Scalar::ZERO; 3]; 3];
     let mut rhs = [Scalar::ZERO; 3];
 
