@@ -180,6 +180,7 @@ library Ristretto255 {
         // depends on the sign of t/z, and the other needs the rotated
         // coordinates and the a-d denominator.
         if (mulmod(p.t, zInv, P) & 1 == 1) {
+            (x, y) = (mulmod(y, SQRT_M1, P), mulmod(x, SQRT_M1, P));
             denInv = mulmod(i1, INVSQRT_A_MINUS_D, P);
         }
         if (mulmod(x, zInv, P) & 1 == 1) y = _neg(y);
