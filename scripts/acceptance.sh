@@ -63,4 +63,5 @@ echo
 rule
 echo "LEGS 1 AND 3 — real EVM, real verifier, real proof"
 rule
+./scripts/node-deps.sh
 cd contracts && node test/acceptance.mjs

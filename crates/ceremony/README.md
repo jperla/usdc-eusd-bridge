@@ -24,9 +24,13 @@ Each guard was checked by deleting it and confirming the named test fails.
 | 1. One-time values never reused | `MemoryStore::bind` refuses a second context | `one_time_values::the_machine_refuses_to_bind_one_one_time_value_to_two_contexts` |
 | 1. Key is the FULL context | length-prefixed `SigningContext::encode` | `context_encoding::{the_statement_subset_boundary,commitment_boundaries}_cannot_be_shifted` |
 | 2. Durable before observable | store write precedes the backend call | `rollback::every_durable_write_precedes_the_observable_step_it_protects` |
-| 2. Anti-rollback | `MemoryAnchor::observe` rejects a rewound sequence | `rollback::a_rolled_back_store_makes_the_signer_fail_closed` |
+| 2. Anti-rollback (rewind) | `MemoryAnchor::observe` rejects a rewound sequence | `rollback::a_rolled_back_store_makes_the_signer_fail_closed` |
+| 2. Anti-rollback (fork) | `MemoryAnchor::commit` compare-and-swaps the record-chain head | `rollback::{a_rollback_the_counter_has_caught_up_with_is_still_refused, a_divergent_record_at_the_same_sequence_is_refused}` |
+| 2. Torn records | `RecordLog::check` refuses a record the write-ahead log did not log | `rollback::a_torn_record_is_refused_rather_than_rebound` |
+| 2. No share without a durable write | `Receipt` has no constructor outside `store` | the `compile_fail` doctests on `store::Receipt`, and `capability.rs` |
 | 2. Fail closed | `Ceremony::fail` makes `State::Failed` terminal | `one_time_values::the_machine_refuses_to_bind_one_one_time_value_to_two_contexts` |
 | 3. Identifiable abort | identity-signature checks + per-share verification | `identifiable_abort::{an_invalid_share_is_attributed_to_its_sender, a_round_message_signed_by_the_wrong_identity_key_is_refused, evidence_with_an_unauthenticated_round_one_message_is_rejected}` |
+| 3. Only a fault accuses | `Rejection::Fault` vs `Rejection::Error` | `identifiable_abort::{a_backend_outage_accuses_no_one, a_checker_that_cannot_check_does_not_convict}` |
 | 4. Sub-threshold cannot complete | `subset.len() < threshold` in `begin` | `threshold::a_sub_threshold_subset_is_refused_before_any_one_time_value_exists` |
 
 Two tests carry the weight of the whole file set, because they show the guards
@@ -70,10 +74,16 @@ exclude = ["vendor/mobilecoin", "vendor/serai"]
   participated.
 * **Rollback detection beyond the anchor.** A store cannot detect its own
   rewind; `Anchor` is the seam for something that did not rewind with it. The
-  in-memory anchor used by the tests starts at zero, so a process restart
-  combined with an equally old store snapshot is invisible to it. Production
-  needs a hardware monotonic counter or an append-only log elsewhere, and this
-  crate does not verify that one exists.
+  anchor holds a chained digest and advances by compare-and-swap, so a fork at
+  the same sequence is caught -- but the in-memory anchor used by the tests
+  starts empty, so a process restart combined with an equally old store snapshot
+  is invisible to it. Production needs a hardware monotonic counter or an
+  append-only log elsewhere, and this crate does not verify that one exists.
+* **Recovery from a detected fork or tear.** Both fail closed, permanently. A
+  crash between the store's commit and the anchor's compare-and-swap is
+  recoverable only by re-presenting the receipt for the last durable write; the
+  reconstitution of a receipt from persisted bytes is a production store's
+  problem and `MemoryStore` does not model it.
 * **The reference backend against a published vector.** `frost` is FROST-shaped
   but not RFC 9591's ciphersuite (Blake2b, Ristretto, this crate's own
   transcript encoding), so no known-answer vector applies to it. Its algebra is

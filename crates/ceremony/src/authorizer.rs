@@ -31,9 +31,6 @@ impl Fault {
     pub fn new(detail: impl Into<String>) -> Self {
         Fault(detail.into())
     }
-    pub fn detail(&self) -> &str {
-        &self.0
-    }
 }
 
 /// Why a check on one participant's contribution did not pass.

@@ -1,9 +1,18 @@
 target/
-node_modules/
 vendor/
 .cargo/config.toml
 *.sqlite
 .DS_Store
+__pycache__/
+*.pyc
+
+# Installed, not vendored: contracts/package-lock.json pins the tree exactly
+# and scripts/node-deps.sh installs from it.
+node_modules/
+
+# The TLC jar is a tool, not a source artifact. proofs/tla/tlc_harness.py
+# looks for it here; nothing in the repo fetches it.
+proofs/tla/tla2tools.jar
 
 # Review transcripts stay local: they are working notes, not deliverables.
 reviews/

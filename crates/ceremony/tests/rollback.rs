@@ -14,9 +14,7 @@ use std::rc::Rc;
 use ceremony::authorizer::{Authorizer, Rejection};
 use ceremony::context::{Commitment, ContextId, Share, SigningContext, SlotId};
 use ceremony::machine::{Ceremony, State};
-use ceremony::store::{
-    Anchor, AnchorError, BindingStore, RecordDigest, Receipt, SlotRecord, StoreError,
-};
+use ceremony::store::{Anchor, AnchorError, BindingStore, Receipt, SlotRecord, StoreError};
 use ceremony::{Error, MemoryAnchor, MemoryStore, ParticipantId, SignedRoundOne, Subset};
 use common::*;
 
@@ -43,9 +41,6 @@ struct LoggingStore {
 impl BindingStore for LoggingStore {
     fn sequence(&self) -> u64 {
         self.inner.borrow().sequence()
-    }
-    fn head(&self) -> Option<RecordDigest> {
-        self.inner.borrow().head()
     }
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError> {
         let r = self.inner.borrow_mut().reserve(slot)?;
@@ -315,6 +310,11 @@ fn a_rollback_the_counter_has_caught_up_with_is_still_refused() {
         store.borrow().sequence() >= anchor.borrow().high_water(),
         "the counter has caught up, so a bare counter has nothing left to see"
     );
+    assert_ne!(
+        store.borrow().head(),
+        anchor.borrow().head(),
+        "what remains different is the history, not the count"
+    );
 
     // Same signer state, same one-time value, a different statement.
     let stmt_b = statement(b"release 250000 eUSD to Q, block 12345");
@@ -340,12 +340,9 @@ fn a_rollback_the_counter_has_caught_up_with_is_still_refused() {
         .and_then(|()| second.round_two());
 
     assert!(
-        outcome.is_err(),
-        "a forked store must be refused even when its counter is level"
-    );
-    assert!(
         matches!(outcome, Err(Error::Rollback(AnchorError::Forked { .. }))),
-        "and refused as a fork, not as some incidental mismatch: {outcome:?}"
+        "a store on a forked history must be refused as such, counter or no \
+         counter, got: {outcome:?}"
     );
     assert_eq!(second.state(), &State::Failed);
     assert!(anchor.borrow().is_poisoned());
@@ -381,6 +378,7 @@ fn a_divergent_record_at_the_same_sequence_is_refused() {
         "the two records really are at the same sequence"
     );
     assert_ne!(a.head(), b.head(), "and they really do differ");
+    assert_eq!(anchor.head(), Some(a.head()), "the anchor holds the first record");
     assert_eq!(
         anchor.commit(&b).unwrap_err(),
         AnchorError::Forked {

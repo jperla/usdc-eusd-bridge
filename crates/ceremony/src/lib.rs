@@ -16,14 +16,20 @@
 //!      the long-term share by Gaussian elimination.
 //!
 //!   2. Anti-rollback. The one-time value is durably committed before anything
-//!      observable happens, and a store restored from an earlier snapshot is
-//!      caught by an anchor that did not roll back with it. See `store::Anchor`
-//!      and `tests/rollback.rs`.
+//!      observable happens -- and "durably" is a capability, not a convention:
+//!      the `Receipt` that authorises a share can only be minted by the write
+//!      path that produced it. A store restored from an earlier snapshot is
+//!      caught by an anchor that did not roll back with it, which anchors a
+//!      digest of the record rather than a count, because a count stops being
+//!      evidence the moment unrelated writes push it back up. See
+//!      `store::Anchor`, `tests/rollback.rs` and `tests/capability.rs`.
 //!
 //!   3. Identifiable abort. Round messages are signed under per-participant
 //!      IDENTITY keys, separate from the threshold shares, because a threshold
-//!      transcript is forgeable by the quorum it would incriminate. See
-//!      `identity` and `tests/identifiable_abort.rs`.
+//!      transcript is forgeable by the quorum it would incriminate. And only a
+//!      FAULT -- a check that failed on bytes the accused signed -- may become
+//!      evidence; a backend that could not answer names nobody. See `identity`,
+//!      `authorizer::Rejection` and `tests/identifiable_abort.rs`.
 //!
 //!   4. Sub-threshold subsets cannot complete a ceremony. See
 //!      `tests/threshold.rs`.

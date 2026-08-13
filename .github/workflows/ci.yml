@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Only the Solidity half runs here. The Rust workspace path-depends on a
+# MobileCoin checkout that scripts/setup.sh clones at a pinned revision, and
+# that graph pulls four more git forks including mbedtls, which needs a C
+# toolchain. Nobody has run that on a Linux runner, so it is not asserted here.
+# Run it locally with ./scripts/setup.sh && ./scripts/test.sh.
+
+jobs:
+  contracts:
+    name: Solidity against a real EVM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 18.18.1 is the version every recorded contract result was produced
+      # under. The dependency tree is pure JS and wasm -- no native builds, no
+      # platform-restricted packages -- so the runner's OS does not enter into
+      # the result.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+
+      # `npm ci` and not `npm install`: it installs the locked tree exactly and
+      # fails if package.json and the lockfile have drifted apart. The suite
+      # compiles real bytecode and prints gas, so an unpinned compiler would
+      # quietly change what those numbers mean.
+      - name: Install locked dependencies
+        working-directory: contracts
+        run: npm ci --no-audit --no-fund
+
+      - name: Run the contract suite
+        working-directory: contracts
+        run: node test/run.mjs

@@ -140,7 +140,7 @@ fn chain(
 }
 
 mod sealed {
-    use super::{chain, ContextId, RecordDigest, SlotId, SlotRecord};
+    use super::{RecordDigest, SlotId, SlotRecord};
 
     /// Proof that a durable write happened before this point in the program.
     ///
@@ -214,13 +214,6 @@ mod sealed {
             self.record
         }
 
-        pub fn context(&self) -> Option<ContextId> {
-            match self.record {
-                SlotRecord::Reserved => None,
-                SlotRecord::Bound(c) => Some(c),
-            }
-        }
-
         pub fn sequence(&self) -> u64 {
             self.sequence
         }
@@ -234,14 +227,6 @@ mod sealed {
         /// The chain head after this write.
         pub fn head(&self) -> RecordDigest {
             self.head
-        }
-
-        /// Recompute the chain link from the receipt's own parts. Nothing in the
-        /// crate can produce a receipt that fails this; it is here so that a
-        /// store which reconstitutes receipts from persisted bytes has one call
-        /// to make.
-        pub fn is_well_formed(&self) -> bool {
-            self.head == chain(self.prev_head, self.sequence, self.slot, self.record)
         }
     }
 }
@@ -298,16 +283,8 @@ impl RecordLog {
         self.head
     }
 
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     /// What the log says storage should hold for `slot`.
-    pub fn expected(&self, slot: SlotId) -> Option<SlotRecord> {
+    fn expected(&self, slot: SlotId) -> Option<SlotRecord> {
         self.entries
             .iter()
             .rev()
@@ -387,9 +364,6 @@ pub trait BindingStore {
     /// correct implementation; if it does, the store has been rewound.
     fn sequence(&self) -> u64;
 
-    /// Head of the record chain, or `None` before the first write.
-    fn head(&self) -> Option<RecordDigest>;
-
     /// Record that a one-time value exists, before its commitment is published.
     ///
     /// Idempotent, and deliberately so: a signer that crashed between reserving
@@ -439,8 +413,9 @@ impl MemoryStore {
         *self = s.0.clone();
     }
 
-    pub fn log(&self) -> &RecordLog {
-        &self.log
+    /// Head of this store's record chain, or `None` before the first write.
+    pub fn head(&self) -> Option<RecordDigest> {
+        self.log.head()
     }
 
     /// Fault injection, in the same spirit as `snapshot`/`restore`: overwrite
@@ -464,10 +439,6 @@ impl MemoryStore {
 impl BindingStore for MemoryStore {
     fn sequence(&self) -> u64 {
         self.log.sequence()
-    }
-
-    fn head(&self) -> Option<RecordDigest> {
-        self.log.head()
     }
 
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError> {
@@ -507,9 +478,6 @@ impl BindingStore for MemoryStore {
 impl<S: BindingStore> BindingStore for Rc<RefCell<S>> {
     fn sequence(&self) -> u64 {
         self.borrow().sequence()
-    }
-    fn head(&self) -> Option<RecordDigest> {
-        self.borrow().head()
     }
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError> {
         self.borrow_mut().reserve(slot)

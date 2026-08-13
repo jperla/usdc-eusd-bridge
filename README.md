@@ -124,13 +124,53 @@ acceptance decision*, which is a narrower statement.
 
 ## What is proven, and what is not
 
-`proofs/` holds 17 TLA+ models, each mutation-tested — every guard is switched
-off in turn and must break exactly the invariant it protects — plus negative
-coverage assertions that catch a model too dead to move, and a harness that
-fails closed on tool errors. Alongside them: threshold algebra executed in real
-Ed25519, a DDH privacy reduction, composite-root algebra accepted by
-MobileCoin's **unmodified** verifier, and EVM gas measured rather than
-estimated.
+`proofs/` holds 17 TLA+ models. They are **not** all established the same way,
+and an earlier version of this section said they were. What is actually there:
+
+| | models | how |
+|---|---|---|
+| Guard-mutation studies under TLC | 6 | `BridgeA`, `FreezeBound`, `CatalogIntegrity`, `ClaimAcceptance`, `NonceSlot`, `PackageProjection` |
+| Other TLC runs — scenario tables, an observability search, a bounded lifecycle | 5 | `AccessStructure`, `CompositeGate`, `AuditObservability`, `SubsetRetry`, `BridgeEscrowV3` |
+| Handwritten Python mirrors, **not** TLC | 6 | `BridgeEscrow`, `BridgeEscrowV2`, `BridgeCapacityV2`, `M5SealedResponse`, `ReserveRecovery`, `ReserveRecoveryV2` |
+
+So "each mutation-tested" was wrong twice over: only six of the seventeen are
+guard-mutation studies, and six are not checked by TLC at all. The mirrors are
+handwritten from the design documents; `proofs/tla/check.py` says in its own
+header that it is "NOT a substitute for TLC".
+
+Two further corrections, both of which the runners had already made before this
+file caught up with them:
+
+- **Not "exactly the invariant it protects".** A mutation must break the
+  invariant it is paired with; it may break others, and the runners report the
+  full set. The "exactly one" wording dates from a harness that only ever
+  inspected TLC's *first* reported violation, which could not have established
+  it — see the header of `proofs/tla/tlc_harness.py` and of `run_bridge_a.py`.
+- **Not "every guard".** Two are deliberately excluded and named as such.
+  `run_claim_acceptance.py` prints "THREE guards are established here, not
+  four" — `GuardRevertOnFailure` is not in the established set.
+  `run_catalog.py` holds `GuardNoOverwrite` out of the mutation matrix because
+  it is subsumed once `Prove` binds the (output, key image) pair, and switched
+  off alone it breaks nothing.
+
+Those two runners also print a `KNOWN UNPROVED` block for checks found not to
+establish what they appeared to: `INV_NoStrandedClaims` is a synthetic oracle
+where the same guard introduces the bug and sets the flag that detects it, and
+`COV_CanRevert` never reaches the failure it claims to cover.
+
+What holds without qualification: the negative coverage assertions are real —
+each is written to fail, and a model too dead to reach one is a runner failure
+— and `tlc_harness.py` fails closed, so a TLC tool error is `ERROR` and never a
+pass. Alongside the models: threshold algebra executed in real Ed25519, a DDH
+privacy reduction, composite-root algebra accepted by MobileCoin's
+**unmodified** verifier, and EVM gas measured rather than estimated.
+
+**None of the TLA+ work reproduces from a clean clone.** `tlc_harness.py`
+expects `proofs/tla/tla2tools.jar`, which is neither committed nor fetched by
+`scripts/setup.sh`; `run_bridge_v3_tla.py` defaults to an absolute path outside
+the repository. These results are archived evidence, re-runnable only if you
+supply TLC yourself. `scripts/test.sh` does not run them, and CI does not
+either — so nothing on this page about `proofs/` is continuously checked.
 
 **Limits, stated as limits and not gaps:**
 
@@ -149,20 +189,27 @@ checking apparatus itself rather than the design. What survived, survived that.
 
 ## Status
 
-**295 tests, 0 failures** — 156 Rust, 139 Solidity against a real EVM.
+**377 tests, 0 failures** — 177 Rust, 200 Solidity against a real EVM.
 
-| | |
-|---|---|
-| Escrow, custody and replay set | done, 16 tests |
-| Validator registry and quorum rule | done, 15 tests |
-| Ed25519 (RFC 8032 vectors) | done, 24 tests, **550,620 gas/verify** |
-| Blake2b-256 (vs hashlib) | done, 10 tests |
-| Merlin — MobileCoin block IDs byte-identical | done, 68 tests |
-| Two-cohort composite spend key | done, 27 tests |
-| Signing ceremony state machine | done, 34 tests |
-| Deposit auditor and freeze bound | done, 50 tests |
-| Return-proof builder | done, 45 tests |
-| Acceptance: the three legs | done, 6 tests |
+The Solidity half is re-run by CI on every push, from the lockfile, so that
+number is checked rather than asserted. The Rust half is not in CI (see
+`.github/workflows/ci.yml` for why) — reproduce it with `./scripts/test.sh`.
+The `proofs/` results are in neither.
+
+| | | |
+|---|---|---|
+| Escrow, custody and replay set | Solidity | 22 tests |
+| Validator registry and quorum rule | Solidity | 21 tests |
+| Ed25519 (RFC 8032 vectors) | Solidity | 25 tests, **550,321 gas/verify** |
+| Ristretto255 (vs dalek vectors) | Solidity | 26 tests |
+| Blake2b-256 (vs hashlib) | Solidity | 10 tests |
+| Merlin — MobileCoin block IDs byte-identical | Solidity | 72 tests |
+| Return-leg verifier | Solidity | 17 tests |
+| Acceptance: the three legs | Solidity | 7 tests |
+| Two-cohort composite spend key | Rust | 34 tests |
+| Signing ceremony state machine | Rust | 48 tests |
+| Deposit auditor and freeze bound | Rust | 50 tests |
+| Return-proof builder | Rust | 45 tests |
 
 **The bridge is not ready to hold funds, and the composite architecture gate is
 not closed.** Three things are open, all named in code rather than in a
@@ -189,17 +236,31 @@ mainnet deployment.
 
 ## Building
 
-The workspace builds against pinned MobileCoin and Serai checkouts:
+You need Rust (the toolchain is pinned, see below), Node 18 or later, and
+`npm`. From a fresh clone:
 
 ```bash
-./scripts/setup.sh
+./scripts/setup.sh    # clone the pinned MobileCoin and Serai checkouts
+./scripts/test.sh     # everything: Rust workspace, then Solidity
 ```
 
-Everything, Rust and Solidity:
+`setup.sh` is not optional — the Rust workspace path-depends on
+`vendor/mobilecoin`, and `test.sh` stops with that message if it is missing.
+
+The Solidity suite is a Node program. `test.sh` installs its dependencies from
+`contracts/package-lock.json` when `contracts/node_modules` is absent, and
+reinstalls if what is there does not match the lockfile, so there is no
+separate step to remember. To run just that half:
 
 ```bash
-./scripts/test.sh
+./scripts/node-deps.sh
+cd contracts && node test/run.mjs
 ```
+
+The versions are pinned exactly rather than by range. The suite compiles real
+bytecode and reports gas, so the compiler and the EVM are part of every number
+it prints; a caret would let a later `solc` change what those numbers refer to
+without anything looking different.
 
 The pinned toolchain is not a preference. MobileCoin's `mc-common` hardcodes
 hashbrown's `nightly` feature, and feature flags are additive, so a dependent

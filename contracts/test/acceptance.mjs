@@ -293,8 +293,20 @@ await test('LEG 3: the recipient check is load-bearing, not decorative',
 
 const ok = summary();
 
+const BLOCK_GAS_LIMIT = 30_000_000;
 console.log('');
 console.log(`  one full release (verify + payout): ${releaseGas.toLocaleString()} gas`);
+if (releaseGas > BLOCK_GAS_LIMIT) {
+  console.log('');
+  console.log('  ' + '!'.repeat(66));
+  console.log(`  THIS DOES NOT FIT IN AN ETHEREUM BLOCK. The limit is ` +
+    `${BLOCK_GAS_LIMIT.toLocaleString()};`);
+  console.log(`  this call needs ${(releaseGas / BLOCK_GAS_LIMIT * 100).toFixed(0)}% of it. ` +
+    `A transaction cannot exceed the block`);
+  console.log('  limit at any price, so the return leg as built is UNLANDABLE on');
+  console.log('  Ethereum L1. It is verified, and it does not fit.');
+  console.log('  ' + '!'.repeat(66));
+}
 console.log('');
 console.log('='.repeat(72));
 console.log('ESTABLISHED BY THIS RUN');
