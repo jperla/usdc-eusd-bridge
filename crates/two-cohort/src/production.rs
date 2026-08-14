@@ -10,11 +10,26 @@
 //!
 //! Why four and not three, since three was the stated constraint: three
 //! entities *can* reach the same compromise threshold, as 2-of-2 operators
-//! plus a gate. What three cannot do is survive a lost operator key, and there
-//! is deliberately no recovery path — any route that let operators move funds
-//! without the gate would defeat the arrangement. So the fourth entity buys
-//! exactly one thing, tolerance of one lost operator key, and buys nothing
-//! against compromise. `proofs/tla/AccessStructure.tla` model-checks both.
+//! plus a gate. The fourth entity buys tolerance of one lost OPERATOR key.
+//!
+//! It is not a free win, and the trade runs both ways. Both configurations
+//! have `T = 3`, but they differ in how MANY coalitions of that size work:
+//! `2-of-2 + gate` has exactly one, `{O1,O2,G}`; `2-of-3 + gate` has three.
+//! The extra operator therefore does not raise the cost of the cheapest
+//! targeted attack at all -- it adds attack paths. Under independent
+//! compromise at probability `p` per principal: `p^3` against `3p^3 - 2p^4`.
+//!
+//! Neither configuration tolerates losing the GATE. It is indispensable in
+//! both, and there is deliberately no recovery path, so losing it freezes the
+//! funds permanently. Tolerating the loss of ANY one principal -- gate
+//! included -- is impossible at four entities without the structure
+//! collapsing to a plain `3-of-4`; a nonredundant role split with that
+//! property needs five.
+//!
+//! `T` records minimum coalition SIZE and nothing else: not how many such
+//! coalitions exist, not which principals are critical, not correlation
+//! between them, and not availability. Reading it as a general key-theft or
+//! probabilistic security threshold overstates it.
 //!
 //! Participant ids come from each domain's own band, which `ControlDomain`
 //! enforces in the type system — a subset drawn from one cohort cannot be

@@ -38,16 +38,31 @@ tightness, and that some coalition can actually authorize:
 | configuration | entities | T | survives one lost operator key |
 |---|---|---|---|
 | 3 principals holding **both** roles, 2-of-3 | 3 | **2** | yes |
-| 3 principals holding **both** roles, 3-of-3 | 3 | 3 | no — *and the gate contributes nothing* |
+| 3 principals holding **both** roles (owners 2-of-3, gates 3-of-3) | 3 | 3 | no — *collapses to plain 3-of-3 at entity level* |
 | 2-of-2 operators + 1 gate | 3 | 3 | **no** |
-| **2-of-3 operators + 1 gate** ← **decided** | **4** | **3** | **yes** |
+| any-one-principal loss, nonredundant split | 5 | 3 | yes |
+| **2-of-3 operators + 1 gate** ← **decided** | **4** | **3** | one **operator**; never the gate |
 
-**Why the fourth entity.** Three entities *can* reach `T = 3` — as 2-of-2
-operators plus a gate — so the constraint "three parties" was never in conflict
-with the security target. What three entities cannot do is survive a lost
-operator key, and there is deliberately no recovery path. The fourth entity
-buys exactly that and nothing else: identical compromise threshold, one
-tolerated key loss.
+**Why the fourth entity, stated correctly.** Three entities *can* reach
+`T = 3` — as 2-of-2 operators plus a gate — so "three parties" was never in
+conflict with the security target. The fourth entity buys tolerance of one lost
+**operator** key, and that is the whole of what it buys.
+
+It is not free. Both shapes have `T = 3`, but they differ in how *many*
+coalitions of that size work: `2-of-2 + gate` has exactly one, `{O1,O2,G}`;
+`2-of-3 + gate` has three. The extra operator does not raise the cheapest
+targeted attack cost at all — it adds attack paths. Under independent
+compromise at probability `p`: `p³` against `3p³ − 2p⁴`.
+
+**Neither shape tolerates losing the gate.** It is indispensable in both and
+there is no recovery, so losing it freezes the funds permanently. Tolerating
+the loss of *any* one principal is impossible at four entities without
+collapsing to a plain `3-of-4`; a nonredundant role split with that property
+needs **five**.
+
+`T` is minimum coalition *size* and nothing else — not how many such coalitions
+exist, not correlation between principals, not availability. Read as a general
+key-theft threshold it overstates itself.
 
 **The 3-of-3 row is a trap.** It reaches `T = 3` on paper, but when the same
 parties hold both roles the structure reduces to an ordinary `max(k,g)`-of-n
