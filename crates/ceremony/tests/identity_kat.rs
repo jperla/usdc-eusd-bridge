@@ -16,7 +16,7 @@ mod common;
 use mc_crypto_keys::{Ed25519Pair, Signer, Verifier};
 
 use ceremony::{IdentityKey, ParticipantId, SignedRoundOne, Statement, Subset};
-use ceremony::{Commitment, IdentitySignature};
+use ceremony::{Commitment, IdentityPublic, IdentitySignature};
 use common::identity;
 
 // RFC 8032 7.1, TEST 1 (empty message).
@@ -99,6 +99,36 @@ fn round_message_verification_rides_on_the_same_primitive() {
     let mut zeroed = msg;
     zeroed.signature = IdentitySignature([0u8; 64]);
     assert!(zeroed.verify(&key.public()).is_err());
+}
+
+/// **This crate's identity key IS `two_cohort`'s, not a second copy of the same
+/// idea.**
+///
+/// `two-cohort`'s composition ceremony endorses each cohort's sealed commitment
+/// under an identity key, and it must be the same notion of identity a round
+/// message is signed under -- an organisation has one long-term key, not one per
+/// module. The primitive therefore lives in `two_cohort::identity` (the crate
+/// both can reach; this one depends on it, so the reverse would be a cycle) and
+/// this crate re-exports it.
+///
+/// Checked by the compiler rather than asserted: the assignments below are
+/// type-level identity, so a second declaration anywhere would stop this
+/// compiling rather than quietly diverge. The RFC 8032 vector is carried through
+/// as well, so the shared type is still the specified Ed25519 and not merely
+/// shared.
+#[test]
+fn the_identity_primitive_is_two_cohorts_own() {
+    let mine: IdentityKey = two_cohort::identity::IdentityKey::from_seed(&T1_SECRET);
+    let theirs: two_cohort::identity::IdentityPublic = mine.public();
+    let back: IdentityPublic = theirs;
+    assert_eq!(back.as_bytes(), &T1_PUBLIC);
+
+    // And the signature type crosses too, so a signature produced by one crate's
+    // API is verifiable by the other's without conversion.
+    let sig: two_cohort::identity::IdentitySignature = mine.sign(T1_MESSAGE);
+    let sig: IdentitySignature = sig;
+    assert_eq!(sig.0, T1_SIGNATURE);
+    assert!(back.verify(T1_MESSAGE, &sig));
 }
 
 // -------------------------------------------------------------- hex helpers

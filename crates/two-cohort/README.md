@@ -86,6 +86,22 @@ subsets is the correctness condition for the scheme, not bookkeeping.
 | `cohort_specs_are_not_interchangeable_at_the_type_level` | the swap and the same-domain pair are compile errors (`compile_fail` doctests); this asserts the right way round still works |
 | 12 tests in `tests/config.rs` | every degenerate configuration is rejected, with the reason demonstrated rather than asserted |
 
+### The ceremony and the artifact
+
+| test | establishes |
+|---|---|
+| `attribution.rs::one_process_can_produce_an_artifact_that_passes_every_structural_check` | the gap, performed: one process runs both DKGs, satisfies every check about key material, and reconstructs the root scalar it published — then is refused by name under the two organisations' real keys |
+| `attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys` | the exact residual of the attribution check, performed rather than described |
+| `attribution.rs::one_organisation_named_for_both_cohorts_is_refused` | `PartiesNotDistinct`; isolated by auditing **one** artifact under two `Parties` values, so only the funder's input differs |
+| `attribution.rs::a_holders_proof_is_bound_to_the_counterparty_it_dealt_with` | the two signer keys are inside the pop transcript, not layered beside it |
+| **`forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`** | **the open gap**: a dealt owner cohort, endorsed with the organisation's own real key, reaches a published address that two principals open |
+| `forgery.rs` (8 further tests) | endorsement lifted from another ceremony, transposed commitments, transposed reveals, transposed funder keys, an overstated threshold, and a simulated root — each refused by a named error |
+| `release_gate.rs::a_simulated_root_reaches_the_funding_path_today` | the gap the gate closes, performed: a simulated root is published at the decided shape and then spent |
+| `release_gate.rs::the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_name` | a ceremony run by a different pair of organisations differs in nothing else, and is refused on the endorser arm alone |
+| `release_gate.rs::the_funder_question_is_answerable_from_the_artifact` + `audit_alone_accepts_a_shape_nobody_decided` | both halves of the funder's sequence, and that the second is load-bearing |
+| **`composition.rs::a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree`** | **declared threshold is minimum coalition size, not only polynomial degree** — the `p(x) = b + a·x(x−1)` dealing that passed before this round |
+| `holder_proving.rs` (5 tests) | `CohortShare::prove` is the checked default; `the_raw_prover_signs_what_the_default_entry_point_refuses` separates it from `prove_unchecked` on one share, one composition, one claim |
+
 ### Known-answer vectors used
 
 * **`vendor/mobilecoin/test-vectors/vectors/account_keys/subaddr_keys_from_acct_priv_keys.jsonl`**
@@ -138,6 +154,91 @@ and the crate-level doctest passed with the gate cohort consulted at the wrong
 subset. With disjoint bands the same mutation kills 8 tests plus the doctest,
 because no owner id is ever a gate id.
 
+## What a funder can decide, and what it must still take on trust
+
+The audit takes a `CompositionArtifact` and two identity public keys the funder
+obtained from the two organisations. A funder that also holds the view private
+key `a` runs two calls:
+
+```rust
+let address = audit_address(&artifact, &parties, &a, i, &d_i)?;
+production::check_decided_structure(address.root())?;
+```
+
+**What that answers, at exactly the strength the code supports:**
+
+> Does `D_i` equal `B_owner + B_gate + Hs(a‖i)·G`, where each component opens a
+> commitment endorsed under the identity key supplied for its cohort, every
+> published verification share carries a proof of possession bound to this
+> ceremony, this composition and both endorsers, and the audited canonical
+> rosters and exact polynomial degrees are the decided ones?
+
+Plus: the two supplied keys differ; each roster is canonical, non-empty, bounded
+and inside its own control domain, so the two are disjoint; no component and no
+verification share is the identity; each reveal opens the commitment that was
+signed; and no subset smaller than the declared threshold reconstructs a
+component. The last of those was **wrong until this round** — the check
+enumerated only the `(t−1)`-subsets, which establishes polynomial *degree* and
+not minimum *coalition size*. Review supplied `p(x) = b + a·x(x−1)`, a genuine
+degree-2 dealing declared 3-of-3 in which seat 1 alone holds `b`;
+`a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree` performs it
+and `check_consistency` now enumerates every size below `t`.
+
+**What it does not answer, and none of this is closable by wording:**
+
+* **Who holds the seats.** There is no per-seat identity anywhere in the
+  artifact — `Parties` carries one key per *cohort*, while the decided
+  structure's argument is per *seat*. So an organisation that runs no DKG, deals
+  all three operator shares to itself and endorses the seal with its own real
+  key produces an artifact that audits, passes the release gate and reaches a
+  published address:
+  `tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`
+  performs it, then opens an output paid there with **two** principals against a
+  decided `COMPROMISE_THRESHOLD` of **three**. This is the largest open gap.
+* **That two keys are two organisations.** A party holding both identity private
+  keys signs both halves and the audit passes —
+  `attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys`.
+  What changed is the bar, from "somebody says these are two cohorts" to
+  "whoever produced this holds the long-term keys of both named organisations",
+  which is a question a funder can put to an organisation. Naming *one* key
+  twice is now refused outright (`CeremonyError::PartiesNotDistinct`).
+* **Chronology.** Signatures have no time in them. The artifact shows that a
+  cohort held the other side's commitment when it proved — an ordering between
+  two events inside it, not a date. The rule that stops a cohort choosing its
+  component after seeing the other's reveal is `prove_possession`'s, enforced
+  per share in *this* code, not in the published bytes.
+* **The view service.** With `a`, `audit_address` closes it. Without `a`, only
+  the *root* is checkable and `D_i` is taken on trust — and this is not a
+  formality: an address publisher holding `a` can pick `d`, publish `D = d·G`
+  with a matching view component, and open anything sent there with
+  `Hs(aR) + d`. An earlier version of the crate docs claimed such a service
+  "cannot spend"; review refuted it.
+* **Custody since key generation, freshness, and availability.** The artifact is
+  a statement about key generation. Nothing in it is dated, and `audit` accepts
+  whatever `CeremonyId` the artifact names rather than one the funder expected.
+* **Bytes.** "Holding only bytes" is a figure of speech. `audit` takes a typed
+  `&CompositionArtifact`; there is no canonical encoding, serialiser or parser
+  anywhere in this crate. A funder is trusting somebody's decoder.
+
+`run_dkg`, `Cohort::deal_in` and `CompositeSpend::simulate` are ordinary `pub`
+functions, so a single process can still produce an artifact that audits.
+`production::authorize_release` now **reads** `Provenance`: it refuses
+`Provenance::Simulated`, pins both rosters and thresholds to the decided
+structure, and checks the audited endorsers against the organisations the
+deployment names. It is the only thing that can issue the `ReleaseAuthorization`
+that `deposit_spend_key` takes. That covers a deployment which routes its funding
+path through `deposit_spend_key` and publishes its return value — and nothing
+else: `CompositeSpend::spend_public`, `simulate`, `AuditedAddress::spend_public`
+and `declared_root` + `subaddress_offset` all remain public routes to a fundable
+key, and `release_gate.rs`'s own gap test still compiles.
+
+`Pop::prove` is now `pub(crate)`, reachable from outside only as
+`Pop::prove_unchecked` behind the default-off `unchecked-proving` feature, and
+`CohortShare::prove` is the checked entry point on the type a holder actually
+has. That moves the default; it is not a boundary. A holder can recover its own
+`s_i` and prove by hand, `Pop::from_parts` is public and `audit` accepts any
+proof that verifies, and cargo unifies features across a build graph.
+
 ## What this crate does NOT establish
 
 Carried forward from the spike verbatim. None of it got easier because the code
@@ -164,19 +265,8 @@ became a library.
   `CompositeSpend::from_ceremony` and reports `Provenance::Ceremony`.
 
   What is still open is stated exactly in `src/ceremony.rs` under *"What a
-  funder can check, and what it still cannot"*. In short: the artifact does not
-  prove the commitments preceded the reveals — that half of the defence is
-  enforced at the share, by `prove_possession` refusing to answer a second
-  sealed composition, so it is a property of holders running this code and not
-  of the published bytes. It cannot distinguish a cohort that ran a DKG from one
-  that used a dealer and deleted the secret. And it does not make the view
-  service accountable for the subaddress offset: a lying view service can freeze
-  or misdirect a deposit, though unlike a rogue cohort it cannot spend one.
-
-  `run_dkg` and `CompositeSpend::simulate` are ordinary `pub` functions with no
-  feature gate, so a single process can still produce an artifact that audits.
-  `Provenance` records which route a spend came by, but nothing in this crate
-  reads it; refusing `Provenance::Simulated` is a release path's job.
+  funder can check, and what it still cannot"*, and summarised under **What a
+  funder can decide** below.
 * **No mask-row split.** MLSAG row 1 (the commitment mask) is not split across
   cohorts. Only the spend row and the key image are two-cohort here.
 * **No transaction-level acceptance.** The tests drive `RingMLSAG::verify` —

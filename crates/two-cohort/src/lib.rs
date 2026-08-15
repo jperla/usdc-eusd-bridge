@@ -87,13 +87,25 @@
 //!   that need a dealing to compare against. They are ordinary `pub` functions
 //!   with no feature gate, so **the dealer is gone from the honest path, not
 //!   from the crate**: one process can call `run_dkg` twice and produce an
-//!   artifact that audits, which is exactly what
-//!   `tests/composition.rs`'s end-to-end test is. A production
+//!   artifact that satisfies every check about key material, which is exactly
+//!   what `tests/composition.rs`'s end-to-end test is. What that process cannot
+//!   do is get the artifact past [`audit`], because the audit now takes the two
+//!   organisations' identity public keys and each cohort's commitment must be
+//!   signed by its own --
+//!   `tests/attribution.rs::one_process_can_produce_an_artifact_that_passes_every_structural_check`
+//!   performs both halves. The residual is a party holding BOTH organisations'
+//!   identity private keys, which the same file performs rather than glosses. A
+//!   production
 //!   [`CompositeSpend`] is built by [`CompositeSpend::from_ceremony`], and its
-//!   [`provenance`](CompositeSpend::provenance) records which route it came by
-//!   -- but nothing in this crate READS that field, so refusing
-//!   [`Provenance::Simulated`] is a release path's job and not a check that has
-//!   already been made for it.
+//!   [`provenance`](CompositeSpend::provenance) records which route it came by.
+//!   [`production::authorize_release`] READS that field: it refuses
+//!   [`Provenance::Simulated`] and pins both rosters and thresholds to the
+//!   decided structure, and it is the only thing that can issue the
+//!   [`ReleaseAuthorization`](production::ReleaseAuthorization) a funding path
+//!   takes -- so a simulated root is no longer indistinguishable from a
+//!   ceremony root at the point of use. What that does NOT do is stop a caller
+//!   inside this crate from calling `simulate`; the dealer is gone from the
+//!   honest path and from the release path, not from the crate.
 //! * **~~No non-reconstruction signing.~~ CLOSED by [`mlsag`].** It produces a
 //!   `RingMLSAG` the unmodified verifier accepts without any process forming
 //!   the one-time scalar: each participant emits only `alpha_i - c*w_i`, and
@@ -122,11 +134,17 @@
 //!   (that half is enforced at the share, by
 //!   [`ceremony::prove_possession`] refusing to answer a second sealed
 //!   composition, and is therefore a property of holders running THIS code
-//!   rather than of the published bytes), does not distinguish a cohort that ran
-//!   a DKG from one that used a dealer and deleted the secret, and does not make
-//!   the VIEW service accountable -- a view service that publishes a `D_i` that
-//!   is not a subaddress of the audited root can freeze or misdirect a deposit,
-//!   though unlike a rogue cohort it cannot spend it.
+//!   rather than of the published bytes), **does not distinguish a cohort that
+//!   ran a DKG from one that used a dealer** -- a dealer that KEPT the secret,
+//!   not merely one that deleted it, which is the case that matters and which
+//!   `tests/forgery.rs` performs all the way to a spent address -- does not
+//!   establish that the two identity keys it now requires are held by two
+//!   independent organisations, does not carry any per-SEAT identity at all so
+//!   that a cohort's whole roster may be one entity, and does not make the VIEW
+//!   service accountable
+//!   -- a view service that publishes a `D_i` that is not a subaddress of the
+//!   audited root can freeze or misdirect a deposit, though unlike a rogue
+//!   cohort it cannot spend it.
 //! * **Both DKGs assume an authenticated broadcast channel.** PedPoP requires
 //!   one and this crate does not supply one. A participant that sends two
 //!   different commitment messages to two different peers is faulty and
@@ -151,12 +169,15 @@ pub mod derive;
 pub mod dkg;
 pub mod error;
 pub mod fixture;
+pub mod identity;
 pub mod mlsag;
 
 pub use ceremony::{
-    audit, audit_address, AuditedAddress, AuditedRoot, CeremonyError, CeremonyId, ComponentClaim,
-    ComponentCommitment, ComponentReveal, CompositionArtifact, Pop, SealedComposition,
+    audit, audit_address, AuditedAddress, AuditedRoot, CeremonyError, CeremonyId, CohortStructure,
+    ComponentClaim, ComponentCommitment, ComponentReveal, CompositionArtifact, Parties, Pop,
+    SealedComposition, SignedCommitment,
 };
+pub use identity::{IdentityKey, IdentityPublic, IdentitySignature};
 pub use cohort::{lagrange_at_zero, Cohort, ParticipantTerm};
 pub use composite::{CohortSpec, CompositeSpend, KeyImageTerms, Provenance};
 pub use control::{ControlDomain, Gates, Owners, NAMESPACE_SPAN};

@@ -62,7 +62,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{CohortSide, Honest};
+use common::{parties, seal_and_sign, CohortSide, Honest};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT as G, ristretto::RistrettoPoint, scalar::Scalar,
     traits::Identity,
@@ -71,7 +71,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     audit,
-    ceremony::{prove_possession, ComponentCommitment, SealedComposition},
+    ceremony::{prove_possession, SealedComposition},
     CeremonyError, CeremonyId, CohortSpec, CompositionArtifact, ComponentClaim, ComponentReveal,
     ControlDomain, Gates, Owners, Pop,
 };
@@ -205,7 +205,7 @@ fn the_attacker_cannot_substitute_the_rogue_component_at_reveal_time() {
     // So what is refused below is the substitution, not the sealing.
     h.sealed
         .clone()
-        .open(h.owner_reveal.clone(), h.gate_reveal.clone())
+        .open(h.owner_reveal.clone(), h.gate_reveal.clone(), &parties())
         .expect("control: the sealed gate cohort opens its own commitment");
 
     // The owners reveal. NOW the attacker knows B_owner.
@@ -218,7 +218,7 @@ fn the_attacker_cannot_substitute_the_rogue_component_at_reveal_time() {
 
     assert_eq!(
         h.sealed
-            .open(h.owner_reveal.clone(), substituted.clone())
+            .open(h.owner_reveal.clone(), substituted.clone(), &parties())
             .unwrap_err(),
         CeremonyError::CommitmentMismatch { cohort: "gates" },
         "the rogue component must not open the commitment the gate cohort published"
@@ -227,11 +227,10 @@ fn the_attacker_cannot_substitute_the_rogue_component_at_reveal_time() {
     // And an artifact carrying it does not audit, so a funder handed one
     // reaches the same answer without having been present.
     assert_eq!(
-        audit(&CompositionArtifact::from_parts(
-            h.sealed,
-            h.owner_reveal.clone(),
-            substituted
-        ))
+        audit(
+            &CompositionArtifact::from_parts(h.sealed, h.owner_reveal.clone(), substituted),
+            &parties(),
+        )
         .unwrap_err(),
         CeremonyError::CommitmentMismatch { cohort: "gates" }
     );
@@ -264,7 +263,8 @@ fn the_refusal_is_independent_of_the_honest_cohort() {
                 .clone()
                 .open(
                     h.owner_reveal.clone(),
-                    ComponentReveal::from_parts(rogue, BTreeMap::new(), *h.gate_reveal.salt())
+                    ComponentReveal::from_parts(rogue, BTreeMap::new(), *h.gate_reveal.salt()),
+                    &parties(),
                 )
                 .unwrap_err(),
             CeremonyError::CommitmentMismatch { cohort: "gates" },
@@ -300,7 +300,7 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
     let sealed = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &rogue, &[0x99; 32]),
+        seal_and_sign::<Gates>(&ceremony, &rogue, &[0x99; 32]),
     )
     .expect("well-formed commitments");
 
@@ -308,7 +308,7 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
     // of what the attacker is publishing, and `Pop::prove` says so rather than
     // emitting a proof that fails later.
     assert_eq!(
-        Pop::prove(&sealed, &rogue, Gates::nth(0), &attacker.t).unwrap_err(),
+        Pop::prove_unchecked(&sealed, &rogue, Gates::nth(0), &attacker.t).unwrap_err(),
         CeremonyError::PopFailed {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -325,12 +325,12 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
     // cannot be the commitment check.
     assert_eq!(
         forged.commitment(&ceremony),
-        ComponentCommitment::seal(&ceremony, &rogue, &[0x99; 32])
+        seal_and_sign::<Gates>(&ceremony, &rogue, &[0x99; 32]).commitment()
     );
 
     let artifact = CompositionArtifact::from_parts(sealed, owners.reveal(&sealed), forged);
     assert_eq!(
-        audit(&artifact).unwrap_err(),
+        audit(&artifact, &parties()).unwrap_err(),
         CeremonyError::PopFailed {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -355,16 +355,19 @@ fn a_rogue_component_with_no_proof_at_all_is_refused() {
     let sealed = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &rogue, &salt),
+        seal_and_sign::<Gates>(&ceremony, &rogue, &salt),
     )
     .expect("well-formed");
 
     assert_eq!(
-        audit(&CompositionArtifact::from_parts(
-            sealed,
-            owners.reveal(&sealed),
-            ComponentReveal::from_parts(rogue, BTreeMap::new(), salt),
-        ))
+        audit(
+            &CompositionArtifact::from_parts(
+                sealed,
+                owners.reveal(&sealed),
+                ComponentReveal::from_parts(rogue, BTreeMap::new(), salt),
+            ),
+            &parties(),
+        )
         .unwrap_err(),
         CeremonyError::PopMissing {
             cohort: "gates",
@@ -404,17 +407,20 @@ fn a_component_the_attacker_can_prove_does_not_capture_the_root() {
     let sealed = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &honest_shape, &salt),
+        seal_and_sign::<Gates>(&ceremony, &honest_shape, &salt),
     )
     .expect("well-formed");
-    let pop = Pop::prove(&sealed, &honest_shape, Gates::nth(0), &attacker.t)
+    let pop = Pop::prove_unchecked(&sealed, &honest_shape, Gates::nth(0), &attacker.t)
         .expect("the attacker really does hold this one");
 
-    let audited = audit(&CompositionArtifact::from_parts(
-        sealed,
-        owners.reveal(&sealed),
-        ComponentReveal::from_parts(honest_shape, BTreeMap::from([(Gates::nth(0), pop)]), salt),
-    ))
+    let audited = audit(
+        &CompositionArtifact::from_parts(
+            sealed,
+            owners.reveal(&sealed),
+            ComponentReveal::from_parts(honest_shape, BTreeMap::from([(Gates::nth(0), pop)]), salt),
+        ),
+        &parties(),
+    )
     .expect("a component its publisher can open is accepted");
 
     assert_eq!(audited.root(), b_owner + attacker.t * G);
@@ -488,11 +494,10 @@ fn the_owners_refuse_a_second_composition_so_a_late_seal_has_nobody_to_prove_wit
     // CONTROL, and the reason step 5 IS the attack: the owners' existing proofs
     // do not carry over, so the gates cannot simply reuse the reveal they have.
     assert_eq!(
-        audit(&CompositionArtifact::from_parts(
-            second,
-            owner_reveal.clone(),
-            best.reveal(&second),
-        ))
+        audit(
+            &CompositionArtifact::from_parts(second, owner_reveal.clone(), best.reveal(&second)),
+            &parties(),
+        )
         .unwrap_err(),
         CeremonyError::PopFailed {
             cohort: "owners",
@@ -539,7 +544,7 @@ fn the_owners_refuse_a_second_composition_so_a_late_seal_has_nobody_to_prove_wit
 #[test]
 fn the_honest_cohorts_contribution_survives_into_the_root() {
     let h = Honest::run(0xA11CE, &owners_spec(), &gates_spec());
-    let audited = audit(&h.artifact).expect("the honest composition audits");
+    let audited = audit(&h.artifact, &parties()).expect("the honest composition audits");
 
     assert_eq!(
         audited.root(),

@@ -13,30 +13,79 @@ use rand_core::SeedableRng;
 use two_cohort::{
     ceremony::{
         draw_salt, prove_possession, ComponentClaim, ComponentCommitment, ComponentReveal,
-        CompositionArtifact, Pop, SealedComposition,
+        CompositionArtifact, Parties, Pop, SealedComposition, SignedCommitment,
     },
     dkg::{run_dkg, CohortShare},
+    identity::{IdentityKey, IdentityPublic},
     CeremonyId, CohortSpec, ControlDomain, Gates, Owners,
 };
 
 /// The subaddress the bridge publishes for a depositor.
 pub const SUBADDRESS: u64 = 7;
 
+/// The long-term identity key of the organisation running cohort `C` in these
+/// tests.
+///
+/// Fixed rather than drawn, and keyed on the cohort NAME rather than on the
+/// ceremony, because that is what an organisation's identity key is: the same
+/// key across every ceremony it takes part in. A test that wants a key an
+/// organisation does NOT hold makes its own -- see `tests/attribution.rs`.
+pub fn identity_of<C: ControlDomain>() -> IdentityKey {
+    // Distinct seeds, so the two organisations are two organisations. The
+    // values are arbitrary; that they DIFFER is not.
+    if C::NAME == Owners::NAME {
+        IdentityKey::from_seed(&[0x01; 32])
+    } else {
+        IdentityKey::from_seed(&[0x02; 32])
+    }
+}
+
+/// The two identity public keys a funder auditing these tests' artifacts holds.
+pub fn parties() -> Parties {
+    Parties::new(
+        identity_of::<Owners>().public(),
+        identity_of::<Gates>().public(),
+    )
+}
+
+pub fn identity_public<C: ControlDomain>() -> IdentityPublic {
+    identity_of::<C>().public()
+}
+
+/// Seal a claim and endorse it as cohort `C`'s organisation.
+///
+/// For the tests that build a claim by hand rather than from a DKG: sealing and
+/// signing travel together, because a commitment nobody endorsed is not
+/// something the honest protocol ever produces.
+pub fn seal_and_sign<C: ControlDomain>(
+    ceremony: &CeremonyId,
+    claim: &ComponentClaim,
+    salt: &[u8; 32],
+) -> SignedCommitment {
+    SignedCommitment::create(
+        ceremony,
+        ComponentCommitment::seal(ceremony, claim, salt),
+        &identity_of::<C>(),
+    )
+}
+
 /// One cohort's DKG output plus the salt it sealed under.
 pub struct CohortSide<C: ControlDomain> {
     pub shares: Vec<CohortShare<C>>,
     pub claim: ComponentClaim,
     pub salt: [u8; 32],
-    pub commitment: ComponentCommitment,
+    /// The seal, endorsed by this cohort's organisation.
+    pub commitment: SignedCommitment,
 }
 
 impl<C: ControlDomain> CohortSide<C> {
-    /// Run this cohort's DKG and seal its component.
+    /// Run this cohort's DKG, seal its component, and sign the seal as its
+    /// organisation.
     pub fn generate(ceremony: &CeremonyId, spec: &CohortSpec<C>, rng: &mut ChaCha20Rng) -> Self {
         let shares = run_dkg::<C, _>(ceremony, spec, rng).expect("honest dkg");
         let claim = ComponentClaim::of(shares[0].key());
         let salt = draw_salt(rng);
-        let commitment = ComponentCommitment::seal(ceremony, &claim, &salt);
+        let commitment = seal_and_sign::<C>(ceremony, &claim, &salt);
         CohortSide {
             shares,
             claim,
@@ -124,7 +173,7 @@ impl Honest {
         let owner_reveal = owner_side.reveal(&sealed);
         let gate_reveal = gate_side.reveal(&sealed);
         let artifact = sealed
-            .open(owner_reveal.clone(), gate_reveal.clone())
+            .open(owner_reveal.clone(), gate_reveal.clone(), &parties())
             .expect("honest composition");
 
         Honest {

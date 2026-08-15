@@ -28,7 +28,21 @@ rand_chacha = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 
+[features]
+# Exposes `Pop::prove_unchecked`, the prover that signs whatever claim it is
+# handed. Off by default so that a deployment which wants it has to write this
+# name in its OWN manifest, where a reviewer reading the dependency line sees
+# it. See `Pop::prove_unchecked` for exactly what this does and does not buy.
+unchecked-proving = []
+
 [dev-dependencies]
+# This crate, depending on itself with the feature on, is what keeps the
+# integration tests able to reach the raw prover while a downstream deployment
+# cannot without naming the feature. Integration tests are separate crates and
+# so cannot see a `pub(crate)` item or a `cfg(test)` one; this is the only
+# mechanism that distinguishes "in this repo's tests" from "downstream".
+two-cohort = { path = ".", features = ["unchecked-proving"] }
+
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }

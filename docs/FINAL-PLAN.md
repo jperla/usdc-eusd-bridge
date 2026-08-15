@@ -1,8 +1,12 @@
 # USDC ↔ eUSD Bridge — Final Plan
 
 **Status.** The strategy and design are settled and have been through sustained adversarial
-review. Four of six components can start now. Two are behind a single architecture gate,
-which is a decision about *who holds a second key* rather than a cryptography problem. One
+review. Four of six components can start now. Two are behind the architecture gate, which
+**remains shut** — see §2a. The two-cohort spike of §5 is no longer the thing standing in
+the way: real per-cohort DKGs, an identity-attributed composition ceremony, a third-party
+audit and a release gate that refuses a simulated or undecided root all exist and are
+tested. What is still missing is *per-seat* attribution, without which the artifact cannot
+tell three operator organisations from one organisation holding three seats. One
 recommendation is out for review and is marked as such.
 
 ---
@@ -83,6 +87,12 @@ arrangement buys nothing, so this is an organizational fact about real
 administrative boundaries — no model can see it and no code review can verify
 it.
 
+**Also still open, and this one is partly buildable.** *Whether the three
+operator seats are three entities.* `T = 3` counts **seats**. Three seats held
+by one organisation are one principal wearing three hats, and 2-of-3 of them is
+no barrier at all. This was previously written down only for the gate; §2a
+records why it matters for the operators too.
+
 **The gate co-signs every release.** It is not an emergency key: its share is in
 the key image, so nothing moves without it. Gates therefore need routine
 availability, and the gate threshold trades against liveness exactly as the
@@ -98,6 +108,62 @@ management needs the same rigor as operator key management.
 **This blocks funding, not building.** The address derives from `B = B_owner + B_gate`, so a
 production address cannot be funded before the holders are known. Everything in §5 proceeds
 regardless.
+
+---
+
+## 2a. The architecture gate — STILL SHUT, and precisely why
+
+The gate was shut on this finding, from an earlier review:
+
+> The artifact a funder can check alone is still weaker than the design it
+> describes. It cannot distinguish a DKG from a dealer, cannot establish
+> chronology, and the ordering defence lives in holder discipline that the
+> published bytes do not record.
+
+**Closed since.** An identity-signed commit broadcast, checked by `audit`
+against keys the funder obtains from the two organisations — so an artifact is
+now a statement *by* two named parties, welded into the proof-of-possession
+transcript rather than layered beside it. A release path (`authorize_release`)
+that refuses `Provenance::Simulated`, pins both rosters and thresholds to the
+decided constants, and refuses a ceremony audited under organisations the
+deployment does not name. A checked default proving entry point on the type a
+holder actually has. A refusal when a funder names one organisation for both
+cohorts. And the declared threshold now means minimum coalition size rather than
+polynomial degree — a real defect, found by review this round and performed
+before it was fixed.
+
+**Not closed, and this is what keeps the gate shut.** *The artifact carries no
+per-seat identity.* `audit` is told one identity key per **cohort**, while the
+decided structure's security argument is per **seat**. An operator organisation
+that runs no DKG, deals all three shares to itself and endorses the seal with
+its own genuine key produces an artifact that audits, passes `authorize_release`
+and reaches a published deposit address — after which **two** principals open an
+output paid there, against a decided compromise threshold of **three**. This is
+performed, end to end, in
+`crates/two-cohort/tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`.
+
+**Is it buildable here?** Partly, and the honest split matters:
+
+* **Buildable.** Putting a per-seat identity key into `ComponentClaim` — sealed
+  by the commitment and named in every proof-of-possession transcript — and a
+  per-seat roster of keys into `Parties`, so each seat must authenticate its own
+  claim. `crates/ceremony/src/machine.rs` already keeps a
+  `ParticipantId → IdentityPublic` map for identifiable abort; it does not reach
+  `CompositionArtifact`. That raises the funder's check from 2 keys to 4, above
+  the compromise threshold of 3. It is a real change to a shared file and to
+  every test that constructs a claim, and it was **not** attempted this round.
+* **Not buildable, by anyone, in any artifact.** That four keys are four
+  entities. Distinct authenticated keys do not prove one party does not hold
+  several, and no signature scheme records that a dealer kept a copy. That is
+  the same class as *who the gate is*: an organisational fact, answerable by a
+  question put to an organisation and by custody attestation, not by bytes.
+
+Two further items are named rather than narrowed. **Chronology** is not closed
+and signatures do not close it — a signature has no time in it, and the ordering
+rule lives at the share, in holders running this code. **There is no byte
+format**: `audit` takes a typed value, and this workspace defines no canonical
+encoding or parser for an artifact, so "a funder holding only bytes" is a figure
+of speech today.
 
 ---
 
@@ -199,12 +265,17 @@ today because payouts are manual; live the moment they are automated.
    one-time value store keyed on the full signing context and anchored before each externally
    observable step.
 
-**Critical path — the two-cohort signing spike.** The existing threshold spike has a
-**one-cohort shape** (a single roster and threshold shared by the spend and mask keys) and
-cannot express operators-plus-gates at all. This is the thing standing between the project and
-a fundable architecture.
+**~~Critical path — the two-cohort signing spike.~~ DONE.** The one-cohort spike has been
+replaced by `crates/two-cohort`: disjoint control domains in the type system, real per-cohort
+PedPoP, a commit-then-reveal composition with cross-cohort proof of possession, a third-party
+`audit`, and a release gate. 299 tests, and every guard mutation-checked.
 
-**Also gated:** anything that funds a composite address, pending §2.
+**New critical path — per-seat attribution.** Carry a per-seat identity key inside
+`ComponentClaim`, sealed by the commitment and bound into every proof transcript, and take a
+per-seat roster in `Parties`. See §2a for what that does and does not buy. Until it lands, a
+funder's check is over two keys while the decided compromise threshold is three.
+
+**Also gated:** anything that funds a composite address, pending §2 and §2a.
 
 **Baseline hardening that is useful either way:** identity-signed round messages, durable
 one-time value storage, typed errors, canonical wire encoding.
@@ -234,5 +305,13 @@ defects in the *checking apparatus* rather than the design itself. What survived
 
 Two things are not yet confirmed and are marked accordingly: the gate structure recommendation
 in §2, and the reviewer's standing position that the project **has not crossed the production
-threshold-composition boundary** — which is agreement about the gap in §5, not disagreement
-about the plan.
+threshold-composition boundary**.
+
+That second position still stands, and the reason has moved. It is no longer "there is no
+two-cohort construction" — there is one, and it is tested. It is now the single gap in §2a:
+the artifact attributes a cohort, not a seat, so it cannot distinguish the decided four-entity
+structure from two entities wearing four hats. The most recent review confirmed the finding
+and refuted several of the claims written around it, including that a lying view service
+"cannot spend", that the release gate made a funding path unreachable, and that the declared
+threshold was a minimum coalition size. Those are fixed in the code and in the prose; the gap
+itself is not.

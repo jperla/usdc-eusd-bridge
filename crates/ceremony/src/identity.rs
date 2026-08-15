@@ -11,83 +11,28 @@
 //!
 //! Consequently every round message is signed under a key that lives outside the
 //! sharing, and abort evidence is the signature, never the transcript.
-
-use mc_crypto_keys::{Ed25519Pair, Ed25519Public, Ed25519Signature, Signer, Verifier};
+//!
+//! # Where the key type itself lives
+//!
+//! [`IdentityKey`], [`IdentityPublic`] and [`IdentitySignature`] are RE-EXPORTED
+//! from [`two_cohort::identity`], not declared here. `two-cohort`'s composition
+//! ceremony needs the same notion -- which organisation sealed a component --
+//! and this crate already depends on `two-cohort`, so the primitive moved down
+//! to the crate both can reach rather than being written twice. Two copies of
+//! "identity" would be two things a deployment has to keep in step, and the
+//! first time they diverged the divergence would be silent.
+//!
+//! What stays here is what is specific to THIS crate's rounds: the participant
+//! -scoped error, and the two signed round messages with their domain tags.
 
 use crate::context::{Commitment, ContextId, ParticipantId, Share, Statement, Subset};
 
-/// A participant's identity public key. Newtype because the upstream key type
-/// carries neither `Debug` nor `PartialEq`, and a roster wants both.
-#[derive(Clone, Copy)]
-pub struct IdentityPublic(Ed25519Public);
-
-impl IdentityPublic {
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        self.0.as_ref()
-    }
-}
-
-impl From<Ed25519Public> for IdentityPublic {
-    fn from(k: Ed25519Public) -> Self {
-        IdentityPublic(k)
-    }
-}
-
-impl PartialEq for IdentityPublic {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_bytes() == other.as_bytes()
-    }
-}
-impl Eq for IdentityPublic {}
-
-impl std::fmt::Debug for IdentityPublic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IdentityPublic(")?;
-        for b in &self.as_bytes()[..6] {
-            write!(f, "{b:02x}")?;
-        }
-        write!(f, "..)")
-    }
-}
-
-/// Detached Ed25519 signature, kept as bytes so the message types stay plain
-/// data that can be compared, hashed and logged.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct IdentitySignature(pub [u8; 64]);
-
-impl std::fmt::Debug for IdentitySignature {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IdentitySignature(")?;
-        for b in &self.0[..6] {
-            write!(f, "{b:02x}")?;
-        }
-        write!(f, "..)")
-    }
-}
+pub use two_cohort::identity::{IdentityKey, IdentityPublic, IdentitySignature};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IdentityError {
     #[error("identity signature does not verify for participant {0:?}")]
     BadSignature(ParticipantId),
-}
-
-/// Signing side of an identity key.
-pub struct IdentityKey {
-    pair: Ed25519Pair,
-}
-
-impl IdentityKey {
-    /// `seed` is the 32-byte Ed25519 private key (RFC 8032 secret key).
-    pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let pair = Ed25519Pair::try_from(&seed[..]).expect("32 bytes is a valid Ed25519 seed");
-        IdentityKey { pair }
-    }
-    pub fn public(&self) -> IdentityPublic {
-        IdentityPublic(self.pair.public_key())
-    }
-    fn sign(&self, msg: &[u8]) -> IdentitySignature {
-        IdentitySignature(self.pair.sign(msg).to_bytes())
-    }
 }
 
 fn verify(
@@ -96,9 +41,11 @@ fn verify(
     sig: &IdentitySignature,
     who: ParticipantId,
 ) -> Result<(), IdentityError> {
-    key.0
-        .verify(msg, &Ed25519Signature::new(sig.0))
-        .map_err(|_| IdentityError::BadSignature(who))
+    if key.verify(msg, sig) {
+        Ok(())
+    } else {
+        Err(IdentityError::BadSignature(who))
+    }
 }
 
 // Distinct domain tags so a round-one signature can never be replayed as a

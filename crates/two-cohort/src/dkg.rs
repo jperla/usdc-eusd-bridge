@@ -89,7 +89,9 @@ use thiserror::Error as ThisError;
 use zeroize::Zeroizing;
 
 use crate::{
-    ceremony::{CeremonyId, SealedComposition, MAX_AUDITED_ROSTER},
+    ceremony::{
+        CeremonyError, CeremonyId, ComponentClaim, Pop, SealedComposition, MAX_AUDITED_ROSTER,
+    },
     cohort::{Cohort, ParticipantTerm},
     composite::CohortSpec,
     control::{ControlDomain, NAMESPACE_SPAN},
@@ -439,9 +441,18 @@ impl<C: ControlDomain> fmt::Debug for Committing<C> {
 impl<C: ControlDomain> Committing<C> {
     /// Begin key generation as participant `me`.
     ///
-    /// The PedPoP transcript context is derived from `ceremony`, so a
-    /// participant cannot be induced to reuse this run's commitments in a
-    /// different composition: the proof of knowledge would not verify there.
+    /// The PedPoP transcript context is derived from `ceremony` and the cohort
+    /// name, so this run's commitments do not verify under a DIFFERENT
+    /// [`CeremonyId`] or in the other cohort.
+    ///
+    /// Not stronger than that. The context is exactly `(CeremonyId, cohort)`,
+    /// and nothing enforces that a `CeremonyId` is used for one run -- see this
+    /// module's opening note. Two runs of this cohort under the same id share a
+    /// context, so "cannot be induced to reuse this run's commitments in a
+    /// different composition", which an earlier version of this comment claimed,
+    /// is false for the same-id case. The rule that binds a HOLDER to one
+    /// composition is [`prove_possession`](crate::ceremony::prove_possession)'s,
+    /// enforced per share.
     pub fn begin<R: RngCore + CryptoRng>(
         ceremony: &CeremonyId,
         spec: &CohortSpec<C>,
@@ -667,8 +678,10 @@ impl<C: ControlDomain> Confirming<C> {
 /// One cohort's PUBLIC key material, as produced by a completed DKG.
 ///
 /// There is no constructor taking a [`Cohort`](crate::Cohort), no `new`, and no
-/// public field: the only way to obtain one is to finish [`Dealing::finish`].
-/// That is what makes "production key material" a type rather than a comment.
+/// public field: the only way to obtain one is to run the DKG to completion --
+/// [`Dealing::finish`] yields a `Confirming`, and `Confirming::confirm` is what
+/// constructs this. That is what makes "production key material" a type rather
+/// than a comment.
 ///
 /// It carries no secret. The shares are with the participants that generated
 /// them, which is why the [`Cohort`](crate::Cohort) inside it answers
@@ -742,7 +755,13 @@ impl<C: ControlDomain> CohortKey<C> {
 ///
 /// Holds exactly one scalar: this participant's own share. It is what a
 /// production signer is built from, and there is no path from it to any other
-/// participant's share or to the cohort secret.
+/// participant's share.
+///
+/// Nor to the cohort secret -- **except at threshold 1**, where the sole share
+/// IS the component secret and no path is needed. The decided gate cohort is
+/// `1-of-1`, so this is the production case and not a corner: the gate
+/// organisation's single holder holds `b_gate` outright, by construction, and
+/// the security argument never claimed otherwise.
 pub struct CohortShare<C: ControlDomain> {
     key: CohortKey<C>,
     id: u64,
@@ -791,9 +810,10 @@ impl<C: ControlDomain> CohortShare<C> {
 
     /// Check this share against the cohort's public commitments.
     ///
-    /// `s_i * G == V_i`. Called automatically at the end of [`Dealing::finish`];
-    /// public so a participant that loaded a share from storage can re-check it
-    /// before signing, against public data it can fetch from anywhere.
+    /// `s_i * G == V_i`. Called automatically when the DKG completes, in
+    /// `Confirming::confirm` rather than in [`Dealing::finish`]; public so a
+    /// participant that loaded a share from storage can re-check it before
+    /// signing, against public data it can fetch from anywhere.
     pub fn verify(&self) -> Result<(), DkgError> {
         let published = self
             .key
@@ -837,6 +857,40 @@ impl<C: ControlDomain> CohortShare<C> {
             .lagrange_in(self.id, subset)
             .map_err(DkgError::roster::<C>)?;
         Ok(ParticipantTerm::new(self.id, lambda * *self.secret))
+    }
+
+    /// **Prove possession of this share.** The entry point a holder should
+    /// reach for, and the reason is that it is the CHECKED one.
+    ///
+    /// It forwards to [`Pop::prove_for`], which refuses a `claim` that is not
+    /// the one this share's own key generation produced, refuses a `salt` that
+    /// does not open the commitment `sealed` carries for this cohort, and
+    /// spends this share's one proof -- see
+    /// [`prove_possession`](crate::ceremony::prove_possession) for the ordering
+    /// rule that last part enforces and, more importantly, for what it does not
+    /// reach.
+    ///
+    /// It exists here rather than only on [`Pop`] because this is the type a
+    /// holder actually has in hand, and the first entry point a holder finds
+    /// should be the one with the checks in it. There is deliberately no raw
+    /// counterpart on `CohortShare`: the unchecked prover signs whatever claim
+    /// it is handed, and nothing in this crate hands a holder its raw scalar to
+    /// feed one.
+    ///
+    /// What this is NOT: a capability boundary. A holder that means to misuse
+    /// its own secret can recover it -- `CohortShare::term` returns
+    /// `lambda_i * s_i` and `lambda_i` is public arithmetic, which
+    /// `composition.rs::a_holder_can_recover_its_own_share_through_public_api`
+    /// performs. Nothing can prevent that, because the share is the holder's.
+    /// What this changes is which path a holder takes by DEFAULT, which is a
+    /// smaller claim and the only one available.
+    pub fn prove(
+        &self,
+        sealed: &SealedComposition,
+        claim: &ComponentClaim,
+        salt: &[u8; 32],
+    ) -> Result<Pop, CeremonyError> {
+        Pop::prove_for(sealed, self, claim, salt)
     }
 
     /// The raw share.

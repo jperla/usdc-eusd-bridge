@@ -22,7 +22,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{CohortSide, Honest, SUBADDRESS};
+use common::{parties, seal_and_sign, CohortSide, Honest, SUBADDRESS};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT as G, ristretto::RistrettoPoint, scalar::Scalar,
     traits::Identity,
@@ -33,7 +33,7 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     audit, audit_address,
-    ceremony::{prove_possession, ComponentCommitment, SealedComposition},
+    ceremony::{prove_possession, SealedComposition},
     fixture::make_ring_from_seed,
     mlsag::{
         quorum_signers, sign, MaskSigner, MemoryNonceGuard, SessionParams, SigningError,
@@ -68,7 +68,7 @@ fn honest() -> Honest {
 #[test]
 fn an_honest_ceremony_produces_an_artifact_that_audits() {
     let h = honest();
-    let audited = audit(&h.artifact).expect("an honest composition audits");
+    let audited = audit(&h.artifact, &parties()).expect("an honest composition audits");
 
     // The root is the sum of exactly the two components, each of which is the
     // key its own cohort's DKG produced -- values this test never assembles.
@@ -78,10 +78,13 @@ fn an_honest_ceremony_produces_an_artifact_that_audits() {
     );
     assert_eq!(audited.ceremony(), &h.ceremony);
 
-    // "exactly these two rosters at exactly these thresholds".
-    let ((ot, orost), (gt, grost)) = audited.structure();
-    assert_eq!((ot, orost), (2, owners_spec().ids()));
-    assert_eq!((gt, grost), (2, gates_spec().ids()));
+    // "exactly these two rosters at exactly these thresholds", and -- since the
+    // audit was given the two organisations' keys -- by exactly these two
+    // parties. `tests/attribution.rs` is where that last clause is earned.
+    let (o, g) = audited.structure();
+    let (orost, grost) = (o.roster(), g.roster());
+    assert_eq!((o.threshold(), orost), (2, owners_spec().ids()));
+    assert_eq!((g.threshold(), grost), (2, gates_spec().ids()));
 
     // The two rosters are disjoint, which is what makes an owner quorum not a
     // gate quorum. Checked on the audited value, not on the specs.
@@ -90,16 +93,18 @@ fn an_honest_ceremony_produces_an_artifact_that_audits() {
     assert!(grost.iter().all(|&id| Gates::owns(id)));
 }
 
-/// The audit is a function of the artifact alone: an artifact rebuilt from its
-/// own published parts audits identically.
+/// The audit is a function of the artifact and the two identity keys, and of
+/// nothing else: an artifact rebuilt from its own published parts audits
+/// identically. It does NOT depend on having been present, on a shared session,
+/// or on anything either cohort still holds.
 #[test]
 fn the_audit_needs_nothing_but_the_artifact() {
     let h = honest();
     let rebuilt =
         CompositionArtifact::from_parts(h.sealed, h.owner_reveal.clone(), h.gate_reveal.clone());
     assert_eq!(
-        audit(&rebuilt).expect("audits"),
-        audit(&h.artifact).expect("audits"),
+        audit(&rebuilt, &parties()).expect("audits"),
+        audit(&h.artifact, &parties()).expect("audits"),
     );
 }
 
@@ -112,10 +117,13 @@ fn a_funder_can_match_the_reveals_against_the_commitments_it_saw() {
     let (owner_commitment, gate_commitment) = h.artifact.commitments();
     assert_eq!(
         h.owner_reveal.commitment(&h.ceremony),
-        owner_commitment,
+        owner_commitment.commitment(),
         "the owner reveal opens the commitment the artifact carries"
     );
-    assert_eq!(h.gate_reveal.commitment(&h.ceremony), gate_commitment);
+    assert_eq!(
+        h.gate_reveal.commitment(&h.ceremony),
+        gate_commitment.commitment()
+    );
     // ...and those are the values the cohorts published at seal time.
     assert_eq!(owner_commitment, h.owners.commitment);
     assert_eq!(gate_commitment, h.gates.commitment);
@@ -128,13 +136,13 @@ fn the_subaddress_is_checkable_by_a_funder_holding_the_view_key() {
     let h = honest();
     let d = h.spend_public();
 
-    let address = audit_address(&h.artifact, &h.view, SUBADDRESS, &d).expect("real subaddress");
+    let address = audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("real subaddress");
     assert_eq!(address.spend_public(), &d);
     assert_eq!(address.subaddress_index(), SUBADDRESS);
     assert_eq!(address.root().root(), h.artifact.declared_root());
 
     assert_eq!(
-        audit_address(&h.artifact, &h.view, SUBADDRESS + 1, &d).unwrap_err(),
+        audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS + 1, &d).unwrap_err(),
         CeremonyError::SubaddressMismatch {
             index: SUBADDRESS + 1
         }
@@ -156,7 +164,7 @@ fn the_subaddress_is_checkable_by_a_funder_holding_the_view_key() {
 fn an_honest_composition_signs_and_verifies_through_the_mlsag_protocol() {
     let h = honest();
     let d = h.spend_public();
-    let address = audit_address(&h.artifact, &h.view, SUBADDRESS, &d).expect("audited address");
+    let address = audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("audited address");
     let r = h.tx_public();
 
     let spend = CompositeSpend::from_ceremony(&address, &h.view, &r).expect("production spend");
@@ -276,7 +284,7 @@ fn seats(h: &Honest, spend: &CompositeSpend, osub: &[u64], gsub: &[u64]) -> Vec<
 fn an_owner_quorum_alone_cannot_open_the_output() {
     let h = honest();
     let d = h.spend_public();
-    let address = audit_address(&h.artifact, &h.view, SUBADDRESS, &d).expect("audited");
+    let address = audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("audited");
     let spend =
         CompositeSpend::from_ceremony(&address, &h.view, &h.tx_public()).expect("production");
 
@@ -343,7 +351,7 @@ fn an_owner_quorum_alone_cannot_open_the_output() {
 fn a_revealed_component_that_does_not_match_its_commitment_is_refused() {
     let h = honest();
     h.sealed
-        .open(h.owner_reveal.clone(), h.gate_reveal.clone())
+        .open(h.owner_reveal.clone(), h.gate_reveal.clone(), &parties())
         .expect("control: the honest reveal opens its commitment");
 
     let doctored = ComponentReveal::from_parts(
@@ -360,16 +368,15 @@ fn a_revealed_component_that_does_not_match_its_commitment_is_refused() {
     );
     assert_eq!(
         h.sealed
-            .open(h.owner_reveal.clone(), doctored.clone())
+            .open(h.owner_reveal.clone(), doctored.clone(), &parties())
             .unwrap_err(),
         CeremonyError::CommitmentMismatch { cohort: "gates" }
     );
     assert_eq!(
-        audit(&CompositionArtifact::from_parts(
-            h.sealed,
-            h.owner_reveal.clone(),
-            doctored
-        ))
+        audit(
+            &CompositionArtifact::from_parts(h.sealed, h.owner_reveal.clone(), doctored),
+            &parties(),
+        )
         .unwrap_err(),
         CeremonyError::CommitmentMismatch { cohort: "gates" },
         "and an artifact carrying it does not audit"
@@ -387,7 +394,9 @@ fn a_reveal_under_a_different_salt_is_refused() {
         [0x5A; 32],
     );
     assert_eq!(
-        h.sealed.open(h.owner_reveal.clone(), reveal).unwrap_err(),
+        h.sealed
+            .open(h.owner_reveal.clone(), reveal, &parties())
+            .unwrap_err(),
         CeremonyError::CommitmentMismatch { cohort: "gates" }
     );
 }
@@ -414,7 +423,7 @@ fn a_pop_over_the_wrong_transcript_is_refused() {
         .expect("well-formed");
     // Same gate commitment, a DIFFERENT owner commitment: the owner digest is
     // the thing a prover moving too early would not have had.
-    let other_owner_commitment = ComponentCommitment::seal(&ceremony, &owners.claim, &[0xAB; 32]);
+    let other_owner_commitment = seal_and_sign::<Owners>(&ceremony, &owners.claim, &[0xAB; 32]);
     let elsewhere = SealedComposition::new(ceremony, other_owner_commitment, gates.commitment)
         .expect("well-formed");
     assert_ne!(elsewhere, sealed);
@@ -429,7 +438,7 @@ fn a_pop_over_the_wrong_transcript_is_refused() {
 
     let reveal = ComponentReveal::from_parts(gates.claim.clone(), stale, gates.salt);
     assert_eq!(
-        sealed.open(owner_reveal, reveal).unwrap_err(),
+        sealed.open(owner_reveal, reveal, &parties()).unwrap_err(),
         CeremonyError::PopFailed {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -463,7 +472,9 @@ fn a_pop_for_a_different_component_is_refused() {
 
     let swapped = ComponentReveal::from_parts(h.gates.claim.clone(), foreign, h.gates.salt);
     assert_eq!(
-        h.sealed.open(h.owner_reveal.clone(), swapped).unwrap_err(),
+        h.sealed
+            .open(h.owner_reveal.clone(), swapped, &parties())
+            .unwrap_err(),
         CeremonyError::PopFailed {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -481,7 +492,9 @@ fn a_missing_pop_is_refused() {
     short.remove(&Gates::nth(1));
     let reveal = ComponentReveal::from_parts(h.gates.claim.clone(), short, h.gates.salt);
     assert_eq!(
-        h.sealed.open(h.owner_reveal.clone(), reveal).unwrap_err(),
+        h.sealed
+            .open(h.owner_reveal.clone(), reveal, &parties())
+            .unwrap_err(),
         CeremonyError::PopMissing {
             cohort: "gates",
             participant: Gates::nth(1),
@@ -613,16 +626,18 @@ fn attempt_at(
     let sealed = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &claim, &salt),
+        seal_and_sign::<Gates>(&ceremony, &claim, &salt),
     )?;
     let mut pops = BTreeMap::new();
     for (i, &id) in roster.iter().enumerate() {
-        pops.insert(id, Pop::prove(&sealed, &claim, id, &secrets[i])?);
+        pops.insert(id, Pop::prove_unchecked(&sealed, &claim, id, &secrets[i])?);
     }
     // `assemble` re-checks the proofs, so reaching `open` at all already means
     // every participant proved possession.
     let reveal = ComponentReveal::assemble(&sealed, claim, pops, salt)?;
-    sealed.open(owners.reveal(&sealed), reveal).map(|_| ())
+    sealed
+        .open(owners.reveal(&sealed), reveal, &parties())
+        .map(|_| ())
 }
 
 /// [`attempt_at`] at threshold 2, the shape most of these tests use.
@@ -655,15 +670,17 @@ fn an_identity_component_is_refused() {
     let sealed = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &claim, &[0; 32]),
+        seal_and_sign::<Gates>(&ceremony, &claim, &[0; 32]),
     )
     .expect("well-formed");
-    let pop = Pop::prove(&sealed, &claim, Gates::nth(0), &Scalar::ZERO)
+    let pop = Pop::prove_unchecked(&sealed, &claim, Gates::nth(0), &Scalar::ZERO)
         .expect("zero opens the identity, which is the point");
     let reveal = ComponentReveal::from_parts(claim, BTreeMap::from([(Gates::nth(0), pop)]), [0; 32]);
 
     assert_eq!(
-        sealed.open(owners.reveal(&sealed), reveal).unwrap_err(),
+        sealed
+            .open(owners.reveal(&sealed), reveal, &parties())
+            .unwrap_err(),
         CeremonyError::IdentityComponent { cohort: "gates" }
     );
 }
@@ -688,7 +705,7 @@ fn a_roster_from_the_wrong_domain_is_refused() {
 
     assert_eq!(
         h.sealed
-            .open(reveal, h.gate_reveal.clone())
+            .open(reveal, h.gate_reveal.clone(), &parties())
             .unwrap_err(),
         CeremonyError::IdOutsideDomain {
             cohort: "owners",
@@ -708,7 +725,7 @@ fn a_roster_from_the_wrong_domain_is_refused() {
 fn provenance_distinguishes_a_ceremony_root_from_a_dealt_one() {
     let h = honest();
     let d = h.spend_public();
-    let address = audit_address(&h.artifact, &h.view, SUBADDRESS, &d).expect("audited");
+    let address = audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("audited");
     let production =
         CompositeSpend::from_ceremony(&address, &h.view, &h.tx_public()).expect("production");
     assert_eq!(production.provenance(), Provenance::Ceremony(h.ceremony));
@@ -734,7 +751,7 @@ fn provenance_distinguishes_a_ceremony_root_from_a_dealt_one() {
 fn the_production_key_image_agrees_with_upstreams_own_derivation() {
     let h = honest();
     let d = h.spend_public();
-    let address = audit_address(&h.artifact, &h.view, SUBADDRESS, &d).expect("audited");
+    let address = audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("audited");
     let spend =
         CompositeSpend::from_ceremony(&address, &h.view, &h.tx_public()).expect("production");
 
@@ -803,7 +820,8 @@ fn a_claim_with_mismatched_lengths_is_refused_rather_than_indexed() {
         h.sealed
             .open(
                 h.owner_reveal.clone(),
-                ComponentReveal::from_parts(claim, BTreeMap::new(), h.gates.salt)
+                ComponentReveal::from_parts(claim, BTreeMap::new(), h.gates.salt),
+                &parties(),
             )
             .unwrap_err(),
         expected,
@@ -988,15 +1006,18 @@ fn an_identity_verification_share_is_refused() {
         let sealed = SealedComposition::new(
             ceremony,
             owners.commitment,
-            ComponentCommitment::seal(&ceremony, &claim, &salt),
+            seal_and_sign::<Gates>(&ceremony, &claim, &salt),
         )
         .expect("well-formed");
         let pops = BTreeMap::from([(Gates::nth(0), forged()), (Gates::nth(1), forged())]);
-        audit(&CompositionArtifact::from_parts(
-            sealed,
-            owners.reveal(&sealed),
-            ComponentReveal::from_parts(claim, pops, salt),
-        ))
+        audit(
+            &CompositionArtifact::from_parts(
+                sealed,
+                owners.reveal(&sealed),
+                ComponentReveal::from_parts(claim, pops, salt),
+            ),
+            &parties(),
+        )
         .unwrap_err()
     };
 
@@ -1082,12 +1103,12 @@ fn one_nonce_does_not_answer_two_claims() {
     let sealed = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &claim_a, &[0x11; 32]),
+        seal_and_sign::<Gates>(&ceremony, &claim_a, &[0x11; 32]),
     )
     .expect("well-formed");
 
-    let a = Pop::prove(&sealed, &claim_a, Gates::nth(0), &secrets[0]).expect("opens its own");
-    let b = Pop::prove(&sealed, &claim_b, Gates::nth(0), &secrets[0]).expect("opens its own");
+    let a = Pop::prove_unchecked(&sealed, &claim_a, Gates::nth(0), &secrets[0]).expect("opens its own");
+    let b = Pop::prove_unchecked(&sealed, &claim_b, Gates::nth(0), &secrets[0]).expect("opens its own");
 
     assert_ne!(
         a.nonce_public(),
@@ -1098,7 +1119,7 @@ fn one_nonce_does_not_answer_two_claims() {
     // CONTROL: the same claim twice is byte-for-byte the same proof, so the
     // difference above is the claim and not a fresh random draw.
     assert_eq!(
-        Pop::prove(&sealed, &claim_a, Gates::nth(0), &secrets[0]).expect("again"),
+        Pop::prove_unchecked(&sealed, &claim_a, Gates::nth(0), &secrets[0]).expect("again"),
         a
     );
 }
@@ -1142,7 +1163,7 @@ fn a_holder_refuses_to_prove_under_a_claim_that_is_not_its_own() {
     let elsewhere = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &gates.claim, &[0xC7; 32]),
+        seal_and_sign::<Gates>(&ceremony, &gates.claim, &[0xC7; 32]),
     )
     .expect("well-formed");
     assert_eq!(
@@ -1171,7 +1192,7 @@ fn a_holder_refuses_to_prove_under_a_claim_that_is_not_its_own() {
 #[test]
 fn from_ceremony_refuses_a_view_key_that_is_not_the_audited_one() {
     let h = honest();
-    let address = audit_address(&h.artifact, &h.view, SUBADDRESS, &h.spend_public())
+    let address = audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &h.spend_public())
         .expect("the honest address audits");
 
     // CONTROL: the key the address was audited under builds a spend.
@@ -1251,7 +1272,7 @@ fn a_holder_can_recover_its_own_share_through_public_api() {
     let elsewhere = SealedComposition::new(
         ceremony,
         owners.commitment,
-        ComponentCommitment::seal(&ceremony, &gates.claim, &[0xEE; 32]),
+        seal_and_sign::<Gates>(&ceremony, &gates.claim, &[0xEE; 32]),
     )
     .expect("well-formed");
     assert_ne!(elsewhere, sealed);
@@ -1266,11 +1287,11 @@ fn a_holder_can_recover_its_own_share_through_public_api() {
 
     // ...and the recovered scalar walks straight past it, producing a proof that
     // the audit's own check accepts.
-    let bypass = Pop::prove(&elsewhere, &gates.claim, share.id(), &recovered)
+    let bypass = Pop::prove_unchecked(&elsewhere, &gates.claim, share.id(), &recovered)
         .expect("the recovered share opens its own verification share");
     assert_eq!(
         bypass,
-        Pop::prove(&elsewhere, &gates.claim, share.id(), &recovered).expect("again"),
+        Pop::prove_unchecked(&elsewhere, &gates.claim, share.id(), &recovered).expect("again"),
         "and it is a real, deterministic proof, not a malformed one"
     );
     assert_eq!(
@@ -1278,4 +1299,135 @@ fn a_holder_can_recover_its_own_share_through_public_api() {
         Some(sealed),
         "the share's record still says it answered only the first composition"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The declared threshold is a minimum coalition size, not only a degree.
+// ---------------------------------------------------------------------------
+
+/// **A dealing at declared threshold 3 in which seat 1 alone holds the
+/// component, refused.**
+///
+/// Found by review. `check_consistency`'s lower bound used to enumerate only
+/// the `(t-1)`-subsets, which establishes that the polynomial's degree is
+/// exactly `t-1` and nothing more. Degree is not the same claim as minimum
+/// coalition size, and the two come apart from `t = 3` upward. Take
+///
+/// ```text
+///     p(x) = b + a*x*(x - 1)
+/// ```
+///
+/// over evaluation points `1, 2, 3`. It has degree 2, so a declared threshold
+/// of 3 is not overstated as a DEGREE: no pair of seats interpolates to `b`.
+/// But `p(1) = b`, so seat 1 holds the component scalar outright and a funder
+/// reading `threshold = 3` from `AuditedRoot::structure` would be told three
+/// seats are needed when one suffices.
+///
+/// The dealing here is genuine, not malformed: every verification share lies on
+/// one polynomial of the declared degree, every seat can prove possession of its
+/// own share, and the component really is `p(0)*G`. That is what makes it the
+/// interesting case -- there is nothing else wrong with it to catch.
+///
+/// The decided production structure is not exposed to this: at owner threshold
+/// 2 the old lower bound already enumerated the 1-subsets, and gate threshold 1
+/// has nothing below it. The bug was in the general claim, which is what
+/// `AuditedRoot::structure` reports to a funder.
+#[test]
+fn a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree() {
+    let mut rng = ChaCha20Rng::seed_from_u64(0x3E47);
+    let ceremony = CeremonyId::draw("degree is not coalition size", &mut rng);
+    let owners = CohortSide::<Owners>::generate(&ceremony, &owners_spec(), &mut rng);
+
+    let roster: Vec<u64> = (0..3).map(Gates::nth).collect();
+    let b = Scalar::from(7777u64);
+    let a = Scalar::from(31u64);
+    // p(x) = b + a*x*(x-1), evaluated at the points the audit uses: 1, 2, 3.
+    let secrets: Vec<Scalar> = (1u64..=3)
+        .map(|x| {
+            let x = Scalar::from(x);
+            b + a * x * (x - Scalar::ONE)
+        })
+        .collect();
+    let shares: Vec<RistrettoPoint> = secrets.iter().map(|s| s * G).collect();
+    let claim = ComponentClaim::from_parts(Gates::NAME, 3, roster.clone(), b * G, shares);
+
+    // The dealing is real: seat 1 (evaluation point 1) opens the component
+    // outright, which is the whole defect, and it is stated here as arithmetic
+    // rather than left for the audit to be believed about.
+    assert_eq!(secrets[0], b);
+    assert_eq!(claim.verification_share(roster[0]), Some(b * G));
+
+    let salt = [0x3E; 32];
+    let sealed = SealedComposition::new(
+        ceremony,
+        owners.commitment,
+        seal_and_sign::<Gates>(&ceremony, &claim, &salt),
+    )
+    .expect("well-formed");
+    let mut pops = BTreeMap::new();
+    for (i, &id) in roster.iter().enumerate() {
+        pops.insert(
+            id,
+            Pop::prove_unchecked(&sealed, &claim, id, &secrets[i]).expect("opens its own share"),
+        );
+    }
+    // Every proof verifies: this is not caught anywhere in the proving path.
+    let reveal = ComponentReveal::assemble(&sealed, claim, pops, salt)
+        .expect("a genuine dealing on a genuine polynomial");
+
+    let artifact =
+        CompositionArtifact::from_parts(sealed, owners.reveal(&sealed), reveal);
+    assert_eq!(
+        audit(&artifact, &parties()).unwrap_err(),
+        CeremonyError::ThresholdOverstated {
+            cohort: Gates::NAME,
+            threshold: 3,
+            quorum: vec![roster[0]],
+        },
+        "seat 1 alone reaches the component, so `threshold = 3` is not the \
+         minimum coalition size the funder is told it is",
+    );
+
+    // Control: the same shape dealt on a polynomial with no such seat -- an
+    // ordinary degree-2 dealing -- audits. So the refusal is the property and
+    // not the shape.
+    let mut rng2 = ChaCha20Rng::seed_from_u64(0x3E48);
+    let ceremony2 = CeremonyId::draw("degree is not coalition size", &mut rng2);
+    let owners2 = CohortSide::<Owners>::generate(&ceremony2, &owners_spec(), &mut rng2);
+    let (c1, c2) = (Scalar::from(5u64), Scalar::from(11u64));
+    let secrets2: Vec<Scalar> = (1u64..=3)
+        .map(|x| {
+            let x = Scalar::from(x);
+            b + c1 * x + c2 * x * x
+        })
+        .collect();
+    // No seat is the component, and no pair reaches it either.
+    for s in &secrets2 {
+        assert_ne!(*s, b);
+    }
+    let claim2 = ComponentClaim::from_parts(
+        Gates::NAME,
+        3,
+        roster.clone(),
+        b * G,
+        secrets2.iter().map(|s| s * G).collect(),
+    );
+    let salt2 = [0x3F; 32];
+    let sealed2 = SealedComposition::new(
+        ceremony2,
+        owners2.commitment,
+        seal_and_sign::<Gates>(&ceremony2, &claim2, &salt2),
+    )
+    .expect("well-formed");
+    let mut pops2 = BTreeMap::new();
+    for (i, &id) in roster.iter().enumerate() {
+        pops2.insert(
+            id,
+            Pop::prove_unchecked(&sealed2, &claim2, id, &secrets2[i]).expect("opens its own"),
+        );
+    }
+    let reveal2 = ComponentReveal::assemble(&sealed2, claim2, pops2, salt2).expect("genuine");
+    let artifact2 =
+        CompositionArtifact::from_parts(sealed2, owners2.reveal(&sealed2), reveal2);
+    audit(&artifact2, &parties()).expect("an ordinary 3-of-3 dealing still audits");
 }

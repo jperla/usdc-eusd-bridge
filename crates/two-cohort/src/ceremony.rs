@@ -32,21 +32,52 @@
 //! The two are welded together here rather than layered: the proof-of-possession
 //! transcript contains BOTH commitments. A cohort cannot produce a valid proof
 //! until it holds the other cohort's sealed component, and the thing it is
-//! proving possession of is already sealed inside its own commitment. So an
-//! honest cohort that follows the sequence produces evidence of the sequence,
-//! and that evidence is in the artifact.
+//! proving possession of is already sealed inside its own commitment. So a
+//! cohort's proof is evidence that it held the other side's commitment when it
+//! proved -- an ORDERING between two events in the artifact, not a CHRONOLOGY.
+//! Nothing here dates anything, and the negative list below says so at length:
+//! a party assembling both halves can produce any internally consistent
+//! history.
 //!
 //! ```text
 //!   1. each cohort runs its own PedPoP DKG under this ceremony's id
 //!   2. each SEALS its component:  ComponentCommitment::seal
-//!   3. the two commitments are exchanged      -> SealedComposition
-//!   4. each participant proves possession of its share under BOTH
-//!      commitments                            -> Pop
-//!   5. each cohort REVEALS                    -> ComponentReveal
-//!   6. the reveals are matched against the commitments and the proofs
+//!   3. each SIGNS its own seal under its organisation's long-term identity
+//!      key                                    -> SignedCommitment
+//!   4. the two signed commitments are exchanged -> SealedComposition
+//!   5. each participant proves possession of its share under BOTH
+//!      commitments and BOTH organisations     -> Pop
+//!   6. each cohort REVEALS                    -> ComponentReveal
+//!   7. the reveals are matched against the commitments and the proofs
 //!      checked                                -> CompositionArtifact
-//!   7. anyone at all can re-run 6 on the artifact alone -> audit
+//!   8. anyone holding the artifact AND the two organisations' identity
+//!      public keys can re-run 7 -> audit
 //! ```
+//!
+//! # The third defence: who produced this half
+//!
+//! Proof of possession and non-adaptive ordering are both statements about KEY
+//! MATERIAL, and one process that runs both DKGs satisfies them completely: it
+//! holds every share of both cohorts, so it can prove possession of both
+//! components, and it can seal both before opening either. An artifact of bare
+//! commitments therefore cannot distinguish a composition between two
+//! organisations from a solo performance of one.
+//! `tests/attribution.rs::one_process_can_produce_an_artifact_that_passes_every_structural_check`
+//! carries that out rather than asserting it.
+//!
+//! So each cohort signs its own sealed commitment under its organisation's
+//! long-term Ed25519 identity key -- [`crate::identity`], the same primitive
+//! `crates/ceremony` signs round messages with -- and [`audit`] takes the two
+//! keys the funder obtained FROM THE ORGANISATIONS and refuses any artifact
+//! whose halves were endorsed by anything else. The identities are welded into
+//! the proof-of-possession transcript too (see [`pop_challenge`]), so a holder
+//! proves possession under a composition that names its counterparty, and an
+//! honest cohort's reveal cannot be re-attributed to a different party.
+//!
+//! The residual is exact and is not a detail: an impostor holding BOTH
+//! organisations' identity private keys still produces an artifact that audits.
+//! Identity keys are what a funder is trusting; this makes the artifact say so
+//! out loud instead of saying nothing.
 //!
 //! # The proof of possession is per PARTICIPANT, not per cohort
 //!
@@ -72,8 +103,19 @@
 //!
 //! # What a funder can check, and what it still cannot
 //!
-//! [`audit`] takes a [`CompositionArtifact`] and nothing else. It establishes:
+//! [`audit`] takes a [`CompositionArtifact`] and the two organisations'
+//! identity public keys, and nothing else. It establishes:
 //!
+//!   * that the two identity keys the funder supplied are DIFFERENT KEYS -- one
+//!     key given twice is [`CeremonyError::PartiesNotDistinct`], because every
+//!     check below would otherwise pass and report a two-party control that was
+//!     never claimed. Key inequality, and nothing more: two keys can be two hats
+//!     on one organisation, which is the residual stated below;
+//!   * that each cohort's commitment was endorsed by the organisation the funder
+//!     named for it, under a signature over this ceremony, this cohort and this
+//!     digest -- so the artifact is a statement BY those two parties and not
+//!     merely a statement about two rosters, and every proof of possession in it
+//!     was made under a transcript naming both of them;
 //!   * the two rosters, their two thresholds, and that their ids come from
 //!     disjoint control domains, so no subset of one is a quorum of the other;
 //!   * that each roster is in the canonical ascending order, so the audit's
@@ -91,12 +133,26 @@
 //!   * each revealed component matches the commitment published for it;
 //!   * the root is the sum of exactly those two components.
 //!
+//! [`AuditedRoot::structure`] returns all of that as two [`CohortStructure`]
+//! values -- identity, threshold, roster, component -- so a caller comparing an
+//! address against a decided structure compares values instead of navigating
+//! the artifact's internals.
+//!
 //! It does NOT establish:
+//!
+//!   * **That the two organisations are two organisations.** A party holding
+//!     both identity private keys signs both halves and this passes. That is the
+//!     honest residual of the attribution check and it is exhibited, not
+//!     glossed: `tests/attribution.rs`'s last test performs it. What changed is
+//!     the bar -- an impostor must now hold the long-term keys of both named
+//!     organisations, rather than merely run two processes.
 //!
 //!   * **That the commitments were published before the reveals.** The artifact
 //!     carries both commitments, and the proofs of possession are bound to
-//!     both, so a cohort that followed the sequence has evidence it did. But an
-//!     artifact assembled entirely by one party can have any internally
+//!     both, so a cohort that followed the sequence has evidence it did. The
+//!     identity signatures do NOT close this: a signature has no time in it, so
+//!     it says the organisation endorsed this digest, never when. An artifact
+//!     assembled by one party holding both keys can still have any internally
 //!     consistent history, and [`ComponentCommitment::seal`] takes any claim, so
 //!     the existence of a [`SealedComposition`] is not evidence that an exchange
 //!     happened. What stops a cohort choosing its component after seeing the
@@ -105,14 +161,45 @@
 //!     [`prove_possession`], enforced at the share, not in the artifact. A
 //!     funder that saw the commit broadcast should still compare it with
 //!     [`CompositionArtifact::commitments`]; that check is independent of
-//!     whether the other cohort's holders followed the rule.
-//!   * **That either cohort really ran a DKG.** A trusted dealer that generated
-//!     every share can answer every proof of possession, because it knows every
-//!     share. No public artifact distinguishes it from an honest DKG. What the
-//!     artifact rules out is the CROSS-cohort attack, which is the one where
-//!     the victim is the other cohort rather than that cohort's own members.
+//!     whether the other cohort's holders followed the rule, and the signatures
+//!     now make an ARCHIVED broadcast attributable, which is the piece an
+//!     authenticated archive would build on.
+//!   * **That either cohort really ran a DKG, or that its seats are more than
+//!     one entity.** These are one gap, not two, and it is the largest one
+//!     remaining. [`Parties`] carries ONE identity key per COHORT. A
+//!     [`ComponentClaim`] names its seats by participant id and by verification
+//!     share, and by nothing else -- there is no per-seat identity anywhere in
+//!     the artifact. So an organisation that runs no DKG, deals every share to
+//!     itself with [`Cohort::deal_in`](crate::Cohort), and endorses the seal
+//!     with its own real identity key answers every proof of possession
+//!     (it knows every share) and produces an artifact byte-indistinguishable in
+//!     structure from an honest one.
+//!     `tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`
+//!     performs it: [`audit_address`] returns `Ok`,
+//!     [`production::check_decided_structure`](crate::production::check_decided_structure)
+//!     returns `Ok`, [`production::authorize_release`](crate::production::authorize_release)
+//!     issues a `ReleaseAuthorization`, and the published address is then opened
+//!     by two principals -- the dealing organisation and the single honest gate
+//!     -- against a decided `COMPROMISE_THRESHOLD` of three.
+//!
+//!     What the artifact rules out is the CROSS-cohort attack, where the victim
+//!     is the other cohort rather than that cohort's own members. Nothing here
+//!     protects a cohort's members from their own organisation, or a funder from
+//!     a cohort with one member wearing every hat. This is not a check that can
+//!     be strengthened: `Parties` cannot express the claim, because the decided
+//!     structure's security argument is per SEAT and this layer's finest grain
+//!     is the cohort. Closing it means putting a per-seat identity into
+//!     [`ComponentClaim`] -- sealed by the commitment and named in every pop
+//!     transcript -- and taking a seat roster of keys in [`Parties`].
+//!     `crates/ceremony/src/machine.rs` already keeps a
+//!     `ParticipantId -> IdentityPublic` map for identifiable abort; it does not
+//!     reach `CompositionArtifact`.
 //!   * **That the two rosters are different organisations.** Disjoint id bands
-//!     are enforced; disjoint control is a fact about the world.
+//!     are enforced and two distinct identity keys are now required -- [`audit`]
+//!     refuses a [`Parties`] naming one key twice, with
+//!     [`CeremonyError::PartiesNotDistinct`] -- but two keys are two keys:
+//!     disjoint control is a fact about the world. The artifact names the
+//!     parties; it cannot say they are independent.
 //!   * **That a cohort has not been compromised since.** The artifact is a
 //!     statement about key generation, not about custody.
 //!   * **The subaddress, unless the funder holds the view key.** `D_i = B +
@@ -120,11 +207,16 @@
 //!     [`audit_address`] checks that a particular subaddress is a subaddress of
 //!     it. A view service that publishes a `D_i` that is not a subaddress of the
 //!     audited root sends deposits somewhere the cohorts cannot sign for. That
-//!     is a REAL and undefended failure, and it is not the rogue-cohort attack:
-//!     the rogue cohort reaches `B = t*G` with `t` known, whereas the lying view
-//!     service reaches `D = B + off*G` whose discrete log it does not know
-//!     either. It can freeze or misdirect funds; it cannot spend them. A funder
-//!     holding `a` closes it outright with [`audit_address`].
+//!     is a REAL and undefended failure. An earlier version of this paragraph
+//!     said such a service "can freeze or misdirect funds; it cannot spend
+//!     them", reasoning that it would reach `D = B + off*G` whose discrete log
+//!     it does not know. **That is wrong and review caught it.** Nothing forces
+//!     a lying publisher to derive `D` from `B` at all: it can pick `d`, publish
+//!     `D = d*G` with a matching view component, and open any output paid there
+//!     with `Hs(a*R) + d`. Whoever publishes the address and holds `a` can spend
+//!     what is sent to it, and the two cohorts never enter the picture. A funder
+//!     holding the correct `a` closes this outright with [`audit_address`],
+//!     which is why `a` is not an optional convenience.
 //!   * **Grinding by restart.** Commit-then-reveal stops adaptivity within one
 //!     ceremony. A cohort that aborts after seeing a reveal and demands a fresh
 //!     ceremony gets another draw. Each restart is a new [`CeremonyId`] and is
@@ -148,6 +240,7 @@ use crate::{
     control::{ControlDomain, Gates, Owners, NAMESPACE_SPAN},
     derive::subaddress_offset,
     dkg::{CohortKey, CohortShare},
+    identity::{IdentityKey, IdentityPublic, IdentitySignature},
     subsets_of,
 };
 
@@ -159,13 +252,24 @@ const DKG_CONTEXT_TAG: &[u8] = b"two-cohort/composition/dkg-context/v1";
 const COMMIT_TAG: &[u8] = b"two-cohort/composition/commit/v1";
 /// Domain separator for the proof-of-possession challenge.
 const POP_TAG: &[u8] = b"two-cohort/composition/pop/v1";
+/// Domain separator for an organisation's identity signature over its own
+/// sealed commitment. Distinct from every tag `crates/ceremony` signs under, so
+/// a round message can never be replayed as a commitment endorsement or the
+/// other way about.
+const COMMIT_SIGNATURE_TAG: &[u8] = b"two-cohort/composition/commit-signature/v1";
 
 /// Largest roster [`audit`] will enumerate qualifying subsets of.
 ///
-/// The consistency check is `C(n, t) + C(n, t-1)` interpolations -- the upper
-/// bound on the degree and the lower one. 16 is far above the decided structure
-/// (3 owners, 1 gate) and keeps the worst case near 25k interpolations; a roster
+/// The consistency check is `C(n, t)` interpolations for the upper bound on the
+/// degree plus `sum_{s<t} C(n, s)` for the lower bound on the minimum coalition,
+/// so at worst `2^n` -- 65536 interpolations at `n = 16`, each over at most 16
+/// points. 16 is far above the decided structure (3 owners, 1 gate); a roster
 /// past it is refused rather than silently made slow.
+///
+/// The lower bound sums over every size below `t` rather than over `t-1` alone,
+/// which is what makes it exponential rather than a single binomial. See
+/// `ComponentClaim::check_consistency` for why the cheaper version checked a
+/// weaker claim than the one reported to a funder.
 pub const MAX_AUDITED_ROSTER: usize = 16;
 
 /// Everything the composition can refuse.
@@ -362,6 +466,62 @@ pub enum CeremonyError {
         cohort: &'static str,
         participant: u64,
     },
+
+    /// The commitment is endorsed by an identity key, and it is not the key the
+    /// funder named for this cohort.
+    ///
+    /// THE attribution failure. Without the identity signatures an artifact
+    /// carries no statement about WHO produced either half, so one process that
+    /// ran both DKGs produces an artifact indistinguishable from a two-party
+    /// one -- `tests/attribution.rs` exhibits exactly that. This is what a
+    /// funder holding the two organisations' published keys sees when the
+    /// artifact was not produced by them.
+    #[error("cohort `{cohort}`: the commitment is signed by identity {found}, but the audit was told the `{cohort}` organisation is {expected}")]
+    CommitmentSignerUnexpected {
+        cohort: &'static str,
+        expected: IdentityPublic,
+        found: IdentityPublic,
+    },
+
+    /// The commitment's identity signature does not verify under the key the
+    /// signature itself names.
+    ///
+    /// Separate from [`CeremonyError::CommitmentSignerUnexpected`] because the
+    /// two are different incidents: that one is a commitment somebody else
+    /// endorsed, this one is a commitment nobody did. An artifact assembled
+    /// with the expected key pasted in but no private key behind it -- an
+    /// all-zero signature, a signature lifted from another ceremony, a
+    /// signature over a different digest -- lands here.
+    #[error("cohort `{cohort}`: the commitment's identity signature does not verify under {signer}, the key it names")]
+    CommitmentSignatureInvalid {
+        cohort: &'static str,
+        signer: IdentityPublic,
+    },
+
+    /// The funder named ONE organisation for both cohorts.
+    ///
+    /// A defect in the audit's INPUT rather than in the artifact, and refused
+    /// for that reason rather than in spite of it. Every other check would
+    /// pass: one organisation can hold both cohorts' shares, endorse both
+    /// commitments with the one key it has, and satisfy the proofs of
+    /// possession, since it genuinely knows every share. [`audit`] would then
+    /// return an [`AuditedRoot`] whose two [`CohortStructure`]s report the same
+    /// [`identity`](CohortStructure::identity), and
+    /// [`production::authorize_release`](crate::production::authorize_release)
+    /// would issue a release authorisation for it.
+    ///
+    /// "Two cohorts under two organisations" is the entire premise. A funder
+    /// that supplies one key twice has said the premise does not hold, and the
+    /// only honest answer is to refuse rather than to certify a joint control
+    /// that was never claimed. This does NOT establish that two distinct keys
+    /// are two distinct organisations -- see the module docs, and
+    /// `tests/attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys`.
+    /// It refuses the one case the artifact itself can see.
+    #[error(
+        "the audit was told the same identity {key} is both the `owners` and the `gates` \
+         organisation, so there is no two-party control here to check"
+    )]
+    PartiesNotDistinct { key: IdentityPublic },
 }
 
 impl CeremonyError {
@@ -385,8 +545,16 @@ pub type Result<T> = core::result::Result<T, CeremonyError>;
 /// Fixed BEFORE either cohort generates a key, and used as the PedPoP context
 /// for both DKGs as well as the root of the commitment and proof transcripts.
 /// One consequence matters: material from a different ceremony -- a previous
-/// attempt, a test run, another address -- does not verify here, so a cohort
-/// cannot present a component it generated for some other purpose.
+/// attempt, a test run, another address -- does not verify here, so a proof,
+/// commitment or endorsement made under one ceremony cannot be presented under
+/// another.
+///
+/// It does NOT stop a cohort re-using a KEY. A finished [`CohortKey`] carries no
+/// ceremony id, so the same DKG output can be freshly sealed and endorsed under
+/// any number of ceremonies. What the id binds is the transcripts, not the key
+/// material -- and the one-composition rule that does bind a holder is
+/// [`prove_possession`]'s, per share and per sealed composition rather than per
+/// ceremony.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CeremonyId([u8; 32]);
 
@@ -685,13 +853,34 @@ impl ComponentClaim {
             });
         }
 
-        // The lower bound. `threshold == 1` needs no check: the only smaller
-        // subset is empty, it interpolates to the identity, and `check_shape`
-        // has already refused an identity component -- so a 1-of-n cohort cannot
-        // be overstating anything.
-        if self.threshold > 1 {
-            let below = at(self.threshold - 1)?;
-            for quorum in subsets_of(&self.roster, self.threshold - 1) {
+        // The lower bound, over EVERY subset smaller than the declared
+        // threshold and not only the `(t-1)`-subsets.
+        //
+        // WHY EVERY SIZE. Checking `t-1` alone establishes that the polynomial's
+        // degree is exactly `t-1`. Degree is not minimum coalition size, and the
+        // two come apart from `t = 3` upward. Review supplied the counterexample:
+        //
+        //     p(x) = b + a*x*(x - 1)     over evaluation points 1, 2, 3
+        //
+        // has degree 2, so no PAIR of seats interpolates to `b` and a declared
+        // threshold of 3 is not an overstated degree -- but `p(1) = b`, so seat 1
+        // holds the component outright. `AuditedRoot::structure` reports the
+        // declared threshold to a funder as the number of seats that must act,
+        // so the claim being checked has to be the coalition one.
+        // `composition.rs::a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree`
+        // performs exactly that dealing, and returned `Ok` from `audit` before
+        // this loop enumerated the smaller sizes.
+        //
+        // `threshold == 1` needs no check: the only smaller subset is empty, it
+        // interpolates to the identity, and `check_shape` has already refused an
+        // identity component -- so a 1-of-n cohort cannot be overstating
+        // anything.
+        //
+        // Cost: `sum_{s=1}^{t-1} C(n, s)` interpolations, bounded by `2^n` and so
+        // by `2^MAX_AUDITED_ROSTER`. See that constant for the budget.
+        for size in 1..self.threshold {
+            let below = at(size)?;
+            for quorum in subsets_of(&self.roster, size) {
                 let value = below.public(&quorum).map_err(CeremonyError::roster::<C>)?;
                 if value == self.component {
                     return Err(CeremonyError::ThresholdOverstated {
@@ -751,6 +940,199 @@ impl fmt::Debug for ComponentCommitment {
     }
 }
 
+/// A commitment plus the organisation that published it.
+///
+/// # What this adds, and what was missing without it
+///
+/// A [`ComponentCommitment`] is a hash. It says what a cohort sealed; it says
+/// nothing about WHO sealed it, so an artifact made of bare commitments cannot
+/// distinguish a composition between two organisations from one process that
+/// ran both DKGs and sealed both halves. Everything else [`audit`] checks --
+/// the interpolation, the proofs of possession, the commitment openings -- is
+/// satisfied just as well by the single process, because it really does hold
+/// every share of both cohorts and every one of those checks is a statement
+/// about key material rather than about parties.
+/// `tests/attribution.rs::one_process_can_produce_an_artifact_that_passes_every_structural_check`
+/// performs that, so the gap is exhibited rather than asserted.
+///
+/// The signature covers the ceremony id, the cohort name and the digest, under
+/// a tag of its own. So it cannot be lifted from another ceremony, cannot be
+/// moved from the owner slot to the gate slot, and cannot be reused as any of
+/// the round-message signatures `crates/ceremony` produces under the same key.
+///
+/// # What it still does not add
+///
+/// **Chronology.** A signature has no time in it. This says the named
+/// organisation endorsed this digest, never that it did so before the other
+/// side revealed; that half is still [`prove_possession`]'s, at the share.
+///
+/// **Two organisations.** Two distinct keys are two distinct keys. One party
+/// holding both private keys signs both halves and the audit passes -- the
+/// honest residual, stated in
+/// `tests/attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys`.
+/// What a funder gets is that the artifact now names the parties it is
+/// checking against keys it obtained from those parties, so the impostor must
+/// hold their long-term keys rather than merely run two processes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SignedCommitment {
+    commitment: ComponentCommitment,
+    signer: IdentityPublic,
+    signature: IdentitySignature,
+}
+
+impl SignedCommitment {
+    /// Endorse a commitment as the organisation holding `key`.
+    pub fn create(
+        ceremony: &CeremonyId,
+        commitment: ComponentCommitment,
+        key: &IdentityKey,
+    ) -> SignedCommitment {
+        SignedCommitment {
+            commitment,
+            signer: key.public(),
+            signature: key.sign(&commitment_signing_payload(ceremony, &commitment)),
+        }
+    }
+
+    /// A signed commitment received over the wire. Untrusted until [`audit`]
+    /// says otherwise, for the same reason [`ComponentReveal::from_parts`] is:
+    /// an auditor receives one, it does not produce one. In particular the
+    /// `signer` here is a CLAIM, and it is only worth anything once compared
+    /// against a key the funder got from the organisation itself.
+    pub fn from_parts(
+        commitment: ComponentCommitment,
+        signer: IdentityPublic,
+        signature: IdentitySignature,
+    ) -> SignedCommitment {
+        SignedCommitment {
+            commitment,
+            signer,
+            signature,
+        }
+    }
+
+    pub fn commitment(&self) -> ComponentCommitment {
+        self.commitment
+    }
+
+    /// The key this signature CLAIMS to be from. Not evidence on its own.
+    pub fn signer(&self) -> IdentityPublic {
+        self.signer
+    }
+
+    pub fn signature(&self) -> &IdentitySignature {
+        &self.signature
+    }
+
+    /// This commitment is endorsed by `expected`, and the endorsement verifies.
+    ///
+    /// The order of the two checks is deliberate: a funder whose artifact was
+    /// signed by somebody else entirely should be told WHO, which is the more
+    /// actionable failure, rather than being told a signature it never expected
+    /// did not verify under a key it never named.
+    fn check<C: ControlDomain>(
+        &self,
+        ceremony: &CeremonyId,
+        expected: &IdentityPublic,
+    ) -> Result<()> {
+        if self.signer != *expected {
+            return Err(CeremonyError::CommitmentSignerUnexpected {
+                cohort: C::NAME,
+                expected: *expected,
+                found: self.signer,
+            });
+        }
+        // Verified under `expected`, the funder's key, and NOT under
+        // `self.signer` -- even though the two are equal by the check just
+        // above. An artifact must never be verified against a key it supplied
+        // itself, and writing it this way means that stays true if the two
+        // checks are ever reordered or one of them is lost.
+        if !expected.verify(
+            &commitment_signing_payload(ceremony, &self.commitment),
+            &self.signature,
+        ) {
+            return Err(CeremonyError::CommitmentSignatureInvalid {
+                cohort: C::NAME,
+                signer: *expected,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The two organisations a funder expects to jointly control the root.
+///
+/// Grouped into one value rather than passed as two loose keys so that [`audit`]
+/// cannot be called with one side named and the other defaulted: a funder names
+/// both parties or it does not audit. Swapping the two is fail-CLOSED -- each
+/// key is checked against its own cohort's commitment, so a transposed pair
+/// yields [`CeremonyError::CommitmentSignerUnexpected`] rather than a pass.
+///
+/// **These keys must come from the organisations, not from the artifact.**
+/// [`SignedCommitment::signer`] is whatever the artifact says; checking the
+/// artifact against its own claims establishes nothing at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Parties {
+    owners: IdentityPublic,
+    gates: IdentityPublic,
+}
+
+impl Parties {
+    pub fn new(owners: IdentityPublic, gates: IdentityPublic) -> Parties {
+        Parties { owners, gates }
+    }
+
+    pub fn owners(&self) -> &IdentityPublic {
+        &self.owners
+    }
+
+    pub fn gates(&self) -> &IdentityPublic {
+        &self.gates
+    }
+
+    /// The two named organisations are two.
+    ///
+    /// Checked in [`audit`] and NOT in [`Parties::new`], which stays infallible:
+    /// naming two keys is not the error, auditing an artifact as though one
+    /// organisation were two is. Keeping it out of the constructor also keeps it
+    /// out of the doctests and fixtures that build a `Parties` in order to
+    /// exhibit a refusal.
+    ///
+    /// [`production::authorize_release`](crate::production::authorize_release)
+    /// deliberately does not repeat it. Its `endorsers` come from a
+    /// [`CompositeSpend`](crate::CompositeSpend) that only
+    /// `from_ceremony` can build, and only from an
+    /// [`AuditedAddress`] -- so a degenerate pair cannot reach it: either the
+    /// audit refused, or the spend's endorsers are two distinct keys and a
+    /// `Parties::new(k, k)` passed to the gate fails `check_endorser` on one
+    /// side or the other. One check, one place, nothing to drift.
+    fn check_distinct(&self) -> Result<()> {
+        if self.owners == self.gates {
+            return Err(CeremonyError::PartiesNotDistinct { key: self.owners });
+        }
+        Ok(())
+    }
+
+    /// The key expected for cohort `C`.
+    ///
+    /// This is an `if`/`else` on `C::NAME`, not an exhaustive match, and the
+    /// difference is worth naming because "total" would be too strong.
+    /// [`ControlDomain`] is `sealed::Sealed`, so no crate outside this one can
+    /// add a domain and the `else` really is [`Gates`] for every caller
+    /// downstream -- that part is compiler-enforced. What it is NOT enforced
+    /// against is a third domain added INSIDE this crate, which would compile
+    /// and route silently to the gate key. Enforced by sealing, in other words,
+    /// not by exhaustiveness. `SealedComposition::signed_for` has the same
+    /// shape and the same caveat.
+    fn expected_for<C: ControlDomain>(&self) -> &IdentityPublic {
+        if C::NAME == Owners::NAME {
+            &self.owners
+        } else {
+            &self.gates
+        }
+    }
+}
+
 /// One participant's proof of knowledge of its DKG share.
 ///
 /// A Schnorr proof over `V_i = s_i*G`, with a challenge that names the
@@ -797,13 +1179,15 @@ impl Pop {
     /// against the holder's own key generation, and [`prove_possession`] is the
     /// one that derives the claim so there is nothing to check.
     ///
-    /// Public because whoever holds a share produces its proof, and this crate
-    /// is not the only thing that may hold one -- and because a rejection that
-    /// cannot be exhibited is a rejection nobody has tested. It refuses to
-    /// produce a proof that would not verify: a secret that does not open the
-    /// published share is [`CeremonyError::PopFailed`] here rather than a
-    /// proof somebody publishes and is rejected on.
-    pub fn prove(
+    /// It refuses to produce a proof that would not verify: a secret that does
+    /// not open the published share is [`CeremonyError::PopFailed`] here rather
+    /// than a proof somebody publishes and is rejected on. That is a
+    /// well-formedness check, not a safety one -- it says the proof will verify,
+    /// never that the claim is worth proving.
+    ///
+    /// Reachable from outside the crate only through `Pop::prove_unchecked`,
+    /// behind the `unchecked-proving` feature.
+    pub(crate) fn prove(
         sealed: &SealedComposition,
         claim: &ComponentClaim,
         participant: u64,
@@ -837,6 +1221,15 @@ impl Pop {
         // without re-running someone else's DKG) produces one `R` against two
         // challenges, and the share falls out by division.
         //
+        // Both hashes call `absorb_composition`, so the same argument covers the
+        // two SIGNER KEYS the challenge names: a holder induced to prove under
+        // two compositions that seal identical digests but attribute the other
+        // half to different organisations would otherwise reuse one `R` across
+        // two challenges. Keeping the two nonce/challenge preambles in ONE
+        // function is deliberate -- it is what stops a later field being added
+        // to the challenge alone, which is precisely the divergence that leaks
+        // the share.
+        //
         // The two hashes are NOT over identical input lists, and do not need to
         // be: the challenge also takes `V_i`, which is selected out of (claim,
         // participant) and checked equal to `secret*G` just above, and `R`,
@@ -844,9 +1237,7 @@ impl Pop {
         let mut h = Blake2b512::new();
         h.update(POP_TAG);
         h.update(b"nonce");
-        h.update(sealed.ceremony.as_bytes());
-        h.update(sealed.owners.digest);
-        h.update(sealed.gates.digest);
+        absorb_composition(&mut h, sealed);
         absorb_claim(&mut h, claim);
         h.update(participant.to_le_bytes());
         h.update(secret.as_bytes());
@@ -858,6 +1249,62 @@ impl Pop {
             nonce_public,
             response: *nonce + challenge * secret,
         })
+    }
+
+    /// [`Pop::prove`], reachable from outside this crate.
+    ///
+    /// Behind the `unchecked-proving` feature, which is off by default. The name
+    /// is `unchecked` and not `raw` or `low_level` because what it omits is a
+    /// CHECK: it signs whatever claim it is handed, so a caller that takes its
+    /// claim from a coordinator signs that coordinator's roster, threshold and
+    /// component.
+    ///
+    /// **What this gate is worth, stated rather than implied.** It moves the
+    /// default: the first prover a holder finds is
+    /// [`CohortShare::prove`](crate::CohortShare::prove), which checks. It is
+    /// NOT a containment boundary, and four things it does not do are worth
+    /// knowing before anybody rests on it. Each was overstated in an earlier
+    /// version of this comment and is written here as review left it:
+    ///
+    ///   * **A HOLDER can recover `s_i` and prove as often as it likes**, with or
+    ///     without this feature --
+    ///     `composition.rs::a_holder_can_recover_its_own_share_through_public_api`
+    ///     performs the division. It is a holder-only recovery, not an outsider's:
+    ///     the division is by a public Lagrange weight, but the value divided is
+    ///     [`ParticipantTerm::weight`](crate::ParticipantTerm), which the holder
+    ///     obtains from its own secret-bearing [`CohortShare`]. Saying "from
+    ///     public material" without that qualification was wrong.
+    ///   * **It does not touch the dealer forgery in `tests/forgery.rs`.** The
+    ///     conclusion holds; the mechanism previously given for it did not.
+    ///     [`Cohort::deal_in`](crate::Cohort) yields a
+    ///     [`Cohort`](crate::Cohort), not a [`CohortShare`] -- a `CohortShare`
+    ///     exists only after a DKG confirms -- so a dealer does NOT reach the
+    ///     checked prover, and `forgery.rs` uses this function. What the gate
+    ///     costs such a dealer is a feature flag, which is not a defence.
+    ///   * **`Pop::from_parts` is public and [`audit`] accepts any proof that
+    ///     verifies.** The artifact carries no evidence of which prover produced
+    ///     it, or that its producer compiled without this feature. A verifier
+    ///     built feature-off accepts feature-on and hand-written proofs alike.
+    ///     This gate constrains a holder's SOURCE, never a verifier's input.
+    ///   * **Cargo unifies features within one build**, so the gate is per build
+    ///     graph, not per crate, and not something a deployment's own manifest
+    ///     fully controls: any dependency in the same graph, or a
+    ///     `--features` on the command line, can turn it on. Verified rather than
+    ///     assumed: with a probe calling this from `crates/ceremony`'s tests,
+    ///     `cargo test -p ceremony` fails with "no function or associated item
+    ///     named `prove_unchecked` found", and `cargo test` over the whole
+    ///     workspace compiles and passes, because two-cohort's own dev-dependency
+    ///     turns the feature on for every crate in that build. That probe is a
+    ///     reproducible observation and not a checked-in regression test; there
+    ///     is no test in this repo that would fail if the gate were removed.
+    #[cfg(feature = "unchecked-proving")]
+    pub fn prove_unchecked(
+        sealed: &SealedComposition,
+        claim: &ComponentClaim,
+        participant: u64,
+        secret: &Scalar,
+    ) -> Result<Pop> {
+        Pop::prove(sealed, claim, participant, secret)
     }
 
     /// **The checked holder entry point.** Prove possession under a claim
@@ -898,7 +1345,8 @@ impl Pop {
         }
         // Checked BEFORE `note_proved`, so a composition this holder's reveal
         // could not open does not consume its one proof.
-        if ComponentCommitment::seal(&sealed.ceremony, claim, salt) != sealed.commitment_for::<C>()
+        if ComponentCommitment::seal(&sealed.ceremony, claim, salt)
+            != sealed.signed_for::<C>().commitment()
         {
             return Err(CeremonyError::CommitmentMismatch { cohort: C::NAME });
         }
@@ -932,9 +1380,14 @@ impl ComponentReveal {
     /// or does not verify.
     ///
     /// A cohort should not publish a reveal it already knows the other side
-    /// will reject, and a participant that ended a DKG holding a share of a
-    /// different key than its peers is found HERE -- its proof will not verify
-    /// against the component being revealed.
+    /// will reject, so this runs the same proof check [`audit`] will run.
+    ///
+    /// Said precisely, because the looser version was wrong: each proof is
+    /// verified against the VERIFICATION SHARE `V_i` published for that seat,
+    /// not against the component. A participant holding a share of a different
+    /// key than its peers is caught here only if its own `V_i` is the one in the
+    /// claim. That the shares add up to the declared component is a separate
+    /// check, `check_consistency`, and it runs in [`audit`].
     pub fn assemble(
         sealed: &SealedComposition,
         claim: ComponentClaim,
@@ -1042,7 +1495,7 @@ impl ComponentReveal {
 // The ceremony
 // ---------------------------------------------------------------------------
 
-/// Both components sealed, neither opened.
+/// Both components sealed and endorsed, neither opened.
 ///
 /// The type carries HALF the ordering rule: a [`Pop`] cannot be produced without
 /// one of these, a [`ComponentReveal`] cannot be assembled without one, and one
@@ -1055,30 +1508,52 @@ impl ComponentReveal {
 /// proving time says nothing about whether the other side had already opened
 /// one. The other half of the rule is in [`prove_possession`], which refuses to
 /// answer a second sealed composition -- read that first.
+///
+/// Each commitment is a [`SignedCommitment`], so the composition NAMES the two
+/// organisations as well as sealing the two components -- and the proofs of
+/// possession are bound to those names as well as to the two digests, so an
+/// honest holder's proof is only valid in a composition between the two parties
+/// it believed it was dealing with. See [`pop_challenge`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SealedComposition {
     ceremony: CeremonyId,
-    owners: ComponentCommitment,
-    gates: ComponentCommitment,
+    owners: SignedCommitment,
+    gates: SignedCommitment,
 }
 
 impl SealedComposition {
-    /// Both commitments received.
+    /// Both signed commitments received.
+    ///
+    /// Checks the cohorts and NOT the signatures. That is deliberate and matches
+    /// [`ComponentReveal::from_parts`]: a `SealedComposition` is assembled from
+    /// wire data by auditors as well as by participants, and if this verified
+    /// the signatures then a forged artifact would fail at construction, where a
+    /// funder is not looking, instead of at [`audit`], which is the one call a
+    /// funder makes.
+    ///
+    /// The accurate form of the rule, which an earlier version overstated as
+    /// "every cryptographic check in this module is in `audit`": every check an
+    /// UNTRUSTED artifact must pass before acceptance is in `audit`, and none of
+    /// them is anywhere else only. Checks do occur outside it --
+    /// [`ComponentReveal::assemble`] verifies proofs so a cohort does not publish
+    /// a reveal that will be rejected, and the prover verifies `s*G == V` so
+    /// a holder does not emit a proof that will be -- but both are conveniences
+    /// for honest parties, and `audit` repeats them.
     pub fn new(
         ceremony: CeremonyId,
-        owners: ComponentCommitment,
-        gates: ComponentCommitment,
+        owners: SignedCommitment,
+        gates: SignedCommitment,
     ) -> Result<SealedComposition> {
-        if owners.cohort != Owners::NAME {
+        if owners.commitment.cohort != Owners::NAME {
             return Err(CeremonyError::CohortMismatch {
                 expected: Owners::NAME,
-                found: owners.cohort,
+                found: owners.commitment.cohort,
             });
         }
-        if gates.cohort != Gates::NAME {
+        if gates.commitment.cohort != Gates::NAME {
             return Err(CeremonyError::CohortMismatch {
                 expected: Gates::NAME,
-                found: gates.cohort,
+                found: gates.commitment.cohort,
             });
         }
         Ok(SealedComposition {
@@ -1092,16 +1567,18 @@ impl SealedComposition {
         &self.ceremony
     }
 
-    pub fn commitments(&self) -> (ComponentCommitment, ComponentCommitment) {
+    pub fn commitments(&self) -> (SignedCommitment, SignedCommitment) {
         (self.owners, self.gates)
     }
 
-    /// The commitment this composition carries for cohort `C`.
+    /// The signed commitment this composition carries for cohort `C`.
     ///
     /// `SealedComposition::new` has already required the two to be of the right
-    /// cohorts, and [`ControlDomain`] is sealed to exactly [`Owners`] and
-    /// [`Gates`], so the match is total rather than defaulted.
-    fn commitment_for<C: ControlDomain>(&self) -> ComponentCommitment {
+    /// cohorts, and [`ControlDomain`] is sealed, so the `else` branch is
+    /// [`Gates`] for every caller outside this crate. See
+    /// `Parties::expected_for` for what sealing does and does not enforce --
+    /// a third domain added inside this crate would compile and route here.
+    fn signed_for<C: ControlDomain>(&self) -> SignedCommitment {
         if C::NAME == Owners::NAME {
             self.owners
         } else {
@@ -1109,23 +1586,30 @@ impl SealedComposition {
         }
     }
 
-    /// Open both components.
+    /// Open both components, as a composition between `parties`.
     ///
-    /// Checks, in order: each reveal opens the commitment published for it;
-    /// each is a well-formed cohort in its own domain; each participant proved
-    /// possession; the verification shares are consistent at the declared
+    /// Checks, in order: each commitment is endorsed by the organisation
+    /// `parties` names for it; each is a well-formed cohort in its own domain;
+    /// each reveal opens the commitment published for it; each participant
+    /// proved possession; the verification shares are consistent at the declared
     /// threshold.
+    ///
+    /// Takes `parties` for the same reason [`audit`] does. A cohort assembling
+    /// the artifact knows perfectly well which organisation it exchanged
+    /// commitments with, and an `open` that skipped the check would hand back an
+    /// artifact its own producer never verified the attribution of.
     pub fn open(
         self,
         owners: ComponentReveal,
         gates: ComponentReveal,
+        parties: &Parties,
     ) -> Result<CompositionArtifact> {
         let artifact = CompositionArtifact {
             sealed: self,
             owners,
             gates,
         };
-        audit(&artifact)?;
+        audit(&artifact, parties)?;
         Ok(artifact)
     }
 }
@@ -1172,7 +1656,8 @@ impl SealedComposition {
 ///     hands over that scalar, while `lambda_i` is
 ///     [`lagrange_at_zero`](crate::lagrange_at_zero) over public data. So a
 ///     holder can recover its own `s_i` through safe public API and call
-///     [`Pop::prove`] as often as it likes.
+///     `Pop::prove_unchecked` as often as it likes -- see there for what the
+///     `unchecked-proving` feature gate is and is not worth.
 ///     `composition.rs::a_holder_can_recover_its_own_share_through_public_api`
 ///     performs exactly that, so this limit is exhibited rather than asserted.
 ///     The rule is worth having anyway -- the attack is a coordinator talking an
@@ -1248,9 +1733,9 @@ impl CompositionArtifact {
         &self.sealed.ceremony
     }
 
-    /// The two sealed components, for a funder that observed the commit
-    /// broadcast and wants to compare.
-    pub fn commitments(&self) -> (ComponentCommitment, ComponentCommitment) {
+    /// The two sealed, endorsed components, for a funder that observed the
+    /// commit broadcast and wants to compare.
+    pub fn commitments(&self) -> (SignedCommitment, SignedCommitment) {
         self.sealed.commitments()
     }
 
@@ -1278,6 +1763,60 @@ impl CompositionArtifact {
     }
 }
 
+/// What one cohort turned out to be, as established by [`audit`].
+///
+/// The whole of the funder's question about one side of the address in one
+/// value: WHO (the identity key that endorsed the commitment, checked against
+/// the one the funder supplied), HOW MANY seats are required, WHICH seats exist,
+/// and what they collectively control.
+///
+/// It exists so that a caller comparing an audited root against a decided
+/// structure compares VALUES rather than reaching into the reveals -- the
+/// artifact's internals are wire data, and a caller that navigates into them to
+/// answer "is this the roster we agreed" is re-deriving, at every call site, a
+/// question the audit already answered.
+///
+/// `PartialEq` is derived, so the comparison is `audited == expected` rather
+/// than a field-by-field walk a caller can get wrong by omission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CohortStructure {
+    cohort: &'static str,
+    identity: IdentityPublic,
+    threshold: usize,
+    roster: Vec<u64>,
+    component: RistrettoPoint,
+}
+
+impl CohortStructure {
+    /// `"owners"` or `"gates"`.
+    pub fn cohort(&self) -> &'static str {
+        self.cohort
+    }
+
+    /// The organisation that endorsed this cohort's commitment. Equal, by
+    /// construction, to the key [`audit`] was given for this cohort -- the audit
+    /// could not have returned otherwise.
+    pub fn identity(&self) -> &IdentityPublic {
+        &self.identity
+    }
+
+    /// Seats required to sign. Established in both directions: every subset this
+    /// size reconstructs the component, and no smaller subset does.
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
+
+    /// The seats, ascending.
+    pub fn roster(&self) -> &[u64] {
+        &self.roster
+    }
+
+    /// `B_c`, this cohort's half of the root.
+    pub fn component(&self) -> RistrettoPoint {
+        self.component
+    }
+}
+
 /// An artifact that passed [`audit`].
 ///
 /// The only way to obtain one, which is what makes "audited" a property of a
@@ -1288,6 +1827,8 @@ pub struct AuditedRoot {
     root: RistrettoPoint,
     owners: ComponentReveal,
     gates: ComponentReveal,
+    owner_structure: CohortStructure,
+    gate_structure: CohortStructure,
 }
 
 impl AuditedRoot {
@@ -1300,12 +1841,18 @@ impl AuditedRoot {
         &self.ceremony
     }
 
-    /// `(threshold, roster)` for each cohort, as audited.
-    pub fn structure(&self) -> ((usize, &[u64]), (usize, &[u64])) {
-        (
-            (self.owners.threshold(), self.owners.roster()),
-            (self.gates.threshold(), self.gates.roster()),
-        )
+    /// What each cohort turned out to be: identity, threshold, roster,
+    /// component.
+    pub fn structure(&self) -> (&CohortStructure, &CohortStructure) {
+        (&self.owner_structure, &self.gate_structure)
+    }
+
+    pub fn owner_structure(&self) -> &CohortStructure {
+        &self.owner_structure
+    }
+
+    pub fn gate_structure(&self) -> &CohortStructure {
+        &self.gate_structure
     }
 
     pub(crate) fn owner_reveal(&self) -> &ComponentReveal {
@@ -1342,13 +1889,24 @@ impl AuditedAddress {
 
 /// **The check a funder runs.**
 ///
-/// Takes the artifact and nothing else. See the module docs for exactly what
-/// this does and does not establish.
-pub fn audit(artifact: &CompositionArtifact) -> Result<AuditedRoot> {
+/// Takes the artifact and the two organisations' identity public keys, and
+/// nothing else. See the module docs for exactly what this does and does not
+/// establish.
+///
+/// The keys are an INPUT, not something read out of the artifact. A funder that
+/// passes `Parties::new(owners.signer(), gates.signer())` from the artifact it
+/// is auditing has asked the artifact to vouch for itself and has established
+/// nothing about who produced it.
+pub fn audit(artifact: &CompositionArtifact, parties: &Parties) -> Result<AuditedRoot> {
     let sealed = &artifact.sealed;
 
-    check_side::<Owners>(sealed, &artifact.owners, &sealed.owners)?;
-    check_side::<Gates>(sealed, &artifact.gates, &sealed.gates)?;
+    // Before anything reads the artifact. A funder that named one organisation
+    // twice is asking a question with no two-party answer, and every check below
+    // would return one anyway.
+    parties.check_distinct()?;
+
+    check_side::<Owners>(sealed, &artifact.owners, &sealed.owners, parties)?;
+    check_side::<Gates>(sealed, &artifact.gates, &sealed.gates, parties)?;
 
     // Disjointness of the two rosters needs no check of its own: `check_shape`
     // has already required every owner id to be in the `Owners` band and every
@@ -1366,9 +1924,28 @@ pub fn audit(artifact: &CompositionArtifact) -> Result<AuditedRoot> {
     Ok(AuditedRoot {
         ceremony: sealed.ceremony,
         root,
+        owner_structure: structure_of::<Owners>(&artifact.owners, parties),
+        gate_structure: structure_of::<Gates>(&artifact.gates, parties),
         owners: artifact.owners.clone(),
         gates: artifact.gates.clone(),
     })
+}
+
+/// One audited cohort's structure.
+///
+/// Private, and reachable only from inside `audit` after `check_side` has
+/// returned, because every field it reports is a wire value until then. The
+/// identity comes from `parties` rather than from the artifact: `check_side` has
+/// just established the two are equal, and taking the funder's copy makes it
+/// impossible for a future edit to report the artifact's claim by accident.
+fn structure_of<C: ControlDomain>(reveal: &ComponentReveal, parties: &Parties) -> CohortStructure {
+    CohortStructure {
+        cohort: C::NAME,
+        identity: *parties.expected_for::<C>(),
+        threshold: reveal.threshold(),
+        roster: reveal.roster().to_vec(),
+        component: reveal.component(),
+    }
 }
 
 /// [`audit`], plus: subaddress `index` of the audited root really is
@@ -1379,11 +1956,12 @@ pub fn audit(artifact: &CompositionArtifact) -> Result<AuditedRoot> {
 /// subaddress on trust from whoever gave it the address.
 pub fn audit_address(
     artifact: &CompositionArtifact,
+    parties: &Parties,
     view_private: &RistrettoPrivate,
     subaddress_index: u64,
     spend_public: &RistrettoPublic,
 ) -> Result<AuditedAddress> {
-    let root = audit(artifact)?;
+    let root = audit(artifact, parties)?;
     let offset = Zeroizing::new(subaddress_offset(view_private.as_ref(), subaddress_index));
     let expected = root.root + *offset * G;
     if &expected != spend_public.as_ref() {
@@ -1401,12 +1979,19 @@ pub fn audit_address(
 fn check_side<C: ControlDomain>(
     sealed: &SealedComposition,
     reveal: &ComponentReveal,
-    commitment: &ComponentCommitment,
+    signed: &SignedCommitment,
+    parties: &Parties,
 ) -> Result<()> {
-    // Shape first: the commitment, proof and consistency checks all index into
+    // ATTRIBUTION first, because everything below it is a statement about key
+    // material and none of it says who produced the key material. A funder
+    // reading a rejection should be told "this is not your counterparty's
+    // artifact" before it is told anything about the contents of an artifact
+    // that was never theirs.
+    signed.check::<C>(&sealed.ceremony, parties.expected_for::<C>())?;
+    // Shape next: the commitment, proof and consistency checks all index into
     // parallel vectors, and a claim whose lengths disagree must not reach them.
     reveal.claim.check_shape::<C>()?;
-    if reveal.commitment(&sealed.ceremony) != *commitment {
+    if reveal.commitment(&sealed.ceremony) != signed.commitment {
         return Err(CeremonyError::CommitmentMismatch { cohort: C::NAME });
     }
     reveal.check_pops(sealed)?;
@@ -1444,12 +2029,67 @@ fn commitment_digest(ceremony: &CeremonyId, claim: &ComponentClaim, salt: &[u8; 
     truncate(h)
 }
 
+/// What an organisation signs when it endorses its own sealed commitment.
+///
+/// The ceremony id and the cohort name are already inside `digest`, and the two
+/// repetitions are NOT equally load-bearing -- said plainly, because a reader
+/// deciding what this signature means should not have to guess:
+///
+///   * **The ceremony id is live.** `digest` is opaque to the signer's
+///     counterparty, so an endorsement made over the same digest value in some
+///     other ceremony would otherwise carry into this one.
+///     `tests/attribution.rs`'s cross-ceremony transplant fails without this
+///     line.
+///   * **The cohort name is defence in depth and nothing more.** No test fails
+///     without it, and none can: [`absorb_claim`] already puts the cohort inside
+///     the digest, so two cohorts' digests differ before this ever runs. It is
+///     here so that the signed message says what it is at the layer that signed
+///     it, rather than depending on a property of a hash preimage the verifier
+///     never sees.
+///
+/// Length-prefixed for the same reason [`absorb_claim`] is.
+fn commitment_signing_payload(ceremony: &CeremonyId, commitment: &ComponentCommitment) -> Vec<u8> {
+    let mut out = Vec::from(COMMIT_SIGNATURE_TAG);
+    out.extend_from_slice(ceremony.as_bytes());
+    out.extend_from_slice(&(commitment.cohort.len() as u64).to_le_bytes());
+    out.extend_from_slice(commitment.cohort.as_bytes());
+    out.extend_from_slice(&commitment.digest);
+    out
+}
+
+/// The composition a proof of possession is taken under: the ceremony, both
+/// sealed digests, and both organisations.
+///
+/// The two SIGNER KEYS are in here; the two SIGNATURES are not. What a holder is
+/// binding its proof to is the counterparty's identity, and the identity is the
+/// key -- the signature is evidence for that identity, checked separately by
+/// [`SignedCommitment::check`]. Absorbing the signature bytes instead would make
+/// the transcript depend on a value the signature scheme is free to choose (any
+/// re-signing under a randomised scheme would invalidate every proof), while
+/// adding nothing: a substituted signature that verifies is by the same key, and
+/// one that does not verify is refused by the audit.
+fn absorb_composition(h: &mut Blake2b512, sealed: &SealedComposition) {
+    h.update(sealed.ceremony.as_bytes());
+    h.update(sealed.owners.commitment.digest);
+    h.update(sealed.gates.commitment.digest);
+    h.update(sealed.owners.signer.as_bytes());
+    h.update(sealed.gates.signer.as_bytes());
+}
+
 /// The proof-of-possession challenge.
 ///
 /// It names BOTH sealed components. That is the weld between the two halves of
 /// the defence: a cohort cannot produce this challenge, and therefore cannot
 /// produce a proof, until it holds the other cohort's commitment -- and what it
 /// is proving possession of is already sealed inside its own.
+///
+/// It also names BOTH ORGANISATIONS, via [`absorb_composition`]. So a holder's
+/// proof is a statement about the composition it believed it was in, including
+/// who the other party was: an honest cohort's reveal cannot be lifted into an
+/// artifact that attributes the other half to a different organisation, even
+/// one willing to endorse the identical digest. Without that, the identity
+/// signatures would be a layer beside the proofs rather than part of the same
+/// transcript, and the two could disagree about who was in the room.
 fn pop_challenge(
     sealed: &SealedComposition,
     claim: &ComponentClaim,
@@ -1460,9 +2100,7 @@ fn pop_challenge(
     let mut h = Blake2b512::new();
     h.update(POP_TAG);
     h.update(b"challenge");
-    h.update(sealed.ceremony.as_bytes());
-    h.update(sealed.owners.digest);
-    h.update(sealed.gates.digest);
+    absorb_composition(&mut h, sealed);
     absorb_claim(&mut h, claim);
     h.update(participant.to_le_bytes());
     h.update(verification_share.compress().as_bytes());
