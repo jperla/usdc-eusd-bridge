@@ -40,7 +40,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{parties, seal_and_sign, CohortSide};
+use common::{parties_over, seal_and_sign, seat_endorsements, CohortSide};
 use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -56,6 +56,11 @@ fn owners_spec() -> CohortSpec<Owners> {
 
 fn gates_spec() -> CohortSpec<Gates> {
     CohortSpec::<Gates>::sequential(2, 3)
+}
+
+/// Everyone a funder of an artifact at this file's shape holds a key for.
+fn parties() -> two_cohort::Parties {
+    parties_over(owners_spec().ids(), gates_spec().ids())
 }
 
 /// A fresh composition, with both cohorts' DKGs behind it.
@@ -100,8 +105,14 @@ fn reveal_via_default<C: ControlDomain>(
             )
         })
         .collect();
-    ComponentReveal::assemble(sealed, side.claim.clone(), pops, side.salt)
-        .expect("an honest cohort's own proofs verify")
+    ComponentReveal::assemble(
+        sealed,
+        side.claim.clone(),
+        pops,
+        side.endorsements.clone(),
+        side.salt,
+    )
+    .expect("an honest cohort's own proofs verify")
 }
 
 /// The default entry point forwards to `Pop::prove_for` and to nothing else:
@@ -217,6 +228,7 @@ fn the_raw_prover_signs_what_the_default_entry_point_refuses() {
         gates.claim.roster().to_vec(),
         gates.claim.component(),
         gates.claim.verification_shares().to_vec(),
+        gates.claim.seat_keys().to_vec(),
     );
 
     // The default entry point looks and refuses.
@@ -255,8 +267,10 @@ fn the_raw_prover_signs_what_the_default_entry_point_refuses() {
     // `assemble` VERIFIES every proof it is given, and it accepts these: the
     // holders' signatures are on the coordinator's threshold. Nothing in the
     // proving path objected.
-    let inflated_reveal = ComponentReveal::assemble(&sealed, inflated, pops, gates.salt)
-        .expect("every forged proof verifies against the claim it was taken over");
+    let endorsements = seat_endorsements::<Gates>(sealed.ceremony(), &inflated);
+    let inflated_reveal =
+        ComponentReveal::assemble(&sealed, inflated, pops, endorsements, gates.salt)
+            .expect("every forged proof verifies against the claim it was taken over");
     assert_eq!(inflated_reveal.threshold(), gates.claim.threshold() + 1);
 
     // The objection, when it finally arrives, comes from a different check
@@ -304,6 +318,7 @@ fn the_default_holder_entry_point_refuses_a_claim_that_is_not_its_own() {
         gates.claim.roster().to_vec(),
         gates.claim.component(),
         gates.claim.verification_shares().to_vec(),
+        gates.claim.seat_keys().to_vec(),
     );
     assert_eq!(
         share.prove(&sealed, &inflated, &gates.salt).unwrap_err(),

@@ -62,7 +62,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{parties, seal_and_sign, CohortSide, Honest};
+use common::{identity_of, parties_over, seal_and_sign, CohortSide, Honest};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT as G, ristretto::RistrettoPoint, scalar::Scalar,
     traits::Identity,
@@ -71,9 +71,10 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     audit,
-    ceremony::{prove_possession, SealedComposition},
+    ceremony::{endorse_seat, prove_possession, SealedComposition, SeatRoster},
+    identity::IdentityKey,
     CeremonyError, CeremonyId, CohortSpec, CompositionArtifact, ComponentClaim, ComponentReveal,
-    ControlDomain, Gates, Owners, Pop,
+    ControlDomain, Gates, IdentitySignature, Owners, Parties, Pop,
 };
 
 fn owners_spec() -> CohortSpec<Owners> {
@@ -82,6 +83,11 @@ fn owners_spec() -> CohortSpec<Owners> {
 
 fn gates_spec() -> CohortSpec<Gates> {
     CohortSpec::<Gates>::sequential(2, 3)
+}
+
+/// Everyone a funder of an artifact at this file's shape holds a key for.
+fn parties() -> Parties {
+    parties_over(owners_spec().ids(), gates_spec().ids())
 }
 
 /// An honest owner cohort whose shares have not yet answered any composition.
@@ -106,6 +112,14 @@ fn fresh_owners(seed: u64) -> (CeremonyId, CohortSide<Owners>) {
 struct Attacker {
     /// The discrete log the attacker wants for the WHOLE composite root.
     t: Scalar,
+    /// The attacker's own long-term seat identity key.
+    ///
+    /// Not stolen and not impersonated: the attacker here IS the gate
+    /// organisation and its single seat, and a funder that audits its artifacts
+    /// has been given this key for that seat. Carrying it makes the attempts
+    /// below turn on what the attacker can PROVE rather than on whether it can
+    /// sign its own name -- which it obviously can.
+    seat: IdentityKey,
 }
 
 impl Attacker {
@@ -113,6 +127,7 @@ impl Attacker {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         Attacker {
             t: Scalar::random(&mut rng),
+            seat: IdentityKey::from_seed(&[0xE7; 32]),
         }
     }
 
@@ -135,7 +150,32 @@ impl Attacker {
             // At threshold 1 over one participant, the verification share IS
             // the component. There is nowhere to hide an unopenable term.
             vec![rogue],
+            vec![self.seat.public()],
         )
+    }
+
+    /// Everyone a funder auditing THIS attacker's artifacts holds a key for:
+    /// the honest owner cohort and its three seats, and the attacker as the
+    /// gate organisation and its one seat.
+    fn parties(&self) -> Parties {
+        Parties::new(
+            identity_of::<Owners>().public(),
+            common::seats_for::<Owners>(&owners_spec()),
+            identity_of::<Gates>().public(),
+            SeatRoster::<Gates>::new([(Gates::nth(0), self.seat.public())])
+                .expect("one gate seat"),
+        )
+    }
+
+    /// The attacker's endorsement of its own seat. It really does hold the key,
+    /// so this always succeeds -- which is the point: a seat signature is not a
+    /// proof of possession, and the attempts below are refused at the proof.
+    fn endorsement(&self, ceremony: &CeremonyId, claim: &ComponentClaim) -> BTreeMap<u64, IdentitySignature> {
+        BTreeMap::from([(
+            Gates::nth(0),
+            endorse_seat(ceremony, claim, Gates::nth(0), &self.seat)
+                .expect("the attacker holds its own seat key"),
+        )])
     }
 
     /// A proof of possession the attacker fabricates out of nothing, since it
@@ -213,8 +253,12 @@ fn the_attacker_cannot_substitute_the_rogue_component_at_reveal_time() {
     assert_eq!(b_owner, h.owners.claim.component());
 
     let rogue = attacker.rogue_claim(&b_owner);
-    let substituted =
-        ComponentReveal::from_parts(rogue, BTreeMap::new(), *h.gate_reveal.salt());
+    let substituted = ComponentReveal::from_parts(
+        rogue.clone(),
+        BTreeMap::new(),
+        attacker.endorsement(&h.ceremony, &rogue),
+        *h.gate_reveal.salt(),
+    );
 
     assert_eq!(
         h.sealed
@@ -263,8 +307,18 @@ fn the_refusal_is_independent_of_the_honest_cohort() {
                 .clone()
                 .open(
                     h.owner_reveal.clone(),
-                    ComponentReveal::from_parts(rogue, BTreeMap::new(), *h.gate_reveal.salt()),
-                    &parties(),
+                    ComponentReveal::from_parts(
+                        rogue.clone(),
+                        BTreeMap::new(),
+                        attacker.endorsement(&h.ceremony, &rogue),
+                        *h.gate_reveal.salt(),
+                    ),
+                    // Each honest run has its own owner roster -- `b` is 4-of-5
+                    // -- so the funder's seats are that run's, not this file's
+                    // default. A `Parties` naming the wrong owner seats would be
+                    // refused on the OWNER side, which is not what this test is
+                    // about.
+                    &parties_over(h.owner_reveal.roster(), &[Gates::nth(0)]),
                 )
                 .unwrap_err(),
             CeremonyError::CommitmentMismatch { cohort: "gates" },
@@ -319,6 +373,7 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
     let forged = ComponentReveal::from_parts(
         rogue.clone(),
         BTreeMap::from([(Gates::nth(0), attacker.forged_pop())]),
+        attacker.endorsement(&ceremony, &rogue),
         [0x99; 32],
     );
     // The commitment DOES bind this reveal -- asserted, so the rejection below
@@ -330,7 +385,7 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
 
     let artifact = CompositionArtifact::from_parts(sealed, owners.reveal(&sealed), forged);
     assert_eq!(
-        audit(&artifact, &parties()).unwrap_err(),
+        audit(&artifact, &attacker.parties()).unwrap_err(),
         CeremonyError::PopFailed {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -364,9 +419,14 @@ fn a_rogue_component_with_no_proof_at_all_is_refused() {
             &CompositionArtifact::from_parts(
                 sealed,
                 owners.reveal(&sealed),
-                ComponentReveal::from_parts(rogue, BTreeMap::new(), salt),
+                ComponentReveal::from_parts(
+                    rogue.clone(),
+                    BTreeMap::new(),
+                    attacker.endorsement(&ceremony, &rogue),
+                    salt,
+                ),
             ),
-            &parties(),
+            &attacker.parties(),
         )
         .unwrap_err(),
         CeremonyError::PopMissing {
@@ -402,6 +462,7 @@ fn a_component_the_attacker_can_prove_does_not_capture_the_root() {
         vec![Gates::nth(0)],
         attacker.t * G,
         vec![attacker.t * G],
+        vec![attacker.seat.public()],
     );
     let salt = [0x11; 32];
     let sealed = SealedComposition::new(
@@ -417,9 +478,14 @@ fn a_component_the_attacker_can_prove_does_not_capture_the_root() {
         &CompositionArtifact::from_parts(
             sealed,
             owners.reveal(&sealed),
-            ComponentReveal::from_parts(honest_shape, BTreeMap::from([(Gates::nth(0), pop)]), salt),
+            ComponentReveal::from_parts(
+                honest_shape.clone(),
+                BTreeMap::from([(Gates::nth(0), pop)]),
+                attacker.endorsement(&ceremony, &honest_shape),
+                salt,
+            ),
         ),
-        &parties(),
+        &attacker.parties(),
     )
     .expect("a component its publisher can open is accepted");
 

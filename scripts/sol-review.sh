@@ -27,8 +27,12 @@ if [ "$OUT" != "/dev/stdout" ]; then
 fi
 
 cd "$TARGET"
+# stdin MUST be closed: with a prompt passed as an argument, codex still
+# reads stdin if it is open, and a background invocation with no tty simply
+# hangs on "Reading additional input from stdin..." producing a one-line file
+# that looks like a crashed review rather than a stalled one.
 codex exec \
   --sandbox read-only \
   --skip-git-repo-check \
   "$(cat "$PROMPT_FILE")" \
-  2>&1 | tee "$OUT"
+  < /dev/null 2>&1 | tee "$OUT"

@@ -5,11 +5,21 @@
 //! nothing notices. Anything that builds a production composite key should
 //! take its shape from here.
 //!
-//! **Decided: 3 operators at 2-of-3, and 1 independent gate.** Four entities;
-//! three must be compromised before funds can move -- *given* that the four
-//! seats are four independent principals, which is an assumption about the world
-//! and not something the constants below, or anything in this crate, establish.
-//! See "What this module does NOT encode".
+//! **Decided: 3 operators at 2-of-3, and 1 independent gate.** Four seats;
+//! three must be compromised before funds can move -- *given* THREE premises,
+//! none of which the constants below, or anything in this crate, establish:
+//!
+//!   1. the four seats are four independent principals;
+//!   2. nobody else holds a copy of a seat's share -- a dealer that dealt to
+//!      four real parties and kept copies is one principal, not three, and the
+//!      artifact is identical either way;
+//!   3. the party that SIGNED for a seat is the party holding a share behind it.
+//!      This one is false in this crate today; see below.
+//!
+//! Premise 2 was missing from this headline and premise 3 was not stated
+//! anywhere until review; both are rows in
+//! `proofs/tla/AttributionCoverage.tla`, and each of them alone drops the
+//! minimum coalition below three. See "What this module does NOT encode".
 //!
 //! Why four and not three, since three was the stated constraint: three
 //! entities *can* reach the same compromise threshold, as 2-of-2 operators
@@ -54,28 +64,51 @@
 //!     which is the fourth entity's whole contribution and then some.
 //!   * Whether the three OPERATOR SEATS are three entities. `T = 3` counts
 //!     seats; three seats held by one organisation are one principal wearing
-//!     three hats, and `2-of-3` of them is no barrier at all. Nothing in the
-//!     artifact distinguishes the two cases:
-//!     [`audit`](crate::audit) is told ONE identity key per COHORT, not one per
-//!     seat, so a single organisation that deals all three operator shares to
-//!     itself and endorses the commitment with its own real key produces an
-//!     artifact that audits, passes [`authorize_release`], and reaches
-//!     [`deposit_spend_key`] --
-//!     `tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`
-//!     performs it and then opens an output paid to the published address with
-//!     two principals rather than three.
+//!     three hats, and `2-of-3` of them is no barrier at all.
 //!
-//! Both are organisational facts and no test here can see them, and neither is
-//! fully closable by any artifact. Per-seat identity keys -- which
-//! `crates/ceremony/src/machine.rs` already carries as a
-//! `ParticipantId -> IdentityPublic` map for identifiable abort, and which do
-//! not reach `CompositionArtifact` today -- would put per-seat KEY ATTRIBUTION
-//! inside the artifact. They would not establish that four keys are four
-//! entities, for the same reason two cohort keys do not establish two
-//! organisations, and they would not stop a dealer that distributed shares to
-//! four real parties while keeping copies. What they would change is the bar:
-//! the funder's check is over 2 keys today while [`COMPROMISE_THRESHOLD`] is 3,
-//! and it would become 4 keys obtained from 4 named parties.
+//!     **The artifact now distinguishes those cases by KEY, which it did not
+//!     before.** [`audit`](crate::audit) is told one identity key per SEAT as
+//!     well as one per cohort, each seat's verification share carries that
+//!     seat's own signature, and the signature is checked under the key the
+//!     funder obtained from the party -- so an organisation that deals all three
+//!     operator shares to itself must produce a valid signature from each of the
+//!     three seat keys the funder holds, rather than one organisation key.
+//!     `tests/forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`
+//!     performs the two ways it can mount that WITHOUT those signatures -- its
+//!     own keys, or the real holders' public keys it is free to copy -- and both
+//!     are refused at `audit_address`, before any spend exists. Read "must
+//!     produce a valid signature" exactly: it is not "must hold the seat keys",
+//!     which an earlier version of this sentence said and the paragraph below
+//!     refutes.
+//!
+//! Both remain organisational facts and no test here can see them, and neither
+//! is fully closable by any artifact. Said exactly, so this paragraph is not
+//! read as more than it is: per-seat keys do NOT establish that four keys are
+//! four entities, they do NOT stop a dealer that distributed shares to four real
+//! parties while keeping copies, and -- the one an adversarial review had to
+//! point out -- they do NOT bind the party that SIGNED for a seat to the party
+//! that holds a share behind it. A dealer can keep every share, make every proof
+//! of possession itself, and collect the genuine seat signatures it needs over
+//! public bytes that cost the signers nothing -- THREE of them for a dealt owner
+//! cohort, the honest gate signing its own seat, which is the count the line
+//! below writes out;
+//! `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
+//! performs exactly that and it audits, and
+//! `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
+//! performs the sharper form, in which the three named parties DO hold real
+//! shares from a real DKG and endorse a substituted dealing anyway, because
+//! `ceremony::endorse_seat` never consults a share.
+//!
+//! What they changed is the number of distinct SIGNATURES a forgery must
+//! collect, counted per FORGERY rather than per artifact: from one to FOUR for a
+//! dealt-owner forgery at this shape -- the owner organisation's plus one from
+//! each of the three operator SEATS, the gate organisation's signature and the
+//! gate seat's endorsement being the honest gate's own and not the forger's to
+//! collect -- or from two to six if both cohorts are fabricated. An earlier
+//! version of this line said "from one to five", which is neither count, and a
+//! later one described the same forgery as collecting four SEAT signatures,
+//! which is the artifact's total; see `ceremony`'s module docs, where the
+//! arithmetic is written out.
 //!
 //! # The release gate
 //!
@@ -94,9 +127,9 @@
 //! the AUDITED route rather than by [`CompositeSpend::simulate`] -- a fact about
 //! this crate's constructors, not evidence that a distributed ceremony
 //! historically occurred -- was the artifact audited against the identity keys
-//! of the organisations this deployment names, and are the two cohorts the
-//! decided structure. The middle
-//! one matters as much as the first, because a ceremony run by an entirely
+//! of the organisations AND the seat-holders this deployment names, and are the
+//! two cohorts the decided structure. The attribution arms matter as much as the
+//! first, because a ceremony run by an entirely
 //! different pair of organisations audits perfectly under THEIR keys and differs
 //! from the real thing in nothing else --
 //! `tests/release_gate.rs::the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_name`
@@ -144,11 +177,14 @@
 //!
 //! Three things in that are load-bearing and were wrong in the first attempt at
 //! this paragraph. `D_i` is the root PLUS the subaddress offset, not the bare
-//! component sum. "Every published verification share carries a proof" is not
-//! "every seat answered a proof": with no per-seat identity in the artifact,
-//! nothing connects the proof for `V_i` to whoever really holds seat `i` -- see
-//! the operator-seat paragraph above. And "endorsed under the identity key I
-//! supplied" is a statement about a KEY, not about an organisation.
+//! component sum. "Every published verification share carries a proof" is still
+//! not "every seat answered a proof" -- a proof of possession is reproducible by
+//! anyone holding the share, so it says a share exists and never who holds it.
+//! What connects seat `i` to a party is the seat's own identity signature over
+//! `V_i`, checked under the key the funder supplied, which is a different
+//! statement standing beside the proof rather than a strengthening of it. And
+//! "endorsed under the identity key I supplied" is a statement about a KEY, not
+//! about an organisation -- at the seat grain as much as at the cohort grain.
 //!
 //! What the sequence establishes beyond that restatement, and which is worth
 //! listing because it is real: the two supplied keys are unequal; each roster is
@@ -210,7 +246,7 @@ use mc_crypto_keys::RistrettoPublic;
 use thiserror::Error as ThisError;
 
 use crate::{
-    ceremony::{AuditedRoot, CeremonyId, Parties},
+    ceremony::{AuditedRoot, CeremonyId, Parties, SeatRoster},
     identity::IdentityPublic,
     CohortSpec, CompositeSpend, Gates, Owners, Provenance,
 };
@@ -223,11 +259,27 @@ pub const OWNER_COUNT: usize = 3;
 pub const GATE_THRESHOLD: usize = 1;
 pub const GATE_COUNT: usize = 1;
 
-/// Distinct compromise domains in the decided structure.
+/// SEATS in the decided structure, one per compromise domain the deployment
+/// intends.
+///
+/// It is a count of seats, not of entities. Whether the four seats are four
+/// distinct compromise domains is an organisational fact no artifact this crate
+/// produces can carry -- one principal may hold all four seat keys, and
+/// `tests/seat_identity.rs::the_residual_is_a_party_that_holds_every_seat_key`
+/// performs exactly that against an artifact that audits. An earlier version of
+/// this line read "distinct compromise domains in the decided structure", which
+/// asserts the thing the module docs spend two paragraphs saying is not
+/// establishable here.
 pub const ENTITIES: usize = OWNER_COUNT + GATE_COUNT;
 
-/// Principals that must be compromised before funds can move:
+/// SEATS that must be compromised before funds can move:
 /// `T = max(k, g, k + g - r)` with no overlap, so `k + g`.
+///
+/// Reads as *principals* only under the assumption that distinct seats are
+/// distinct principals, which is the residual named above and in the module
+/// docs. `tests::no_coalition_of_fewer_than_three_seats_qualifies` enumerates
+/// the seat subsets and checks this number against the access structure rather
+/// than against itself.
 pub const COMPROMISE_THRESHOLD: usize = OWNER_THRESHOLD + GATE_THRESHOLD;
 
 pub fn owners() -> CohortSpec<Owners> {
@@ -323,6 +375,42 @@ pub enum ReleaseRefused {
         expected: IdentityPublic,
         found: IdentityPublic,
     },
+
+    /// The composition behind this root was audited against a different party
+    /// for one of the SEATS than this deployment names for it.
+    ///
+    /// [`ReleaseRefused::Endorser`]'s argument, one grain finer, and it is the
+    /// grain that matters: [`COMPROMISE_THRESHOLD`] counts seats. A spend
+    /// audited under a `Parties` whose owner seats are three keys of one
+    /// dealer's own making satisfies every other arm of this gate -- same shape,
+    /// same rosters, same `Provenance::Ceremony`, and the two ORGANISATION keys
+    /// can be the genuine ones.
+    #[error(
+        "cohort `{cohort}`: seat {participant} was audited as identity {found}, not the \
+         {expected} this deployment names for that seat"
+    )]
+    Seat {
+        cohort: &'static str,
+        participant: u64,
+        expected: IdentityPublic,
+        found: IdentityPublic,
+    },
+
+    /// The two seat rosters do not name the same seats.
+    ///
+    /// Separate from [`ReleaseRefused::Seat`] because there is no per-seat
+    /// disagreement to report: the audit was run over a different set of seats
+    /// than this deployment is asking about, and reporting the first mismatched
+    /// id would hide that.
+    #[error(
+        "cohort `{cohort}`: the composition was audited over seats {found:?}, not the {expected:?} \
+         this deployment names"
+    )]
+    SeatRoster {
+        cohort: &'static str,
+        expected: Vec<u64>,
+        found: Vec<u64>,
+    },
 }
 
 /// Evidence that a [`CompositeSpend`] passed [`authorize_release`].
@@ -383,11 +471,19 @@ impl fmt::Debug for ReleaseAuthorization<'_> {
 
 /// **The check a deployment must pass before a key is used.**
 ///
-/// Refuses unless three things hold at once: the root came out of a composition
+/// Refuses unless four things hold at once: the root came out of a composition
 /// ceremony; that ceremony was audited against the identity keys of the
-/// organisations named in `parties`; and both cohorts are exactly the decided
+/// organisations named in `parties`; it was audited against the same key for
+/// every SEAT that `parties` names; and both cohorts are exactly the decided
 /// structure -- [`owners`] at [`OWNER_THRESHOLD`], [`gates`] at
 /// [`GATE_THRESHOLD`].
+///
+/// The seat arm is the one that makes this gate count the same things
+/// [`COMPROMISE_THRESHOLD`] counts. Without it a `Parties` carrying the four
+/// keys a deployment collected would still admit a spend whose audit ran against
+/// four keys of somebody else's choosing, because the two ORGANISATION keys
+/// would match -- and cohort-level attribution is exactly what
+/// `tests/forgery.rs` used to walk through to a published address.
 ///
 /// `parties` is an ARGUMENT for the same reason it is an argument to
 /// [`audit`](crate::audit): the keys have to come from the organisations. This
@@ -411,13 +507,12 @@ impl fmt::Debug for ReleaseAuthorization<'_> {
 ///     generation -- the artifact is a statement about key generation;
 ///   * a root whose gate organisation is not a separate compromise domain from
 ///     the operators;
-///   * a root whose three OPERATOR SEATS are one entity. The endorser arm checks
-///     one identity key per cohort, so an operator organisation that ran no DKG,
-///     dealt all three shares to itself and endorsed the seal with its own real
-///     key is admitted here --
-///     `tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`
-///     runs it to `deposit_spend_key` and then spends the published address with
-///     two principals against a [`COMPROMISE_THRESHOLD`] of three.
+///   * a root whose four named SEATS are fewer than four entities. The seat arm
+///     checks four keys against four parties the deployment named; four keys can
+///     still be four hats, and three real parties can still have handed their
+///     seat keys to a fourth. What it no longer admits is the dealer that holds
+///     one organisation key and nothing else --
+///     `tests/forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`.
 ///
 /// Disjointness of the two rosters is not a separate arm. Both are required to
 /// equal the two decided rosters, and those are disjoint by
@@ -443,6 +538,14 @@ pub fn authorize_release<'a>(
     };
     check_endorser(owners().name(), parties.owners(), endorsers.owners())?;
     check_endorser(gates().name(), parties.gates(), endorsers.gates())?;
+    // PER SEAT, and this is the arm that makes the gate count the same things
+    // `COMPROMISE_THRESHOLD` counts. Without it, `parties` could carry the four
+    // seat keys a deployment collected and still admit a spend whose audit ran
+    // against four keys of somebody else's choosing, because the two cohort keys
+    // would match. That is the cohort-level attribution the module docs used to
+    // admit; it is refused here.
+    check_seats::<Owners>(parties.owner_seats(), endorsers.owner_seats())?;
+    check_seats::<Gates>(parties.gate_seats(), endorsers.gate_seats())?;
     check_decided_shape(
         spend.owners().threshold(),
         spend.owners().roster(),
@@ -450,6 +553,39 @@ pub fn authorize_release<'a>(
         spend.gates().roster(),
     )?;
     Ok(ReleaseAuthorization { spend, ceremony })
+}
+
+/// Every seat this deployment names was audited as that same party.
+///
+/// `expected` is the deployment's own roster, `found` is the one the audit
+/// behind the spend actually ran against. Compared by SET of ids first, so a
+/// disagreement about which seats exist is reported as itself rather than as the
+/// first key that happens to differ.
+fn check_seats<C: crate::ControlDomain>(
+    expected: &SeatRoster<C>,
+    found: &SeatRoster<C>,
+) -> Result<(), ReleaseRefused> {
+    if expected.ids() != found.ids() {
+        return Err(ReleaseRefused::SeatRoster {
+            cohort: C::NAME,
+            expected: expected.ids(),
+            found: found.ids(),
+        });
+    }
+    for (participant, want) in expected.iter() {
+        let got = found
+            .key_of(participant)
+            .expect("the id sets are equal, checked immediately above");
+        if want != got {
+            return Err(ReleaseRefused::Seat {
+                cohort: C::NAME,
+                participant,
+                expected: want,
+                found: got,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn check_endorser(
@@ -470,11 +606,17 @@ fn check_endorser(
 /// The shape half of the funder's question, against an audited artifact rather
 /// than a constructed spend.
 ///
-/// [`audit`] says what the structure IS -- which participant IDS hold seats, how
-/// many of them must act, and which identity key endorsed each cohort's
-/// commitment. It does not say WHO those ids are; there is no per-seat identity
-/// in the artifact. This says whether that structure is the one that was
-/// DECIDED.
+/// [`audit`] says what the structure IS -- which participant ids hold seats,
+/// which identity key the funder named for each of them, how many must act, and
+/// which key endorsed each cohort's commitment. This says whether that structure
+/// is the one that was DECIDED.
+///
+/// It compares SHAPE only: rosters and thresholds. The seat identities are
+/// deployment facts and not constants of this crate, so they are compared where
+/// the deployment's own copy is available -- [`authorize_release`], against the
+/// keys the audit behind the spend actually ran under. Repeating them here
+/// against something this file made up would be checking the artifact against
+/// itself, which is the same reason `identity` is not compared here.
 ///
 /// It deliberately does not compare [`CohortStructure::identity`]. The two
 /// organisations' keys are deployment facts and not constants of this crate, and
@@ -508,13 +650,16 @@ pub fn check_decided_structure(audited: &AuditedRoot) -> Result<(), ReleaseRefus
 /// and that the gate is what refuses the key:
 ///
 /// ```
-/// use two_cohort::ceremony::Parties;
+/// use two_cohort::ceremony::{Parties, SeatRoster};
 /// use two_cohort::identity::IdentityKey;
-/// use two_cohort::{production, CohortSpec, CompositeSpend, Gates, Owners};
+/// use two_cohort::{production, CohortSpec, CompositeSpend, ControlDomain, Gates, Owners};
 ///
+/// let seat = |n: u64| IdentityKey::from_seed(&[0x10 + n as u8; 32]).public();
 /// let parties = Parties::new(
 ///     IdentityKey::from_seed(&[0x01; 32]).public(),
+///     SeatRoster::<Owners>::new((0..3).map(|k| (Owners::nth(k), seat(k)))).unwrap(),
 ///     IdentityKey::from_seed(&[0x02; 32]).public(),
+///     SeatRoster::<Gates>::new([(Gates::nth(0), seat(9))]).unwrap(),
 /// );
 /// let spend = CompositeSpend::simulate_from_seed(
 ///     0,
@@ -533,13 +678,16 @@ pub fn check_decided_structure(audited: &AuditedRoot) -> Result<(), ReleaseRefus
 /// by forgetting to look:
 ///
 /// ```compile_fail
-/// use two_cohort::ceremony::Parties;
+/// use two_cohort::ceremony::{Parties, SeatRoster};
 /// use two_cohort::identity::IdentityKey;
-/// use two_cohort::{production, CohortSpec, CompositeSpend, Gates, Owners};
+/// use two_cohort::{production, CohortSpec, CompositeSpend, ControlDomain, Gates, Owners};
 ///
+/// let seat = |n: u64| IdentityKey::from_seed(&[0x10 + n as u8; 32]).public();
 /// let parties = Parties::new(
 ///     IdentityKey::from_seed(&[0x01; 32]).public(),
+///     SeatRoster::<Owners>::new((0..3).map(|k| (Owners::nth(k), seat(k)))).unwrap(),
 ///     IdentityKey::from_seed(&[0x02; 32]).public(),
+///     SeatRoster::<Gates>::new([(Gates::nth(0), seat(9))]).unwrap(),
 /// );
 /// let spend = CompositeSpend::simulate_from_seed(
 ///     0,
@@ -622,13 +770,86 @@ mod tests {
         assert_eq!(ENTITIES, 4);
     }
 
+    /// **No coalition of fewer than [`COMPROMISE_THRESHOLD`] SEATS satisfies
+    /// both quorums, checked by enumerating the seat subsets of the structure
+    /// these functions actually return.**
+    ///
+    /// It replaces a test named `three_principals_must_be_compromised` whose
+    /// body was `assert_eq!(COMPROMISE_THRESHOLD, 3)` plus one comparison
+    /// against `owners().threshold()`. Review was right that this asserted an
+    /// integer equals three and would have passed under every residual in the
+    /// crate -- including a dealer holding all four seats. The constant is
+    /// *defined* as `OWNER_THRESHOLD + GATE_THRESHOLD`, so reading it back
+    /// tests the equals sign.
+    ///
+    /// What is enumerated below is the access structure: every subset of the
+    /// four seats, kept if it holds an operator quorum AND a gate quorum, and
+    /// the smallest survivor compared against the constant. That fails if
+    /// anyone edits `owners()` or `gates()` away from the constants, if the two
+    /// rosters stop being disjoint (the `r` in `T = max(k, g, k + g - r)`), or
+    /// if the constant is raised without the structure moving under it.
+    /// `AccessStructure.tla` proves the formula and its tightness in general;
+    /// this checks the decided instance. Mutation-checked at three points --
+    /// `owners()` drifting to 1-of-3, `gates()` drifting to 0-of-1, and the
+    /// constant inflated by one -- and the enumeration catches each.
+    ///
+    /// What it deliberately does NOT catch, so nobody reads it as more: editing
+    /// `OWNER_THRESHOLD` itself. The constant is defined over it, so the
+    /// structure and the claim move together and the pair stays consistent --
+    /// which is the correct outcome, since that edit changes what was decided
+    /// rather than breaking the relation between the decision and the code.
+    /// `docs/FINAL-PLAN.md` §2 is where the decision lives.
+    ///
+    /// **It counts SEATS.** Turning that into "three principals" needs the
+    /// assumption that distinct seats are distinct principals, which nothing
+    /// here establishes and `tests/seat_identity.rs` performs the failure of.
+    /// The old name asserted the conclusion this test cannot reach.
     #[test]
-    fn three_principals_must_be_compromised() {
-        // T = max(k, g, k + g - r), r = 0 because the rosters are disjoint.
-        // Stated here as the consequence a reader cares about rather than as
-        // the formula; AccessStructure.tla proves the formula and its
-        // tightness.
-        assert_eq!(COMPROMISE_THRESHOLD, 3);
+    fn no_coalition_of_fewer_than_three_seats_qualifies() {
+        let owner_ids = owners().ids().to_vec();
+        let gate_ids = gates().ids().to_vec();
+
+        // r = 0 in the formula. The type system already keeps the two domains
+        // apart; this is the arithmetic's own premise, checked where the
+        // arithmetic is.
+        for id in &owner_ids {
+            assert!(
+                !gate_ids.contains(id),
+                "the rosters must be disjoint or the threshold formula's r is \
+                 not zero and this structure is not the one that was decided"
+            );
+        }
+
+        let seats: Vec<bool> = owner_ids
+            .iter()
+            .map(|_| true)
+            .chain(gate_ids.iter().map(|_| false))
+            .collect();
+        assert_eq!(seats.len(), ENTITIES);
+
+        let mut smallest_qualifying = None::<usize>;
+        for mask in 0u32..(1 << seats.len()) {
+            let chosen: Vec<bool> = seats
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask >> i & 1 == 1)
+                .map(|(_, &is_owner)| is_owner)
+                .collect();
+            let owners_in = chosen.iter().filter(|&&is_owner| is_owner).count();
+            let gates_in = chosen.len() - owners_in;
+            if owners_in >= owners().threshold() && gates_in >= gates().threshold() {
+                smallest_qualifying =
+                    Some(smallest_qualifying.map_or(chosen.len(), |s: usize| s.min(chosen.len())));
+            }
+        }
+
+        assert_eq!(
+            smallest_qualifying,
+            Some(COMPROMISE_THRESHOLD),
+            "the smallest coalition that satisfies both quorums must be exactly \
+             the compromise threshold: larger means the constant understates the \
+             structure, smaller means it overstates it"
+        );
         assert!(
             COMPROMISE_THRESHOLD > owners().threshold(),
             "the gate must raise the bar above an operator quorum alone, or it \

@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{identity_of, parties, CohortSide, Honest, SUBADDRESS};
+use common::{identity_of, parties, parties_for, CohortSide, Honest, SUBADDRESS};
 use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -166,13 +166,15 @@ fn the_gate_admits_a_ceremony_key_at_the_decided_shape() {
 fn the_gate_refuses_a_ceremony_at_an_undecided_gate_threshold() {
     let h = Honest::run(0x6A7E, &decided_owners(), &CohortSpec::<Gates>::sequential(2, 3));
     let d = h.spend_public();
+    // Audited and gated against the seats THIS ceremony has, so the seat arm
+    // passes and the refusal below is attributable to the shape alone.
     let address =
-        audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("it audits fine");
+        audit_address(&h.artifact, &h.parties, &h.view, SUBADDRESS, &d).expect("it audits fine");
     let spend = CompositeSpend::from_ceremony(&address, &h.view, &h.tx_public()).expect("built");
 
     // The roster arm fires first: 3 gate seats is already not the decided one.
     assert_eq!(
-        authorize_release(&spend, &parties()).unwrap_err(),
+        authorize_release(&spend, &h.parties).unwrap_err(),
         ReleaseRefused::Roster {
             cohort: "gates",
             expected: decided_gates().ids().to_vec(),
@@ -226,8 +228,11 @@ fn the_gate_refuses_a_ceremony_over_an_undecided_owner_roster() {
     );
     let h = Honest::run(0x5EA7, &substituted, &decided_gates());
     let d = h.spend_public();
+    // Audited and gated against the seats THIS ceremony has -- including the
+    // stranger at seat 9 -- so the seat arm passes and what refuses the key is
+    // the roster comparison against the DECIDED constants.
     let address =
-        audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("it audits fine");
+        audit_address(&h.artifact, &h.parties, &h.view, SUBADDRESS, &d).expect("it audits fine");
     let spend = CompositeSpend::from_ceremony(&address, &h.view, &h.tx_public()).expect("built");
 
     assert_eq!(
@@ -236,7 +241,7 @@ fn the_gate_refuses_a_ceremony_over_an_undecided_owner_roster() {
         "control: the threshold is the decided one, so only the roster differs"
     );
     assert_eq!(
-        authorize_release(&spend, &parties()).unwrap_err(),
+        authorize_release(&spend, &h.parties).unwrap_err(),
         ReleaseRefused::Roster {
             cohort: "owners",
             expected: decided_owners().ids().to_vec(),
@@ -275,7 +280,15 @@ fn the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_n
     // ...endorsed by organisations that are not the ones this deployment names.
     let impostor_owner_org = IdentityKey::from_seed(&[0xA1; 32]);
     let impostor_gate_org = IdentityKey::from_seed(&[0xA2; 32]);
-    let impostors = Parties::new(impostor_owner_org.public(), impostor_gate_org.public());
+    // The SEATS are the ones this deployment names -- only the two
+    // organisation keys differ, so what the gate refuses below is attributable
+    // to the organisation arm and not to the seat arm beside it.
+    let impostors = Parties::new(
+        impostor_owner_org.public(),
+        common::seats_for::<Owners>(&decided_owners()),
+        impostor_gate_org.public(),
+        common::seats_for::<Gates>(&decided_gates()),
+    );
     assert_ne!(
         impostors,
         parties(),
@@ -344,7 +357,12 @@ fn the_endorser_arm_is_per_cohort() {
     assert_eq!(
         authorize_release(
             &spend,
-            &Parties::new(identity_of::<Owners>().public(), stranger.public()),
+            &Parties::new(
+                identity_of::<Owners>().public(),
+                common::seats_for::<Owners>(&decided_owners()),
+                stranger.public(),
+                common::seats_for::<Gates>(&decided_gates()),
+            ),
         )
         .unwrap_err(),
         ReleaseRefused::Endorser {
@@ -397,8 +415,16 @@ fn the_funder_question_is_answerable_from_the_artifact() {
     // A ceremony at an undecided shape audits and is still refused.
     let wrong = Honest::run(0xBADD, &decided_owners(), &CohortSpec::<Gates>::sequential(2, 3));
     let wd = wrong.spend_public();
-    let wrong_address = audit_address(&wrong.artifact, &parties(), &wrong.view, SUBADDRESS, &wd)
-        .expect("it audits: `audit` does not know what was decided");
+    let wrong_address = audit_address(
+        &wrong.artifact,
+        // That run's own seats: it has three gate seats and the decided
+        // structure has one.
+        &wrong.parties,
+        &wrong.view,
+        SUBADDRESS,
+        &wd,
+    )
+    .expect("it audits: `audit` does not know what was decided");
     assert_eq!(
         check_decided_structure(wrong_address.root()).unwrap_err(),
         ReleaseRefused::Roster {
@@ -436,13 +462,15 @@ fn the_artifact_side_and_the_spend_side_agree() {
     ] {
         let h = Honest::run(0xA9A9, &owners, &gates);
         let d = h.spend_public();
+        // Each row is a different shape, so each has its own seats.
+        let named = parties_for(&owners, &gates);
         let address =
-            audit_address(&h.artifact, &parties(), &h.view, SUBADDRESS, &d).expect("audits");
+            audit_address(&h.artifact, &named, &h.view, SUBADDRESS, &d).expect("audits");
         let spend =
             CompositeSpend::from_ceremony(&address, &h.view, &h.tx_public()).expect("built");
 
         let from_artifact = check_decided_structure(address.root());
-        let from_spend = authorize_release(&spend, &parties()).map(|_| ());
+        let from_spend = authorize_release(&spend, &named).map(|_| ());
         assert_eq!(from_artifact, from_spend, "{label}");
     }
 }
@@ -452,7 +480,7 @@ fn the_artifact_side_and_the_spend_side_agree() {
 #[test]
 fn audit_alone_accepts_a_shape_nobody_decided() {
     let wrong = Honest::run(0xBADD, &decided_owners(), &CohortSpec::<Gates>::sequential(2, 3));
-    let audited = audit(&wrong.artifact, &parties()).expect("a perfectly honest ceremony");
+    let audited = audit(&wrong.artifact, &wrong.parties).expect("a perfectly honest ceremony");
     let (_, gates_found) = audited.structure();
     assert_eq!(gates_found.threshold(), 2);
     assert_eq!(gates_found.roster().len(), 3);

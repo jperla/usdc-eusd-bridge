@@ -15,8 +15,15 @@ b_gate   shared g-of-m across GATES   (own roster, own threshold)
 The gate cohort's share enters the one-time key, so it enters the **key
 image**. A release attempted without the gates does not produce a rejected
 signature — it produces a signature over an image that belongs to no output in
-the ring, and consensus itself refuses it. The gate is inside the spend path,
-not layered on top of it.
+the ring, and consensus itself refuses it. The gate **cohort** is inside the
+spend path, not layered on top of it.
+
+Two different things here are called a gate, and a review reading this sentence
+took it for the other one. The claim above is about the gate COHORT's share of
+`b` and is a fact about the algebra. The **release gate**,
+`production::authorize_release`, is a policy check a caller must remember to ask
+for; several public routes to a fundable key do not pass through it, and
+`production`'s module docs name them.
 
 Each cohort is a separate object with its own roster, threshold and Lagrange
 weights. Nothing in `Cohort` refers to the other cohort. A design with one
@@ -94,7 +101,9 @@ subsets is the correctness condition for the scheme, not bookkeeping.
 | `attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys` | the exact residual of the attribution check, performed rather than described |
 | `attribution.rs::one_organisation_named_for_both_cohorts_is_refused` | `PartiesNotDistinct`; isolated by auditing **one** artifact under two `Parties` values, so only the funder's input differs |
 | `attribution.rs::a_holders_proof_is_bound_to_the_counterparty_it_dealt_with` | the two signer keys are inside the pop transcript, not layered beside it |
-| **`forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`** | **the open gap**: a dealt owner cohort, endorsed with the organisation's own real key, reaches a published address that two principals open |
+| **`forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`** | **the inversion**: a dealt owner cohort, endorsed with the organisation's own real key, is now refused at `audit_address` — mounted both ways a dealer WITHOUT seat signatures can (dealer names itself → `SeatUnexpected`; dealer copies the real seat-holders' public keys → `SeatEndorsementInvalid`), with an honest ceremony at the same shape still publishing. A third mounting — collecting genuine signatures — is not refused; see below |
+| `seat_identity.rs` (20 tests) | one identity key per seat: sealed by the commitment, welded into every pop transcript, checked under the key the *funder* supplied, and refused when two seats share a key — plus the residual, performed |
+| **`seat_forgery.rs` (3 tests)** | **the residual sharpened**: three parties that ran a real DKG and hold real shares endorse a *substituted* dealing, and the artifact audits, passes `authorize_release`, reaches `deposit_spend_key` and is opened by **two** principals — plus the two transposition cases (seat keys within a roster; the deployment's roster against the audit's) that keep the key multiset identical |
 | `forgery.rs` (8 further tests) | endorsement lifted from another ceremony, transposed commitments, transposed reveals, transposed funder keys, an overstated threshold, and a simulated root — each refused by a named error |
 | `release_gate.rs::a_simulated_root_reaches_the_funding_path_today` | the gap the gate closes, performed: a simulated root is published at the decided shape and then spent |
 | `release_gate.rs::the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_name` | a ceremony run by a different pair of organisations differs in nothing else, and is refused on the endorser arm alone |
@@ -156,9 +165,12 @@ because no owner id is ever a gate id.
 
 ## What a funder can decide, and what it must still take on trust
 
-The audit takes a `CompositionArtifact` and two identity public keys the funder
-obtained from the two organisations. A funder that also holds the view private
-key `a` runs two calls:
+The audit takes a `CompositionArtifact` and a `Parties`: two identity public keys
+the funder obtained from the two organisations, **and a per-seat roster of
+identity public keys for each cohort** — six positions at the decided shape.
+This paragraph named only the two organisation keys after the seat rosters
+became inputs, and review caught it; the rosters are what makes the attribution
+per seat. A funder that also holds the view private key `a` runs two calls:
 
 ```rust
 let address = audit_address(&artifact, &parties, &a, i, &d_i)?;
@@ -186,22 +198,63 @@ and `check_consistency` now enumerates every size below `t`.
 
 **What it does not answer, and none of this is closable by wording:**
 
-* **Who holds the seats.** There is no per-seat identity anywhere in the
-  artifact — `Parties` carries one key per *cohort*, while the decided
-  structure's argument is per *seat*. So an organisation that runs no DKG, deals
-  all three operator shares to itself and endorses the seal with its own real
-  key produces an artifact that audits, passes the release gate and reaches a
-  published address:
-  `tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`
-  performs it, then opens an output paid there with **two** principals against a
-  decided `COMPROMISE_THRESHOLD` of **three**. This is the largest open gap.
+* **That the four named seats are four entities.** `ComponentClaim` now carries
+  one identity key per seat, sealed by the commitment and absorbed into every
+  proof transcript; `Parties` carries a seat roster; `audit` refuses a seat the
+  funder did not name, a seat key that is not the funder's, a seat endorsement
+  that does not verify under the funder's key, and any two seats sharing a key
+  across the two cohorts. `authorize_release` compares the seat rosters too, so
+  `deposit_spend_key` cannot be reached with cohort-level attribution alone.
+  What that changed is the **bar**, and the count a later adversarial pass had
+  to correct: a forged artifact needed **one** signature nobody honest would
+  make, and a dealt-owner forgery at the decided shape now needs **four** — the
+  owner organisation's plus one from each of the three operator seats. The gate
+  organisation's signature and the gate seat's endorsement are the honest gate's
+  own and are not the forger's to collect. A forgery that fabricates *both*
+  cohorts collects **six**, every identity signature the artifact carries. This
+  paragraph said "five", which is neither.
+
+  It does **not** establish that four keys are four entities; it does not
+  stop a dealer that dealt to four real parties while keeping copies; and it does
+  **not** bind the party that *signed* for a seat to the party that *holds a
+  share* behind it. A dealer can keep every share, make every proof of possession
+  itself, and collect the seat signatures it needs over public bytes that cost
+  the signers nothing — three of them for a dealt OWNER cohort, since the honest
+  gate signs its own seat; review found "four" here, which is the artifact's
+  total and not the forger's bill —
+  `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
+  performs that and it audits.
+
+  **The sharper form, and the one a deployment should read.** The signers need
+  not be share-less bystanders. `ceremony::endorse_seat` — a public free function
+  taking a claim and an identity key, and the only endorsing entry point
+  available to a seat whose long-term key lives away from its share — consults no
+  share at all. So a party that ran the real DKG and holds a real share **can**
+  endorse a *substituted* dealing — a claim over a component the attacker chose,
+  with the attacker holding its discrete log. `dkg::CohortShare::endorse` is the
+  only entry point that refuses (`CeremonyError::ClaimNotOwn`), and the artifact
+  records which one was used nowhere.
+
+  "Can", not "will" — the word this paragraph used, which review was right to
+  strike. Whether a holder signs is a question about that holder's own software
+  and discipline, and the endorsement is worth exactly what that discipline is
+  worth. The artifact cannot tell a funder which of the two entry points
+  produced any signature it carries, so the funder cannot use the distinction.
+  `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
+  performs it end to end: it audits, it passes `authorize_release`, it reaches
+  `deposit_spend_key`, and **two** principals — the operator organisation and the
+  gate — then open an output paid to the published address, against a decided
+  `COMPROMISE_THRESHOLD` of three.
 * **That two keys are two organisations.** A party holding both identity private
   keys signs both halves and the audit passes —
   `attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys`.
-  What changed is the bar, from "somebody says these are two cohorts" to
-  "whoever produced this holds the long-term keys of both named organisations",
-  which is a question a funder can put to an organisation. Naming *one* key
-  twice is now refused outright (`CeremonyError::PartiesNotDistinct`).
+  What changed is the bar, from "somebody says these are two cohorts" to "a
+  signature verifying under each named organisation's long-term key exists over
+  this composition", which is a question a funder can put to an organisation.
+  Not "whoever produced this holds the long-term keys", which this said: a
+  producer that collected two signatures, or used a signing service, holds
+  neither. Naming *one* key twice is now refused outright
+  (`CeremonyError::PartiesNotDistinct`).
 * **Chronology.** Signatures have no time in them. The artifact shows that a
   cohort held the other side's commitment when it proved — an ordering between
   two events inside it, not a date. The rule that stops a cohort choosing its

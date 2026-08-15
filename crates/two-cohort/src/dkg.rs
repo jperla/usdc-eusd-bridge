@@ -90,11 +90,13 @@ use zeroize::Zeroizing;
 
 use crate::{
     ceremony::{
-        CeremonyError, CeremonyId, ComponentClaim, Pop, SealedComposition, MAX_AUDITED_ROSTER,
+        endorse_seat, CeremonyError, CeremonyId, ComponentClaim, Pop, SealedComposition, SeatRoster,
+        MAX_AUDITED_ROSTER,
     },
     cohort::{Cohort, ParticipantTerm},
     composite::CohortSpec,
     control::{ControlDomain, NAMESPACE_SPAN},
+    identity::{IdentityKey, IdentitySignature},
 };
 
 /// PedPoP's `EncryptionKeyMessage<Ristretto, Commitments<Ristretto>>`.
@@ -146,6 +148,20 @@ pub enum DkgError {
     /// The local participant is not on the roster it was handed.
     #[error("cohort `{cohort}`: participant {id} is not on this roster")]
     NotOnRoster { cohort: &'static str, id: u64 },
+
+    /// The seat roster this DKG was told to run under does not name exactly the
+    /// participants it is dealing to.
+    ///
+    /// Refused before any key exists, for [`DkgError::RosterTooLarge`]'s reason:
+    /// a [`CohortKey`] whose seat roster disagreed with its participant roster
+    /// could not produce a well-formed [`ComponentClaim`], and finding that out
+    /// after key generation is finding it out too late.
+    #[error("cohort `{cohort}`: seat roster {seats:?} does not name exactly the participants {roster:?}")]
+    SeatRosterMismatch {
+        cohort: &'static str,
+        roster: Vec<u64>,
+        seats: Vec<u64>,
+    },
 
     /// A round cannot proceed without every participant's message: PedPoP's
     /// commitments and shares are both `n`-of-`n` inputs, whatever the
@@ -425,6 +441,13 @@ impl fmt::Debug for ShareMessage {
 /// everyone else's.
 pub struct Committing<C: ControlDomain> {
     roster: Roster<C>,
+    /// WHO holds each seat, fixed BEFORE any key material exists.
+    ///
+    /// Carried through every round so that it reaches [`CohortKey`], which is
+    /// what makes [`ComponentClaim::of`] able to state the seat identities
+    /// without a coordinator supplying them -- and therefore what lets an honest
+    /// holder refuse a claim that re-attributes a seat.
+    seats: SeatRoster<C>,
     me: u64,
     machine: SecretShareMachine<Ristretto>,
 }
@@ -453,13 +476,27 @@ impl<C: ControlDomain> Committing<C> {
     /// is false for the same-id case. The rule that binds a HOLDER to one
     /// composition is [`prove_possession`](crate::ceremony::prove_possession)'s,
     /// enforced per share.
+    /// `seats` names the party holding each roster id. It is required, not
+    /// optional: a cohort that cannot say who its seats belong to cannot produce
+    /// an artifact a funder can attribute, and the point of taking it HERE
+    /// rather than at claim-assembly time is that the answer is then fixed by
+    /// the participants' own key generation instead of by whoever assembles the
+    /// claim afterwards.
     pub fn begin<R: RngCore + CryptoRng>(
         ceremony: &CeremonyId,
         spec: &CohortSpec<C>,
+        seats: &SeatRoster<C>,
         me: u64,
         rng: &mut R,
     ) -> Result<(Committing<C>, CommitmentMessage), DkgError> {
         let roster = Roster::new(spec)?;
+        if seats.ids() != roster.ids() {
+            return Err(DkgError::SeatRosterMismatch {
+                cohort: C::NAME,
+                roster: roster.ids().to_vec(),
+                seats: seats.ids(),
+            });
+        }
         let params = roster.params(me)?;
         let (machine, msg) =
             KeyGenMachine::<Ristretto>::new(params, ceremony.dkg_context(C::NAME))
@@ -467,6 +504,7 @@ impl<C: ControlDomain> Committing<C> {
         Ok((
             Committing {
                 roster,
+                seats: seats.clone(),
                 me,
                 machine,
             },
@@ -513,6 +551,7 @@ impl<C: ControlDomain> Committing<C> {
         Ok((
             Dealing {
                 roster: self.roster,
+                seats: self.seats,
                 me: self.me,
                 machine,
             },
@@ -524,6 +563,7 @@ impl<C: ControlDomain> Committing<C> {
 /// A participant that has dealt its shares and is waiting for everyone else's.
 pub struct Dealing<C: ControlDomain> {
     roster: Roster<C>,
+    seats: SeatRoster<C>,
     me: u64,
     machine: KeyMachine<Ristretto>,
 }
@@ -568,6 +608,7 @@ impl<C: ControlDomain> Dealing<C> {
             .map_err(|e| self.roster.map_pedpop(e, self.me))?;
         Ok(Confirming {
             roster: self.roster,
+            seats: self.seats,
             me: self.me,
             machine,
         })
@@ -596,6 +637,7 @@ impl<C: ControlDomain> Dealing<C> {
 /// this crate does not either.
 pub struct Confirming<C: ControlDomain> {
     roster: Roster<C>,
+    seats: SeatRoster<C>,
     me: u64,
     machine: BlameMachine<Ristretto>,
 }
@@ -658,6 +700,7 @@ impl<C: ControlDomain> Confirming<C> {
         let key = CohortKey {
             cohort,
             component: keys.group_key().0,
+            seats: self.seats,
             domain: PhantomData,
         };
         let share = CohortShare {
@@ -690,6 +733,9 @@ impl<C: ControlDomain> Confirming<C> {
 pub struct CohortKey<C: ControlDomain> {
     cohort: Cohort,
     component: RistrettoPoint,
+    /// WHO holds each seat, as fixed at [`Committing::begin`] and checked there
+    /// against this cohort's own roster.
+    seats: SeatRoster<C>,
     domain: PhantomData<C>,
 }
 
@@ -698,6 +744,7 @@ impl<C: ControlDomain> Clone for CohortKey<C> {
         CohortKey {
             cohort: self.cohort.clone(),
             component: self.component,
+            seats: self.seats.clone(),
             domain: PhantomData,
         }
     }
@@ -710,6 +757,7 @@ impl<C: ControlDomain> fmt::Debug for CohortKey<C> {
             .field("threshold", &self.cohort.threshold())
             .field("roster", &self.cohort.roster())
             .field("component", &self.component.compress())
+            .field("seats", &self.seats)
             .finish()
     }
 }
@@ -742,6 +790,16 @@ impl<C: ControlDomain> CohortKey<C> {
                 )
             })
             .collect()
+    }
+
+    /// WHO holds each seat, as this cohort's own key generation was told.
+    ///
+    /// Not a claim received from a coordinator: it was fixed at
+    /// [`Committing::begin`], before any key material existed, and checked there
+    /// against this roster. That is what makes it usable as the reference a
+    /// holder compares a received [`ComponentClaim`] against.
+    pub fn seats(&self) -> &SeatRoster<C> {
+        &self.seats
     }
 
     /// The share-less [`Cohort`](crate::Cohort) view, for the public
@@ -893,6 +951,45 @@ impl<C: ControlDomain> CohortShare<C> {
         Pop::prove_for(sealed, self, claim, salt)
     }
 
+    /// **Endorse this seat's own verification share** under the seat-holder's
+    /// long-term identity key.
+    ///
+    /// The other half of what a seat contributes to an artifact. The proof of
+    /// possession says *somebody* knows `s_i`; a threshold transcript can say
+    /// nothing more, because the quorum it would incriminate could reproduce it.
+    /// This says the holder of a NAMED long-term key stands behind that seat,
+    /// which is the statement [`audit`](crate::audit) checks against a key the
+    /// funder obtained from that party.
+    ///
+    /// Two refusals, and they answer different mistakes:
+    ///
+    ///   * `claim` must be this share's own, field for field, so a coordinator
+    ///     cannot collect a seat signature over its own roster or component --
+    ///     [`CeremonyError::ClaimNotOwn`], the same check [`Pop::prove_for`]
+    ///     makes and for the same reason;
+    ///   * `key` must be the identity the claim attributes to THIS seat, so a
+    ///     holder handed a claim that re-attributes its own seat signs nothing
+    ///     -- [`CeremonyError::SeatKeyNotOwn`].
+    ///
+    /// It is not a capability boundary. Whoever holds the private key can
+    /// produce these bytes without this function; what it changes is what an
+    /// honest holder's software does by default. Same limit, stated the same
+    /// way, as [`CohortShare::prove`].
+    pub fn endorse(
+        &self,
+        ceremony: &CeremonyId,
+        claim: &ComponentClaim,
+        key: &IdentityKey,
+    ) -> Result<IdentitySignature, CeremonyError> {
+        if *claim != ComponentClaim::of(&self.key) {
+            return Err(CeremonyError::ClaimNotOwn {
+                cohort: C::NAME,
+                participant: self.id,
+            });
+        }
+        endorse_seat(ceremony, claim, self.id, key)
+    }
+
     /// The raw share.
     ///
     /// `pub(crate)` so the composition ceremony can prove possession of it
@@ -979,6 +1076,7 @@ impl<C: ControlDomain> CohortShare<C> {
 pub fn run_dkg<C: ControlDomain, R: RngCore + CryptoRng>(
     ceremony: &CeremonyId,
     spec: &CohortSpec<C>,
+    seats: &SeatRoster<C>,
     rng: &mut R,
 ) -> Result<Vec<CohortShare<C>>, DkgError> {
     let roster = Roster::new(spec)?;
@@ -986,7 +1084,7 @@ pub fn run_dkg<C: ControlDomain, R: RngCore + CryptoRng>(
     let mut committing = Vec::with_capacity(roster.n());
     let mut commitments = HashMap::with_capacity(roster.n());
     for &id in roster.ids() {
-        let (state, msg) = Committing::<C>::begin(ceremony, spec, id, rng)?;
+        let (state, msg) = Committing::<C>::begin(ceremony, spec, seats, id, rng)?;
         committing.push(state);
         commitments.insert(id, msg);
     }

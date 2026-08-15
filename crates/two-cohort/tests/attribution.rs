@@ -25,7 +25,7 @@
 
 mod common;
 
-use common::{identity_of, parties, seal_and_sign, CohortSide, Honest};
+use common::{identity_of, parties_over, seal_and_sign, seat_keys_over, CohortSide, Honest};
 use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -34,7 +34,7 @@ use two_cohort::{
     ceremony::{
         ComponentCommitment, ComponentReveal, Parties, SealedComposition, SignedCommitment,
     },
-    identity::{IdentityKey, IdentitySignature},
+    identity::{IdentityKey, IdentityPublic, IdentitySignature},
     CeremonyError, CeremonyId, CohortSpec, CompositionArtifact, ControlDomain, Gates, Owners,
 };
 
@@ -44,6 +44,25 @@ fn owners_spec() -> CohortSpec<Owners> {
 
 fn gates_spec() -> CohortSpec<Gates> {
     CohortSpec::<Gates>::sequential(2, 3)
+}
+
+/// Everyone a funder of an artifact at this file's shape holds a key for.
+fn parties() -> Parties {
+    parties_over(owners_spec().ids(), gates_spec().ids())
+}
+
+/// The same, with the two ORGANISATION keys named by the caller.
+///
+/// Every test in this file varies the organisation attribution and leaves the
+/// seats alone, so the seat rosters are this file's honest ones throughout.
+/// `tests/forgery.rs` is where the seat rosters are the thing that varies.
+fn parties_with(owners: IdentityPublic, gates: IdentityPublic) -> Parties {
+    Parties::new(
+        owners,
+        common::seats_for::<Owners>(&owners_spec()),
+        gates,
+        common::seats_for::<Gates>(&gates_spec()),
+    )
 }
 
 /// Re-endorse an existing seal under a different identity key.
@@ -154,7 +173,7 @@ fn one_process_can_produce_an_artifact_that_passes_every_structural_check() {
     // THE GAP. Audited against the impostor's OWN two keys -- which is exactly
     // the position of a funder that takes the keys out of the artifact, or of
     // an audit that has no keys at all -- every structural property holds.
-    let self_attested = Parties::new(fake_owners_key.public(), fake_gates_key.public());
+    let self_attested = parties_with(fake_owners_key.public(), fake_gates_key.public());
     let audited = audit(&artifact, &self_attested)
         .expect("the gap: one process satisfies every check about key material");
 
@@ -441,11 +460,16 @@ fn a_holders_proof_is_bound_to_the_counterparty_it_dealt_with() {
         &dealt_with,
         owners.claim.clone(),
         owner_pops.clone(),
+        owners.endorsements.clone(),
         owners.salt,
     )
     .expect("control: the owners' proofs verify under the composition they were made for");
-    let owner_reveal =
-        ComponentReveal::from_parts(owners.claim.clone(), owner_pops, owners.salt);
+    let owner_reveal = ComponentReveal::from_parts(
+        owners.claim.clone(),
+        owner_pops,
+        owners.endorsements.clone(),
+        owners.salt,
+    );
 
     // The gate shares have not proved yet, so they answer the re-attributed
     // composition -- which is what a colluding second organisation would do.
@@ -460,7 +484,7 @@ fn a_holders_proof_is_bound_to_the_counterparty_it_dealt_with() {
     assert_eq!(
         audit(
             &artifact,
-            &Parties::new(identity_of::<Owners>().public(), other_gate_org.public())
+            &parties_with(identity_of::<Owners>().public(), other_gate_org.public())
         )
         .unwrap_err(),
         CeremonyError::PopFailed {
@@ -503,6 +527,7 @@ fn one_nonce_does_not_answer_two_differently_attributed_compositions() {
         roster.clone(),
         secrets[0] * G, // any point; the nonce derivation does not check it
         secrets.iter().map(|s| s * G).collect(),
+        seat_keys_over::<Gates>(&roster),
     );
     let gate_seal = seal_and_sign::<Gates>(&ceremony, &claim, &[0x31; 32]);
 
@@ -571,7 +596,9 @@ fn the_audit_returns_the_rosters_and_thresholds_it_established() {
     // Non-vacuous: a 3-of-4 gate cohort is a different structure, and the
     // caller sees it without opening the artifact.
     let other = Honest::run(0xDECAF, &owners_spec(), &CohortSpec::<Gates>::sequential(3, 4));
-    let other_audited = audit(&other.artifact, &parties()).expect("audits");
+    // `Honest` carries the seats of its OWN run; this one has four gate seats,
+    // and the file's default names one seat that does not exist on it.
+    let other_audited = audit(&other.artifact, &other.parties).expect("audits");
     let (_, other_gates) = other_audited.structure();
     assert_ne!(other_gates, g);
     assert_eq!(other_gates.threshold(), 3);
@@ -673,7 +700,7 @@ fn one_organisation_named_for_both_cohorts_is_refused() {
     );
 
     assert_eq!(
-        audit(&artifact, &Parties::new(sole.public(), sole.public())).unwrap_err(),
+        audit(&artifact, &parties_with(sole.public(), sole.public())).unwrap_err(),
         CeremonyError::PartiesNotDistinct { key: sole.public() },
     );
 
@@ -683,7 +710,7 @@ fn one_organisation_named_for_both_cohorts_is_refused() {
     assert_eq!(
         audit(
             &artifact,
-            &Parties::new(sole.public(), identity_of::<Gates>().public()),
+            &parties_with(sole.public(), identity_of::<Gates>().public()),
         )
         .unwrap_err(),
         CeremonyError::CommitmentSignerUnexpected {
@@ -724,11 +751,11 @@ fn one_organisation_named_for_both_cohorts_is_refused() {
         CompositionArtifact::from_parts(sealed2, owners2.reveal(&sealed2), gates2.reveal(&sealed2));
 
     assert_eq!(
-        audit(&artifact2, &Parties::new(sole.public(), sole.public())).unwrap_err(),
+        audit(&artifact2, &parties_with(sole.public(), sole.public())).unwrap_err(),
         CeremonyError::PartiesNotDistinct { key: sole.public() },
         "the degenerate naming is refused before the artifact is read at all",
     );
-    let audited2 = audit(&artifact2, &Parties::new(sole.public(), other.public()))
+    let audited2 = audit(&artifact2, &parties_with(sole.public(), other.public()))
         .expect("the SAME artifact, named honestly: two distinct keys in one hand \
                  is the residual, and it still passes");
     assert_eq!(

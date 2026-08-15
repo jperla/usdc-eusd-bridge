@@ -24,11 +24,26 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     dkg::{run_dkg, CohortShare, CommitmentMessage, Committing, DkgError, ShareMessage},
-    subsets_of, CeremonyId, Cohort, CohortSpec, ControlDomain, Error, Gates, Owners,
+    subsets_of, CeremonyId, Cohort, CohortSpec, ControlDomain, Error, Gates, Owners, SeatRoster,
 };
+
+mod common;
 
 fn ceremony(seed: u8) -> CeremonyId {
     CeremonyId::new("dkg tests", &[seed; 32])
+}
+
+/// The seat roster a cohort of `n` runs under: the first `n` ids of the domain,
+/// each held by its own party.
+///
+/// Built from the DOMAIN rather than from the spec so that the malformed-spec
+/// rejection tests below can still pass a well-formed one. That is not a way
+/// round those tests: `Committing::begin` validates the participant roster
+/// before it compares the seats, so the error they assert is still the one they
+/// get, and `a_seat_roster_that_is_not_the_participant_roster_is_refused`
+/// covers the seat comparison on its own.
+fn seats<C: ControlDomain>(n: usize) -> SeatRoster<C> {
+    common::seats_over::<C>(&(0..n as u64).map(C::nth).collect::<Vec<_>>())
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +77,7 @@ fn run_with_substituted_commitments<C: ControlDomain>(
     let mut committing = Vec::new();
     let mut broadcast = HashMap::new();
     for &id in spec.ids() {
-        let (state, msg) = Committing::<C>::begin(ceremony, spec, id, &mut rng).expect("roster");
+        let (state, msg) = Committing::<C>::begin(ceremony, spec, &seats::<C>(spec.ids().len()), id, &mut rng).expect("roster");
         broadcast.insert(id, msg);
         committing.push((id, state));
     }
@@ -120,7 +135,7 @@ fn commitments_over_another_polynomial<C: ControlDomain>(
     seed: u64,
 ) -> CommitmentMessage {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    Committing::<C>::begin(ceremony, spec, dealer, &mut rng)
+    Committing::<C>::begin(ceremony, spec, &seats::<C>(spec.ids().len()), dealer, &mut rng)
         .expect("well-formed roster")
         .1
 }
@@ -136,7 +151,7 @@ fn commitments_over_another_polynomial<C: ControlDomain>(
 fn a_completed_dkg_gives_every_participant_a_share_of_one_key() {
     let spec = CohortSpec::<Owners>::sequential(2, 3);
     let mut rng = ChaCha20Rng::seed_from_u64(1);
-    let shares = run_dkg::<Owners, _>(&ceremony(1), &spec, &mut rng).expect("honest dkg");
+    let shares = run_dkg::<Owners, _>(&ceremony(1), &spec, &seats::<Owners>(spec.ids().len()), &mut rng).expect("honest dkg");
 
     assert_eq!(shares.len(), 3);
     let component = shares[0].key().component();
@@ -178,7 +193,7 @@ fn a_completed_dkg_gives_every_participant_a_share_of_one_key() {
 fn a_quorums_terms_sum_to_the_cohort_key() {
     let spec = CohortSpec::<Gates>::sequential(3, 5);
     let mut rng = ChaCha20Rng::seed_from_u64(2);
-    let shares = run_dkg::<Gates, _>(&ceremony(2), &spec, &mut rng).expect("honest dkg");
+    let shares = run_dkg::<Gates, _>(&ceremony(2), &spec, &seats::<Gates>(spec.ids().len()), &mut rng).expect("honest dkg");
     let component = shares[0].key().component();
 
     for quorum in subsets_of(spec.ids(), 3) {
@@ -201,7 +216,7 @@ fn a_quorums_terms_sum_to_the_cohort_key() {
 fn a_below_threshold_subset_has_no_term() {
     let spec = CohortSpec::<Gates>::sequential(3, 5);
     let mut rng = ChaCha20Rng::seed_from_u64(3);
-    let shares = run_dkg::<Gates, _>(&ceremony(3), &spec, &mut rng).expect("honest dkg");
+    let shares = run_dkg::<Gates, _>(&ceremony(3), &spec, &seats::<Gates>(spec.ids().len()), &mut rng).expect("honest dkg");
 
     let short = vec![Gates::nth(0), Gates::nth(1)];
     let err = shares[0].term(&short).unwrap_err();
@@ -221,7 +236,7 @@ fn a_below_threshold_subset_has_no_term() {
 fn a_participant_outside_the_quorum_has_no_term() {
     let spec = CohortSpec::<Owners>::sequential(2, 3);
     let mut rng = ChaCha20Rng::seed_from_u64(4);
-    let shares = run_dkg::<Owners, _>(&ceremony(4), &spec, &mut rng).expect("honest dkg");
+    let shares = run_dkg::<Owners, _>(&ceremony(4), &spec, &seats::<Owners>(spec.ids().len()), &mut rng).expect("honest dkg");
 
     let quorum = vec![Owners::nth(0), Owners::nth(1)];
     let outsider = shares.iter().find(|s| s.id() == Owners::nth(2)).unwrap();
@@ -338,7 +353,7 @@ fn commitments_from_another_ceremony_are_refused_and_name_the_dealer() {
     let mut broadcast = HashMap::new();
     let mut mine = None;
     for &id in spec.ids() {
-        let (state, msg) = Committing::<Owners>::begin(&here, &spec, id, &mut rng).expect("roster");
+        let (state, msg) = Committing::<Owners>::begin(&here, &spec, &seats::<Owners>(spec.ids().len()), id, &mut rng).expect("roster");
         broadcast.insert(id, msg);
         if id == victim {
             mine = Some(state);
@@ -363,7 +378,7 @@ fn commitments_from_another_ceremony_are_refused_and_name_the_dealer() {
     );
 
     let (again, _) =
-        Committing::<Owners>::begin(&here, &spec, victim, &mut honest_rng).expect("roster");
+        Committing::<Owners>::begin(&here, &spec, &seats::<Owners>(spec.ids().len()), victim, &mut honest_rng).expect("roster");
     assert!(
         again.deal(&mut honest_rng, &honest_broadcast).is_ok(),
         "the same round with the honest message is accepted"
@@ -381,7 +396,7 @@ fn a_missing_message_names_the_participant() {
     let mut broadcast = HashMap::new();
     let mut mine = None;
     for &id in spec.ids() {
-        let (state, msg) = Committing::<Owners>::begin(&cid, &spec, id, &mut rng).expect("roster");
+        let (state, msg) = Committing::<Owners>::begin(&cid, &spec, &seats::<Owners>(spec.ids().len()), id, &mut rng).expect("roster");
         broadcast.insert(id, msg);
         if id == Owners::nth(0) {
             mine = Some(state);
@@ -411,7 +426,7 @@ fn a_missing_message_names_the_participant() {
 fn an_id_from_the_wrong_domain_is_refused_before_any_key_exists() {
     let spec = CohortSpec::<Owners>::with_ids(2, &[Owners::nth(0), Gates::nth(0), Owners::nth(1)]);
     let mut rng = ChaCha20Rng::seed_from_u64(9);
-    let err = run_dkg::<Owners, _>(&ceremony(9), &spec, &mut rng).unwrap_err();
+    let err = run_dkg::<Owners, _>(&ceremony(9), &spec, &seats::<Owners>(spec.ids().len()), &mut rng).unwrap_err();
     assert!(
         matches!(
             &err,
@@ -432,7 +447,7 @@ fn a_non_canonical_roster_order_is_refused() {
     let spec = CohortSpec::<Owners>::with_ids(2, &[Owners::nth(2), Owners::nth(0), Owners::nth(1)]);
     let mut rng = ChaCha20Rng::seed_from_u64(10);
     assert_eq!(
-        run_dkg::<Owners, _>(&ceremony(10), &spec, &mut rng).unwrap_err(),
+        run_dkg::<Owners, _>(&ceremony(10), &spec, &seats::<Owners>(spec.ids().len()), &mut rng).unwrap_err(),
         DkgError::RosterNotCanonical {
             cohort: "owners",
             roster: vec![Owners::nth(2), Owners::nth(0), Owners::nth(1)],
@@ -442,6 +457,7 @@ fn a_non_canonical_roster_order_is_refused() {
     assert!(run_dkg::<Owners, _>(
         &ceremony(10),
         &CohortSpec::<Owners>::sequential(2, 3),
+        &seats::<Owners>(3),
         &mut rng
     )
     .is_ok());
@@ -452,14 +468,14 @@ fn a_non_canonical_roster_order_is_refused() {
 fn degenerate_thresholds_are_refused() {
     let mut rng = ChaCha20Rng::seed_from_u64(11);
     assert!(matches!(
-        run_dkg::<Owners, _>(&ceremony(11), &CohortSpec::sequential(4, 3), &mut rng).unwrap_err(),
+        run_dkg::<Owners, _>(&ceremony(11), &CohortSpec::sequential(4, 3), &seats::<Owners>(3), &mut rng).unwrap_err(),
         DkgError::Roster {
             source: Error::ThresholdExceedsRoster { .. },
             ..
         }
     ));
     assert!(matches!(
-        run_dkg::<Owners, _>(&ceremony(11), &CohortSpec::sequential(0, 3), &mut rng).unwrap_err(),
+        run_dkg::<Owners, _>(&ceremony(11), &CohortSpec::sequential(0, 3), &seats::<Owners>(3), &mut rng).unwrap_err(),
         DkgError::Roster {
             source: Error::ThresholdZero,
             ..
@@ -481,7 +497,7 @@ fn degenerate_thresholds_are_refused() {
 fn a_dkg_cohort_cannot_be_asked_for_a_secret_and_a_dealt_one_can() {
     let spec = CohortSpec::<Owners>::sequential(2, 3);
     let mut rng = ChaCha20Rng::seed_from_u64(12);
-    let shares = run_dkg::<Owners, _>(&ceremony(12), &spec, &mut rng).expect("honest dkg");
+    let shares = run_dkg::<Owners, _>(&ceremony(12), &spec, &seats::<Owners>(spec.ids().len()), &mut rng).expect("honest dkg");
     let cohort = shares[0].key().cohort();
     let quorum = vec![Owners::nth(0), Owners::nth(1)];
 

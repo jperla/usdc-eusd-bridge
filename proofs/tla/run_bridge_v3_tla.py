@@ -17,6 +17,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+# This runner predates the shared harness and parses TLC itself. It borrows the
+# two pieces that decide whether a run may be BELIEVED, so the fail-closed rule
+# lives in one place even though the parsing does not.
+from tlc_harness import TRACE_VIOLATION_RC, fatal
+
 
 HERE = Path(__file__).resolve().parent
 MODEL = HERE / "BridgeEscrowV3.tla"
@@ -134,16 +139,37 @@ def assert_clean_pass(label: str, result: subprocess.CompletedProcess[str]) -> t
     if result.returncode != 0 or "Model checking completed. No error has been found." not in result.stdout:
         print(result.stdout, file=sys.stderr)
         raise AssertionError(f"{label} did not pass cleanly (exit {result.returncode})")
+    crash = fatal(result.stdout)
+    if crash:
+        print(result.stdout, file=sys.stderr)
+        raise AssertionError(f"{label} reported completion and then TLC failed: {crash}")
     return parse_counts(result.stdout)
 
 
 def assert_named_violation(case: ExpectedViolation, result: subprocess.CompletedProcess[str]) -> tuple[int, int, int]:
+    """The mutation oracle. A violation here is the DESIRED result, which is
+    exactly why it has to be fail-closed.
+
+    Review supplied the marker, complete state/depth counts, a later exception
+    and `rc=17`, and this function accepted it -- the same defect
+    `tlc_harness.classify` had, in this runner's own copy of the parsing. Any
+    nonzero code counted as a violation, and nothing looked past the marker. The
+    code is now pinned to TLC's safety-violation code and the output is scanned
+    for a crash that arrived afterwards.
+    """
     expected = f"Invariant {case.invariant} is violated."
-    if result.returncode == 0 or expected not in result.stdout:
+    if result.returncode != TRACE_VIOLATION_RC or expected not in result.stdout:
         print(result.stdout, file=sys.stderr)
         raise AssertionError(
             f"{case.name} did not produce the named oracle {case.invariant} "
-            f"(exit {result.returncode})"
+            f"(exit {result.returncode}, expected {TRACE_VIOLATION_RC})"
+        )
+    crash = fatal(result.stdout)
+    if crash:
+        print(result.stdout, file=sys.stderr)
+        raise AssertionError(
+            f"{case.name} reported {case.invariant} violated and then TLC "
+            f"failed: {crash} -- the run establishes nothing"
         )
     return parse_counts(result.stdout)
 

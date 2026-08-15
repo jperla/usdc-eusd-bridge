@@ -24,13 +24,14 @@ use rand_core::SeedableRng;
 use two_cohort::{
     audit, audit_address,
     ceremony::{
-        draw_salt, ComponentClaim, ComponentCommitment, ComponentReveal, Parties,
-        SealedComposition, SignedCommitment,
+        draw_salt, seat_endorsement_message, ComponentClaim, ComponentCommitment, ComponentReveal,
+        Parties, SealedComposition, SeatRoster, SignedCommitment,
     },
+    identity::{IdentityKey, IdentityPublic, IdentitySignature},
     derive::subaddress_offset,
     production::{
         self, authorize_release, check_decided_structure, deposit_spend_key, ReleaseRefused,
-        COMPROMISE_THRESHOLD, GATE_THRESHOLD, OWNER_THRESHOLD,
+        COMPROMISE_THRESHOLD, GATE_THRESHOLD, OWNER_COUNT, OWNER_THRESHOLD,
     },
     CeremonyError, CeremonyId, Cohort, CohortSpec, CompositeSpend, CompositionArtifact,
     ControlDomain, Error, Gates, Owners, Pop, Provenance,
@@ -46,6 +47,57 @@ fn decided_gates() -> CohortSpec<Gates> {
 
 fn decided_ceremony(seed: u64) -> Honest {
     Honest::run(seed, &decided_owners(), &decided_gates())
+}
+
+/// A `Parties` naming the two real organisations, the decided gate seat, and
+/// whatever OWNER seat keys the caller says a funder collected.
+///
+/// The owner seats are the parameter because they are what these attacks vary:
+/// everything else about the decided structure is held fixed so that a refusal
+/// is attributable to the seat attribution and not to a shape nobody decided.
+fn parties_naming_owner_seats(owner_seats: &[(u64, IdentityPublic)]) -> Parties {
+    Parties::new(
+        identity_of::<Owners>().public(),
+        SeatRoster::<Owners>::new(owner_seats.iter().copied()).expect("decided owner ids"),
+        identity_of::<Gates>().public(),
+        common::seats_for::<Gates>(&decided_gates()),
+    )
+}
+
+/// Three long-term identity keys the DEALER holds, one per owner seat.
+///
+/// Distinct keys, because two seats sharing one is refused by
+/// `CeremonyError::SeatKeysNotDistinct` and that is a different finding. These
+/// are what a dealer writes into its claim when it has to name somebody for
+/// each seat and the only somebody it can sign as is itself.
+fn dealer_owner_seat_keys(tag: u8) -> Vec<IdentityKey> {
+    (0..OWNER_COUNT as u8)
+        .map(|k| IdentityKey::from_seed(&[tag.wrapping_add(k); 32]))
+        .collect()
+}
+
+/// Each seat's endorsement, signed with `keys[k]` for roster position `k`.
+///
+/// It signs the endorsement MESSAGE directly rather than going through
+/// `endorse_seat`, because an attacker does not use the checked entry point:
+/// `endorse_seat` refuses to sign a seat the claim attributes to somebody else
+/// (`SeatKeyNotOwn`), which is the honest holder's protection and not a
+/// containment boundary. Whoever holds a private key can sign these bytes, so a
+/// test that could not do the same would be testing the wrong thing.
+fn endorsements_by(
+    ceremony: &CeremonyId,
+    claim: &ComponentClaim,
+    keys: &[IdentityKey],
+) -> BTreeMap<u64, IdentitySignature> {
+    claim
+        .roster()
+        .iter()
+        .enumerate()
+        .map(|(k, &id)| {
+            let msg = seat_endorsement_message(ceremony, claim, id).expect("id is on the roster");
+            (id, keys[k].sign(&msg))
+        })
+        .collect()
 }
 
 /// The three view-side values a deployment supplies, drawn once per attack so
@@ -279,7 +331,9 @@ fn the_two_cohorts_halves_cannot_be_swapped() {
             &a.artifact,
             &Parties::new(
                 identity_of::<Gates>().public(),
-                identity_of::<Owners>().public()
+                common::seats_for::<Owners>(&decided_owners()),
+                identity_of::<Owners>().public(),
+                common::seats_for::<Gates>(&decided_gates()),
             )
         )
         .unwrap_err(),
@@ -350,7 +404,21 @@ fn a_threshold_overstated_up_to_the_decided_one_is_refused_by_the_audit() {
         .collect();
 
     // ...published as 2-of-3, which is the decided threshold.
-    let claim = ComponentClaim::from_parts(Owners::NAME, 2, ids.clone(), b_owner * G, shares);
+    //
+    // The three seats are attributed to three keys the dealer holds, and the
+    // funder below is given those same three keys. That is deliberate: this
+    // test is about the THRESHOLD arm, so every other arm is made to pass. The
+    // seat arm is what `a_dealt_owner_cohort_is_refused_at_the_seat_attribution`
+    // is about, and it is a separate finding.
+    let seat_keys = dealer_owner_seat_keys(0x60);
+    let claim = ComponentClaim::from_parts(
+        Owners::NAME,
+        2,
+        ids.clone(),
+        b_owner * G,
+        shares,
+        seat_keys.iter().map(|k| k.public()).collect(),
+    );
     let salt = draw_salt(&mut rng);
     let signed = SignedCommitment::create(
         &ceremony,
@@ -370,11 +438,17 @@ fn a_threshold_overstated_up_to_the_decided_one_is_refused_by_the_audit() {
             )
         })
         .collect();
-    let reveal = ComponentReveal::from_parts(claim, pops, salt);
+    let endorsements = endorsements_by(&ceremony, &claim, &seat_keys);
+    let named: Vec<(u64, IdentityPublic)> = ids
+        .iter()
+        .zip(&seat_keys)
+        .map(|(&id, k)| (id, k.public()))
+        .collect();
+    let reveal = ComponentReveal::from_parts(claim, pops, endorsements, salt);
     let forged = CompositionArtifact::from_parts(sealed, reveal, gates.reveal(&sealed));
 
     assert_eq!(
-        audit(&forged, &parties()).unwrap_err(),
+        audit(&forged, &parties_naming_owner_seats(&named)).unwrap_err(),
         CeremonyError::ThresholdOverstated {
             cohort: Owners::NAME,
             threshold: 2,
@@ -421,51 +495,64 @@ fn the_constructors_that_are_not_the_ceremony_are_refused_at_the_decided_shape()
 }
 
 // ---------------------------------------------------------------------------
-// 5. THE FORGERY THAT PASSES.
+// 5. THE FORGERY THAT USED TO PASS.
 // ---------------------------------------------------------------------------
 
-/// **The attack that works, and it steals nothing.**
+/// **The attack that no longer works, performed both ways round.**
 ///
 /// The operator organisation runs no DKG. It picks `b_owner`, deals three shares
 /// of it to itself at 2-of-3 over the decided roster, and endorses the result
-/// with its OWN identity key -- the key a funder obtained from it, used
-/// honestly, by its rightful holder. The gate side is a genuine independent
-/// party running a real DKG under its own key.
+/// with its OWN identity key -- the key a funder obtained from it, used honestly,
+/// by its rightful holder. The gate side is a genuine independent party running
+/// a real DKG under its own key.
 ///
-/// Every check in the deployment path returns `Ok`:
+/// Until per-seat identity existed this reached `deposit_spend_key` and the
+/// address was published, after which TWO principals -- the dealing organisation
+/// and the single gate -- opened an output paid to it, against a decided
+/// [`COMPROMISE_THRESHOLD`] of three. That is the whole reason the claim now
+/// names a key per seat.
 ///
-/// ```text
-///   audit_address(artifact, parties, a, i, D)   -> AuditedAddress
-///   check_decided_structure(address.root())     -> Ok         (funder's half)
-///   CompositeSpend::from_ceremony(..)           -> Provenance::Ceremony
-///   authorize_release(spend, parties)           -> ReleaseAuthorization
-///   deposit_spend_key(auth)                     -> the published address
-/// ```
+/// Nothing about the ATTACK has been made impossible, and the first block below
+/// says so in arithmetic: the dealer still holds `b_owner`, the claim is still
+/// well-formed, every proof of possession is still genuine because the dealer
+/// really does know every share. What changed is that a claim must now say WHO
+/// holds each seat, and the dealer has only two things it can write there. Both
+/// are performed:
 ///
-/// and the address is published. The artifact reports three operator seats at a
-/// threshold of two, which is exactly what [`production`] decided.
+///   * **its own keys**, which is what it can sign for -- refused as
+///     [`CeremonyError::SeatUnexpected`], because the funder obtained a
+///     different key from the party it believes holds that seat;
+///   * **the real seat-holders' keys**, which are public and so free to copy --
+///     refused as [`CeremonyError::SeatEndorsementInvalid`], because the dealer
+///     cannot sign as them.
 ///
-/// The harm is the last block. `production`'s
-/// [`COMPROMISE_THRESHOLD`] is 3 and its module docs say four entities, three of
-/// which must be compromised before funds can move. Here the one-time key for an
-/// output paid to the published address falls out of TWO principals: the
-/// operator organisation, which never gave up `b_owner`, and the single gate.
-/// The three operator seats are one entity wearing three ids, and no byte of the
-/// artifact distinguishes that from three organisations that ran a DKG -- there
-/// is one identity key for the whole cohort, so there is nothing in the
-/// attribution layer that could.
+/// **An earlier version of this doc said those were the only two options and
+/// that there was "no third". That is FALSE and an adversarial review found it.**
+/// There is a third mounting and it PASSES: write the real seat-holders' keys,
+/// and obtain from each of those parties a genuine signature over
+/// `seat_endorsement_message`, which is public bytes revealing no secret and
+/// costing the signer nothing -- while the dealer keeps every share and makes
+/// every proof of possession itself. Nothing in the artifact binds the party
+/// that signed to the party that holds a share.
+/// `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
+/// performs it. What the two variants below establish is that a dealer which
+/// obtains NO such signature is refused, at a named step, either way it tries.
 ///
-/// **Two qualifications, so the exhibit is not read as more than it is.** The
-/// dealt seats' proofs are made with `Pop::prove_unchecked` rather than
-/// `CohortShare::prove`: a dealer holds a `Cohort`, not a `CohortShare`, which
-/// only a confirmed DKG produces. Gating the raw prover therefore does not close
-/// this -- it costs the dealer a feature flag, and a dealer writing its own
-/// Schnorr proof pays nothing at all. And "two principals" and "an independent
-/// gate" are MODELLED roles: this test runs in one process holding both identity
-/// keys and every share. What is performed here is the artifact's inability to
-/// tell the cases apart, not a claim about who ran what.
+/// Mixed vectors exist too -- `[real, real, dealer]` clears two comparisons
+/// before failing on the third -- and are the same two refusals seat by seat.
+///
+/// **The qualifications from the original exhibit still hold**, and one is
+/// added. The dealt seats' proofs are made with `Pop::prove_unchecked` rather
+/// than `CohortShare::prove`, because a dealer holds a `Cohort` and not a
+/// `CohortShare`; gating the raw prover does not close this and never did. This
+/// test runs in one process holding every key, so "the real seat-holders" is a
+/// MODELLED role. And what is established below is that the bar moved from two
+/// keys to four -- NOT that four keys are four organisations. A dealer that
+/// persuaded three real parties to hand over their seat keys, or that dealt
+/// shares to three real parties while keeping copies, produces an artifact that
+/// still audits. See the module docs of `two_cohort::ceremony`.
 #[test]
-fn a_dealt_owner_cohort_passes_the_audit_and_the_release_gate() {
+fn a_dealt_owner_cohort_is_refused_at_the_seat_attribution() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x12C);
     let ceremony = CeremonyId::draw("two-cohort eUSD release address", &mut rng);
     let ids = decided_owners().ids().to_vec();
@@ -474,90 +561,173 @@ fn a_dealt_owner_cohort_passes_the_audit_and_the_release_gate() {
     let b_owner = Scalar::random(&mut rng);
     let dealt =
         Cohort::deal_in::<Owners, _>(&b_owner, OWNER_THRESHOLD, &ids, &mut rng).expect("dealt");
+    let verification: Vec<RistrettoPoint> = ids
+        .iter()
+        .map(|&id| dealt.verification_share(id).expect("on the roster"))
+        .collect();
+
+    // Each variant below gets its OWN gate cohort, drawn inside `mount`. It has
+    // to: each variant seals a different owner half, so the two compositions
+    // differ, and a share answers exactly one sealed composition. (An earlier
+    // comment here claimed one gate cohort was generated and shared by both,
+    // which the code never did -- review caught the discrepancy.)
+    //
+    // ---- variant A: the dealer names ITSELF at every seat ----
+    let own_keys = dealer_owner_seat_keys(0x70);
+    let a = mount(
+        &mut rng,
+        &ceremony,
+        &ids,
+        &b_owner,
+        &dealt,
+        &verification,
+        own_keys.iter().map(|k| k.public()).collect(),
+        |c, claim| endorsements_by(c, claim, &own_keys),
+    );
+
+    // THE HARM IS STILL THERE, and it is stated before the refusal so that the
+    // refusal is read as the thing that stops it. The dealer holds the discrete
+    // log of the whole owner component, which no member of an honest 2-of-3
+    // cohort does.
+    assert_eq!(a.artifact.owners().component(), b_owner * G);
+
+    // A funder that holds the keys of the three REAL seat-holders refuses it,
+    // naming the first seat and both keys, so a human knows who to go and talk
+    // to.
+    let honest_seats = common::seats_for::<Owners>(&decided_owners());
+    assert_eq!(
+        audit(&a.artifact, &parties()).unwrap_err(),
+        CeremonyError::SeatUnexpected {
+            cohort: Owners::NAME,
+            participant: ids[0],
+            expected: honest_seats.key_of(ids[0]).expect("decided seat"),
+            found: own_keys[0].public(),
+        },
+    );
+    // ...and the whole deployment path refuses it at the same step, so this is
+    // not an audit-only refusal that a funding path could walk past.
+    let deposit = Deposit::to(a.artifact.declared_root(), &mut rng);
+    let refused = deployment_publishes(&a.artifact, &parties(), &deposit)
+        .expect_err("the dealt cohort must not reach the published address");
+    assert_eq!(
+        refused.downcast_ref::<CeremonyError>(),
+        Some(&CeremonyError::SeatUnexpected {
+            cohort: Owners::NAME,
+            participant: ids[0],
+            expected: honest_seats.key_of(ids[0]).expect("decided seat"),
+            found: own_keys[0].public(),
+        }),
+        "the deployment path stops at `audit_address`, before any spend exists",
+    );
+
+    // ---- variant B: the dealer names the REAL seat-holders ----
+    // Their public keys are public. Copying them is free, and it gets the
+    // dealer past the comparison variant A failed -- and no further, because
+    // the endorsement is checked under the key the FUNDER supplied.
+    let b = mount(
+        &mut rng,
+        &ceremony,
+        &ids,
+        &b_owner,
+        &dealt,
+        &verification,
+        ids.iter()
+            .map(|&id| honest_seats.key_of(id).expect("decided seat"))
+            .collect(),
+        // Signed with the keys the dealer actually has. It has no others.
+        |c, claim| endorsements_by(c, claim, &own_keys),
+    );
+    assert_eq!(
+        b.artifact.owners().seat_keys(),
+        ids.iter()
+            .map(|&id| honest_seats.key_of(id).expect("decided seat"))
+            .collect::<Vec<_>>(),
+        "control: the claim really does name the real seat-holders, so the \
+         comparison variant A failed is passed here",
+    );
+    assert_eq!(
+        audit(&b.artifact, &parties()).unwrap_err(),
+        CeremonyError::SeatEndorsementInvalid {
+            cohort: Owners::NAME,
+            participant: ids[0],
+            signer: honest_seats.key_of(ids[0]).expect("decided seat"),
+        },
+        "copying a public key is not holding it",
+    );
+
+    // The control that makes both refusals mean something: the SAME funder
+    // keys, over an honest ceremony at the same shape, still reach the
+    // published address. Without it these would be evidence that the path
+    // refuses things, not that it distinguishes them.
+    let h = decided_ceremony(0x12D);
+    let honest_deposit = Deposit::to(h.artifact.declared_root(), &mut rng);
+    let (_, published) = deployment_publishes(&h.artifact, &parties(), &honest_deposit)
+        .expect("an honest ceremony at the decided shape still publishes");
+    assert_eq!(published, honest_deposit.spend_public);
+    assert_eq!(COMPROMISE_THRESHOLD, 3);
+}
+
+/// One mounting of the dealt-owner forgery: everything but WHO the claim names
+/// and who signs for them.
+///
+/// Both variants above differ in exactly those two inputs, so they are
+/// parameters and the rest of the attack is one piece of code. A per-variant
+/// copy could be quietly weakened per variant, which is the mistake this file's
+/// `deployment_publishes` already exists to avoid one level up.
+struct Mounted {
+    artifact: CompositionArtifact,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mount(
+    rng: &mut ChaCha20Rng,
+    ceremony: &CeremonyId,
+    ids: &[u64],
+    b_owner: &Scalar,
+    dealt: &Cohort,
+    verification: &[RistrettoPoint],
+    seat_keys: Vec<IdentityPublic>,
+    endorse: impl Fn(&CeremonyId, &ComponentClaim) -> BTreeMap<u64, IdentitySignature>,
+) -> Mounted {
     let claim = ComponentClaim::from_parts(
         Owners::NAME,
         OWNER_THRESHOLD,
-        ids.clone(),
+        ids.to_vec(),
         b_owner * G,
-        ids.iter()
-            .map(|&id| dealt.verification_share(id).expect("on the roster"))
-            .collect(),
+        verification.to_vec(),
+        seat_keys,
     );
-    let salt = draw_salt(&mut rng);
+    let salt = draw_salt(rng);
     let signed = SignedCommitment::create(
-        &ceremony,
-        ComponentCommitment::seal(&ceremony, &claim, &salt),
-        // Its own key. Nothing is stolen and nothing is impersonated.
+        ceremony,
+        ComponentCommitment::seal(ceremony, &claim, &salt),
+        // Its own organisation key. Nothing is stolen and nothing is
+        // impersonated at the COHORT level, which is exactly the point: that
+        // level was never the one the security argument counted.
         &identity_of::<Owners>(),
     );
+    let gates = CohortSide::<Gates>::generate(ceremony, &decided_gates(), rng);
+    let sealed = SealedComposition::new(*ceremony, signed, gates.commitment).expect("well-formed");
 
-    // ---- the gate: a genuine independent party, real DKG, own key ----
-    let gates = CohortSide::<Gates>::generate(&ceremony, &decided_gates(), &mut rng);
-
-    let sealed = SealedComposition::new(ceremony, signed, gates.commitment).expect("well-formed");
+    // Every proof of possession is genuine: the dealer knows every share.
     let pops: BTreeMap<u64, Pop> = ids
         .iter()
         .map(|&id| {
             (
                 id,
-                Pop::prove_unchecked(&sealed, &claim, id, &dealt.share(id).expect("dealt")).expect("holds it"),
+                Pop::prove_unchecked(&sealed, &claim, id, &dealt.share(id).expect("dealt"))
+                    .expect("holds it"),
             )
         })
         .collect();
-    let forged = CompositionArtifact::from_parts(
-        sealed,
-        ComponentReveal::assemble(&sealed, claim, pops, salt).expect("its own proofs verify"),
-        gates.reveal(&sealed),
-    );
-
-    // ---- the whole deployment path accepts it ----
-    let deposit = Deposit::to(forged.declared_root(), &mut rng);
-    let (spend, published) = deployment_publishes(&forged, &parties(), &deposit)
-        .expect("this is the finding: nothing in the path refuses it");
-    assert_eq!(published, deposit.spend_public);
-    assert!(matches!(spend.provenance(), Provenance::Ceremony(_)));
-    assert_eq!(spend.endorsers(), Some(parties()));
-
-    // ...and reports the decided structure to the funder.
-    let audited = audit(&forged, &parties()).expect("audits");
-    let (o, g) = audited.structure();
-    assert_eq!((o.roster(), o.threshold()), (&ids[..], OWNER_THRESHOLD));
-    assert_eq!((g.roster(), g.threshold()), (decided_gates().ids(), GATE_THRESHOLD));
-    assert_eq!(o.identity(), &identity_of::<Owners>().public());
-    assert_eq!(g.identity(), &identity_of::<Gates>().public());
-
-    // The crate's own "is this a ceremony key" signal says yes, in the strongest
-    // form it has: the spend holds no shares, so it cannot form the scalar.
-    assert!(matches!(
-        spend.onetime(&[Owners::nth(0), Owners::nth(1)], &[Gates::nth(0)]),
-        Err(Error::InCohort { .. }) | Err(Error::SharesNotHeld),
-    ));
-
-    // ---- THE HARM ----
-    // Two principals, not three. The operator organisation kept `b_owner`; the
-    // gate is one seat at 1-of-1, so it holds `b_gate` outright.
-    assert_eq!(
-        b_owner * G,
-        o.component(),
-        "the operator organisation holds the discrete log of the whole owner \
-         component, which no member of an honest 2-of-3 cohort does",
-    );
-    let gate_seat = Gates::nth(0);
-    let b_gate = *gates
-        .share_of(gate_seat)
-        .term(&[gate_seat])
-        .expect("the gate is its own quorum")
-        .weight();
-
-    let x = *spend.common() + b_owner + b_gate;
-    assert_eq!(
-        x * G,
-        *spend.target().as_ref(),
-        "the operator organisation and the gate -- TWO principals -- open an \
-         output paid to the published address, against production's decided \
-         COMPROMISE_THRESHOLD of {COMPROMISE_THRESHOLD}",
-    );
-    assert_eq!(COMPROMISE_THRESHOLD, 3);
+    let endorsements = endorse(ceremony, &claim);
+    Mounted {
+        artifact: CompositionArtifact::from_parts(
+            sealed,
+            ComponentReveal::from_parts(claim, pops, endorsements, salt),
+            gates.reveal(&sealed),
+        ),
+    }
 }
 
 /// **The known residual, carried through to the release gate.**

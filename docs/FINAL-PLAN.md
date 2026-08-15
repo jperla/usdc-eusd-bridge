@@ -2,12 +2,13 @@
 
 **Status.** The strategy and design are settled and have been through sustained adversarial
 review. Four of six components can start now. Two are behind the architecture gate, which
-**remains shut** — see §2a. The two-cohort spike of §5 is no longer the thing standing in
-the way: real per-cohort DKGs, an identity-attributed composition ceremony, a third-party
-audit and a release gate that refuses a simulated or undecided root all exist and are
-tested. What is still missing is *per-seat* attribution, without which the artifact cannot
-tell three operator organisations from one organisation holding three seats. One
-recommendation is out for review and is marked as such.
+**remains shut** — see §2a. **Per-seat attribution has landed**: `ComponentClaim` carries one
+identity key per seat, sealed by the commitment and welded into every proof transcript,
+`Parties` carries a per-seat roster, and the release gate compares both rosters. The artifact
+can now distinguish three operator organisations from one organisation holding three seats
+*by key*. The gate stays shut on a narrower and newly-named finding: nothing binds the party
+that **signs** for a seat to the party that **holds a share** behind it, and unlike the other
+residuals that one is buildable. One recommendation is out for review and is marked as such.
 
 ---
 
@@ -31,8 +32,17 @@ verify Ethereum. So the return leg is cryptographically verified and the deposit
 
 ## 2. The access structure — DECIDED
 
-**Decided: 3 operators (2-of-3) AND 1 independent gate. Four entities, and an
-attacker must compromise three of them.**
+**Decided: 3 operators (2-of-3) AND 1 independent gate. Four SEATS, and three of
+them must be compromised before funds can move.**
+
+*Seats*, and the word is load-bearing. `T = 3` is a statement about coalitions of
+seats. Reading it as three *entities* needs three premises no artifact carries:
+that the four seats are four independent principals; that nobody kept a copy of a
+seat's share; and that the party which signed for a seat holds a share behind it.
+`proofs/tla/AttributionCoverage.tla` runs each as a switch and each one alone
+drops the minimum coalition below three, with the artifact unchanged and every
+check passing. `crates/two-cohort/src/production.rs` states the same three at the
+top of the module.
 
 Machine-checked in `proofs/tla/AccessStructure.tla`, which proves
 `T = max(k, g, k+g−r)` is both a lower bound and achievable, where `r` is the
@@ -111,7 +121,7 @@ regardless.
 
 ---
 
-## 2a. The architecture gate — STILL SHUT, and precisely why
+## 2a. The architecture gate — STILL SHUT, on a narrower finding than before
 
 The gate was shut on this finding, from an earlier review:
 
@@ -129,34 +139,77 @@ decided constants, and refuses a ceremony audited under organisations the
 deployment does not name. A checked default proving entry point on the type a
 holder actually has. A refusal when a funder names one organisation for both
 cohorts. And the declared threshold now means minimum coalition size rather than
-polynomial degree — a real defect, found by review this round and performed
-before it was fixed.
+polynomial degree — a real defect, found by review and performed before it was
+fixed.
 
-**Not closed, and this is what keeps the gate shut.** *The artifact carries no
-per-seat identity.* `audit` is told one identity key per **cohort**, while the
-decided structure's security argument is per **seat**. An operator organisation
-that runs no DKG, deals all three shares to itself and endorses the seal with
-its own genuine key produces an artifact that audits, passes `authorize_release`
-and reaches a published deposit address — after which **two** principals open an
-output paid there, against a decided compromise threshold of **three**. This is
-performed, end to end, in
-`crates/two-cohort/tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`.
+**Closed this round: per-seat attribution, which §5 named as the critical path.**
+It landed in full.
 
-**Is it buildable here?** Partly, and the honest split matters:
+* `ComponentClaim` carries a `seat_keys` vector parallel to its roster. The same
+  code path that absorbs the claim seals those keys under the commitment digest
+  *and* welds them into every composition proof-of-possession challenge and its
+  deterministic nonce preamble — one function, so there is no third site to
+  forget.
+* `Parties` takes a `SeatRoster<Owners>` and a `SeatRoster<Gates>` beside the two
+  organisation keys — six inputs at the decided shape, not two. The rosters are
+  domain-typed, so a cohort transposition is a compile error.
+* `audit` refuses a seat the funder did not name, a seat key that is not the
+  funder's, a seat endorsement that does not verify **under the funder's key**,
+  and any two seats across both cohorts named with one key.
+* `authorize_release` compares both seat rosters against the ones the audit ran
+  under, so `deposit_spend_key` is unreachable with cohort-level attribution
+  alone.
+* The forgery that shut the gate is now inverted:
+  `crates/two-cohort/tests/forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`
+  refuses it at `audit_address`, before any spend exists, in both the ways a
+  dealer holding no seat signatures can mount it.
 
-* **Buildable.** Putting a per-seat identity key into `ComponentClaim` — sealed
-  by the commitment and named in every proof-of-possession transcript — and a
-  per-seat roster of keys into `Parties`, so each seat must authenticate its own
-  claim. `crates/ceremony/src/machine.rs` already keeps a
-  `ParticipantId → IdentityPublic` map for identifiable abort; it does not reach
-  `CompositionArtifact`. That raises the funder's check from 2 keys to 4, above
-  the compromise threshold of 3. It is a real change to a shared file and to
-  every test that constructs a claim, and it was **not** attempted this round.
+**What that bought, stated as a count and nothing more.** The funder's check went
+from 2 attribution slots to 4, above the compromise threshold of 3; and a
+dealt-owner forgery at the decided shape must now collect **four** distinct
+signatures instead of one — the owner organisation's plus one from each of the
+three operator seats. It did **not** turn four keys into four entities, and
+`proofs/tla/AttributionCoverage.tla` is written so that the difference is
+executed rather than asserted: the slot count is clean in four separate
+configurations where the security guarantee is being violated.
+
+**Not closed, and this is what keeps the gate shut now.** *Nothing binds the
+party that **signs** for a seat to the party that **holds a share** behind it.*
+`ceremony::endorse_seat` is a public function taking a claim and an identity key;
+it checks only that the claim names that key for that seat, and consults no
+share. `dkg::CohortShare::endorse` is the checked counterpart and refuses — but a
+seat-holder whose long-term key lives away from its share, which is the ordinary
+arrangement for a long-term key, has only the unchecked one available, and the
+artifact records which was used nowhere. So three parties that ran a real DKG and
+hold real shares can endorse a **substituted** dealing, and the artifact audits,
+passes `authorize_release`, reaches `deposit_spend_key`, and is then opened by
+**two** principals against a decided threshold of **three**. Performed end to end
+in `crates/two-cohort/tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`.
+
+**Is it buildable here?** The split is different from last round's, and sharper:
+
+* **Buildable, and NOT built.** Binding the endorsement to possession of the
+  share: endorse over a value derived from `s_i` rather than over public bytes,
+  or make `endorse_seat` non-public and route holders through
+  `CohortShare::endorse`, recording which entry point produced each signature.
+  The second breaks `seat_endorsement_message`'s stated purpose — HSM-side
+  signing by independent implementations — so the design question is real, but it
+  is a design question and not a fact about the world. This is the current
+  critical path.
 * **Not buildable, by anyone, in any artifact.** That four keys are four
-  entities. Distinct authenticated keys do not prove one party does not hold
-  several, and no signature scheme records that a dealer kept a copy. That is
-  the same class as *who the gate is*: an organisational fact, answerable by a
-  question put to an organisation and by custody attestation, not by bytes.
+  entities: distinct authenticated keys do not prove one party does not hold
+  several. And that no dealer kept copies of shares it handed to four real
+  parties: a dealt cohort and a DKG'd one publish identical material. Those are
+  the same class as *who the gate is* — organisational facts, answerable by a
+  question put to a party and by custody attestation, not by bytes.
+
+**A second thing keeps funding gated even if the above were built.** The release
+gate is a `Result` a caller must ask for, and it is not the only route to a
+fundable key: `CompositeSpend::spend_public`, `simulate`/`simulate_from_seed`,
+`AuditedAddress::spend_public` before any decided-shape check, and
+`CompositionArtifact::declared_root` plus `derive::subaddress_offset` all reach
+one. `crates/two-cohort/tests/release_gate.rs::a_simulated_root_reaches_the_funding_path_today`
+publishes a simulated address and then spends it.
 
 Two further items are named rather than narrowed. **Chronology** is not closed
 and signatures do not close it — a signature has no time in it, and the ordering
@@ -164,7 +217,6 @@ rule lives at the share, in holders running this code. **There is no byte
 format**: `audit` takes a typed value, and this workspace defines no canonical
 encoding or parser for an artifact, so "a funder holding only bytes" is a figure
 of speech today.
-
 ---
 
 ## 3. How it works
@@ -188,9 +240,12 @@ paying `msg.sender` would let a watcher take someone else's redemption.
 
 ## 4. What is proven, and what cannot be
 
-**Machine-checked.** Ten TLA+ models, each mutation-tested — every guard switched off in turn
-must break exactly the invariant it protects — with negative coverage assertions that catch a
-model too dead to move, and a harness that fails closed on tool errors.
+**Machine-checked.** Thirteen TLA+ model runners, each mutation-tested — every guard switched
+off in turn must break exactly the invariant it protects — with negative coverage assertions
+that catch a model too dead to move. A fourteenth runner tests the shared harness those
+thirteen depend on: review found it reporting a *crashed* TLC run as the outcome the caller
+wanted, on the branch every mutation row reads as success, and that class of defect is now a
+checked case rather than a comment.
 
 **Executed rather than argued.** Three threshold-algebra results in real Ed25519; the DDH
 privacy reduction, now covering the **shared-root** construction the design actually
@@ -268,12 +323,21 @@ today because payouts are manual; live the moment they are automated.
 **~~Critical path — the two-cohort signing spike.~~ DONE.** The one-cohort spike has been
 replaced by `crates/two-cohort`: disjoint control domains in the type system, real per-cohort
 PedPoP, a commit-then-reveal composition with cross-cohort proof of possession, a third-party
-`audit`, and a release gate. 299 tests, and every guard mutation-checked.
+`audit`, and a release gate. Every guard mutation-checked.
 
-**New critical path — per-seat attribution.** Carry a per-seat identity key inside
-`ComponentClaim`, sealed by the commitment and bound into every proof transcript, and take a
-per-seat roster in `Parties`. See §2a for what that does and does not buy. Until it lands, a
-funder's check is over two keys while the decided compromise threshold is three.
+**~~Critical path — per-seat attribution.~~ DONE, in full.** A per-seat identity key inside
+`ComponentClaim`, sealed by the commitment and bound into every proof transcript and its nonce
+preamble; a domain-typed per-seat roster in `Parties`; seat arms in `audit` and in
+`authorize_release`; and the dealt-owner forgery inverted into a refusal. The funder's check is
+now over four attribution slots rather than two, above the compromise threshold of three. See
+§2a for what that does and does not buy — the "does not" half is where the gate now sits.
+
+**New critical path — bind a seat endorsement to possession of that seat's share.** Today
+`ceremony::endorse_seat` signs public bytes and consults no share, so a real share-holder can
+endorse a substituted dealing (§2a). Unlike the other residuals this is buildable: endorse over
+a value derived from `s_i`, or route holders through the checked `CohortShare::endorse` and
+record which entry point signed. Until it lands, four collected signatures do not mean four
+share-holders.
 
 **Also gated:** anything that funds a composite address, pending §2 and §2a.
 
@@ -307,11 +371,15 @@ Two things are not yet confirmed and are marked accordingly: the gate structure 
 in §2, and the reviewer's standing position that the project **has not crossed the production
 threshold-composition boundary**.
 
-That second position still stands, and the reason has moved. It is no longer "there is no
-two-cohort construction" — there is one, and it is tested. It is now the single gap in §2a:
-the artifact attributes a cohort, not a seat, so it cannot distinguish the decided four-entity
-structure from two entities wearing four hats. The most recent review confirmed the finding
-and refuted several of the claims written around it, including that a lying view service
-"cannot spend", that the release gate made a funding path unreachable, and that the declared
-threshold was a minimum coalition size. Those are fixed in the code and in the prose; the gap
-itself is not.
+That second position still stands, and the reason has moved again. It is no longer "there is
+no two-cohort construction" — there is one, and it is tested. It is no longer "the artifact
+attributes a cohort, not a seat" either: per-seat attribution landed this round, and the
+forgery that argument rested on is now refused by name. It is the narrower gap in §2a — the
+artifact attributes a seat to a KEY, and nothing ties that key's signature to possession of
+the seat's share, so four collected signatures are not four share-holders. Review supplied
+that finding, and this round's review confirmed the fix for it does not yet exist while
+refuting four further claims written around it: that a lying view service "cannot spend"; that
+the release gate made a funding path unreachable; that the declared threshold was already a
+minimum coalition size; and that the model's own oracle established what it said it did. Those
+are fixed in the code, in the prose and in the model; the gap itself is not, and unlike the two
+residuals beside it, it is buildable.

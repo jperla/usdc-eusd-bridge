@@ -33,9 +33,13 @@ use crate::{
 /// from an [`AuditedAddress`](crate::AuditedAddress), which only
 /// [`audit_address`](crate::audit_address) issues. It does not say a distributed
 /// ceremony took place: an artifact produced by a dealer that generated every
-/// share audits, and receives this tag --
-/// `tests/forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate`
-/// carries one all the way to a published address.
+/// share audits and receives this tag, PROVIDED the dealer also holds every
+/// seat's identity key. That proviso is what per-seat attribution added and it
+/// is not the same as evidence of a DKG --
+/// `tests/forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`
+/// is the dealer that does not clear it, and
+/// `tests/seat_identity.rs::the_residual_is_a_party_that_holds_every_seat_key`
+/// is the one that does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provenance {
     /// [`CompositeSpend::simulate`]. A TRUSTED DEALER generated both component
@@ -357,10 +361,12 @@ impl CompositeSpend {
             // returned otherwise. Copying them from the artifact's own
             // `SignedCommitment::signer` instead would be asking the artifact to
             // vouch for itself.
-            endorsers: Some(Parties::new(
-                *audited.owner_structure().identity(),
-                *audited.gate_structure().identity(),
-            )),
+            // The funder's own `Parties`, carried whole rather than rebuilt
+            // from the two structures: it names every SEAT as well as the two
+            // organisations, and `authorize_release` compares all of them. A
+            // value reassembled here out of the artifact's own claims would be
+            // asking the artifact to vouch for itself.
+            endorsers: Some(audited.parties().clone()),
             view_private: *view_private,
             subaddress_index: address.subaddress_index(),
             spend_public: *address.spend_public(),
@@ -380,7 +386,8 @@ impl CompositeSpend {
         self.provenance
     }
 
-    /// The two organisations the audit behind this root was checked against.
+    /// Everyone the audit behind this root was checked against: both
+    /// organisations AND every seat.
     ///
     /// `None` for [`Provenance::Simulated`], which nobody endorsed.
     ///
@@ -390,8 +397,8 @@ impl CompositeSpend {
     /// exists they are the same. A release path compares them against the keys
     /// it obtained from the organisations; a spend audited under some other pair
     /// is otherwise indistinguishable from one audited under the real pair.
-    pub fn endorsers(&self) -> Option<Parties> {
-        self.endorsers
+    pub fn endorsers(&self) -> Option<&Parties> {
+        self.endorsers.as_ref()
     }
 
     /// The OWNER cohort. Its roster lies in the [`Owners`] id band.

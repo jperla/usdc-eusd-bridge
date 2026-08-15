@@ -12,8 +12,18 @@
 //! The gate cohort's share enters the one-time key, so it enters the KEY
 //! IMAGE. That is the point: a release attempted without the gates does not
 //! produce a rejected signature, it produces a signature over a key image that
-//! belongs to no output in the ring. Consensus itself refuses it. The gate is
-//! not a policy check layered on top of the spend path -- it is inside it.
+//! belongs to no output in the ring. Consensus itself refuses it. The gate
+//! COHORT is not a policy check layered on top of the spend path -- it is
+//! inside it.
+//!
+//! **Two different things in this crate are called a gate, and only one of them
+//! is inside anything.** The sentence above is about the gate COHORT and its
+//! share of `b`; it is a statement about the algebra and it holds. The RELEASE
+//! GATE, [`production::authorize_release`], is the other one: it is an ordinary
+//! `Result` a caller must remember to ask for, several public routes to a
+//! fundable key do not pass through it, and `production`'s module docs list
+//! them. A review reading "the gate is inside the spend path" here took it for
+//! the second claim, which would be false; hence this paragraph.
 //!
 //! # Control-domain independence
 //!
@@ -78,7 +88,10 @@
 //!
 //! * **~~No DEALING ceremony.~~ CLOSED by [`dkg`] and [`ceremony`].** Each
 //!   cohort now runs Serai's PedPoP independently, so no process holds a
-//!   cohort's secret and every participant checks its share against the
+//!   cohort's secret WHEN THE PARTICIPANTS ARE SEPARATE PROCESSES -- the
+//!   qualifier matters, because [`dkg::run_dkg`] deliberately runs every
+//!   participant in one and hands back every share, which is what the tests and
+//!   single-host simulations use. Every participant checks its share against the
 //!   dealer's published VSS commitments. The two components are then composed
 //!   by a commit-then-reveal ceremony with a cross-cohort proof of possession,
 //!   whose output is a [`CompositionArtifact`] any third party can [`audit`].
@@ -93,9 +106,13 @@
 //!   organisations' identity public keys and each cohort's commitment must be
 //!   signed by its own --
 //!   `tests/attribution.rs::one_process_can_produce_an_artifact_that_passes_every_structural_check`
-//!   performs both halves. The residual is a party holding BOTH organisations'
-//!   identity private keys, which the same file performs rather than glosses. A
-//!   production
+//!   performs both halves. The residual OF THAT ARM is a party holding BOTH
+//!   organisations' identity private keys, which the same file performs rather
+//!   than glosses -- and since the per-seat rework it is no longer the residual
+//!   of the AUDIT, because every seat's endorsement must verify too. This
+//!   sentence stood unqualified after that stopped being true; the audit's own
+//!   residual is `tests/seat_identity.rs::the_residual_is_a_party_that_holds_every_seat_key`
+//!   and the sharper `tests/seat_forgery.rs`. A production
 //!   [`CompositeSpend`] is built by [`CompositeSpend::from_ceremony`], and its
 //!   [`provenance`](CompositeSpend::provenance) records which route it came by.
 //!   [`production::authorize_release`] READS that field: it refuses
@@ -136,15 +153,40 @@
 //!   composition, and is therefore a property of holders running THIS code
 //!   rather than of the published bytes), **does not distinguish a cohort that
 //!   ran a DKG from one that used a dealer** -- a dealer that KEPT the secret,
-//!   not merely one that deleted it, which is the case that matters and which
-//!   `tests/forgery.rs` performs all the way to a spent address -- does not
-//!   establish that the two identity keys it now requires are held by two
-//!   independent organisations, does not carry any per-SEAT identity at all so
-//!   that a cohort's whole roster may be one entity, and does not make the VIEW
-//!   service accountable
-//!   -- a view service that publishes a `D_i` that is not a subaddress of the
-//!   audited root can freeze or misdirect a deposit, though unlike a rogue
-//!   cohort it cannot spend it.
+//!   not merely one that deleted it, which is the case that matters. What that
+//!   dealer must now COLLECT is a signature from every named SEAT key as well as
+//!   its own organisation signature, because the artifact carries one identity
+//!   per seat and each seat signs for its own verification share --
+//!   `tests/forgery.rs` mounts the dealer forgery the two ways a dealer with no
+//!   such signatures can mount it and both are refused. It need not hold those
+//!   private keys: the signed bytes are public and reveal nothing, so parties
+//!   that sign without ever being dealt a share are enough, which
+//!   `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
+//!   performs -- that test forges the OWNER cohort and therefore collects THREE
+//!   seat signatures plus the owner organisation's, the honest gate supplying
+//!   the artifact's fourth seat endorsement itself. So the audit does not
+//!   establish that the two organisation keys
+//!   are two independent organisations, does not establish that the four seat
+//!   keys are four independent principals, and does not bind a seat's signer to
+//!   a seat's share-holder -- what changed is the number of distinct signatures
+//!   a forgery must collect: from one to FOUR for a dealt-owner forgery at the
+//!   decided shape, or from two to six if both cohorts are fabricated. ("From
+//!   one to five" stood here and was neither; `ceremony`'s module docs write the
+//!   arithmetic out, and
+//!   `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
+//!   counts it. That test is also the sharper residual: the named parties hold
+//!   REAL shares from a real DKG and endorse a substituted dealing anyway,
+//!   because `ceremony::endorse_seat` consults no share and
+//!   `dkg::CohortShare::endorse` is the only entry point that does.) It also
+//!   does not make the VIEW service accountable -- a service that publishes a
+//!   `D_i` which is not a subaddress of the audited root sends deposits
+//!   somewhere the cohorts cannot sign for. **It CAN spend them.** This line
+//!   said "unlike a rogue cohort it cannot spend it", which [`ceremony`]'s own
+//!   module docs had already struck as false and review found still standing
+//!   here: nothing forces a lying publisher to derive `D` from `B`, so it can
+//!   publish `D = d*G` of its own and open anything paid there with
+//!   `Hs(a*R) + d`. A funder holding the view key closes it with
+//!   [`ceremony::audit_address`], which is why that key is not optional.
 //! * **Both DKGs assume an authenticated broadcast channel.** PedPoP requires
 //!   one and this crate does not supply one. A participant that sends two
 //!   different commitment messages to two different peers is faulty and
@@ -175,7 +217,7 @@ pub mod mlsag;
 pub use ceremony::{
     audit, audit_address, AuditedAddress, AuditedRoot, CeremonyError, CeremonyId, CohortStructure,
     ComponentClaim, ComponentCommitment, ComponentReveal, CompositionArtifact, Parties, Pop,
-    SealedComposition, SignedCommitment,
+    SealedComposition, SeatRoster, SignedCommitment,
 };
 pub use identity::{IdentityKey, IdentityPublic, IdentitySignature};
 pub use cohort::{lagrange_at_zero, Cohort, ParticipantTerm};
