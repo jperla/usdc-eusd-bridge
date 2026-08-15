@@ -3,12 +3,8 @@
 Two independent cohorts over one composite MobileCoin spend root.
 
 ```bash
-cargo test --offline -p two-cohort    # 34 tests
+cargo test --offline -p two-cohort
 ```
-
-> **Blocked on a one-line fix in the workspace root manifest.** See
-> [Workspace blocker](#workspace-blocker) below. The crate itself builds and
-> its tests pass; `cargo` cannot currently load the workspace at all.
 
 ```text
 b = b_owner + b_gate                  composite spend root
@@ -147,19 +143,40 @@ because no owner id is ever a gate id.
 Carried forward from the spike verbatim. None of it got easier because the code
 became a library.
 
-* **No live ceremony.** Shares are dealt and combined in one process; `Cohort`
-  holds every share. This is the algebra, not a two-round protocol with
-  round-one packages, transcripts, or participants that can go offline or lie.
-* **No non-reconstruction signing.** `CompositeSpend::onetime` materialises the
-  one-time scalar so the stock signer can be driven. The per-participant group
-  terms a real signer would combine are exposed (`Cohort::point_terms`,
-  `CompositeSpend::key_image_terms`) so such a signer can be written against
-  the right shape — but it does not exist here, and a threshold MLSAG needs
-  distributed *nonces* as well as distributed keys.
-* **Trusted dealer, no DKG.** `CompositeSpend::simulate` generates both
-  component secrets itself. No distributed key generation, no
-  proof-of-possession, so no rogue-key defence: a cohort able to choose its
-  component after seeing the other's public value could steer the sum.
+* **~~No live ceremony.~~ CLOSED** by `src/dkg.rs` and `src/ceremony.rs` — see
+  the DKG entry below, which is the same closure stated once.
+* **~~No non-reconstruction signing.~~ CLOSED** by `src/mlsag.rs`. It produces
+  a `RingMLSAG` the unmodified verifier accepts without any process forming the
+  one-time scalar: each participant emits only `alpha_i - c*w_i` and the
+  coordinator sums those. `CompositeSpend::onetime` remains because the tests
+  need an independently computed `x` to check the key image against, and a
+  production signer must still not call it. Nonces are derived and bound to the
+  session, but there is no concurrency defence — see the crate docs on the
+  ROS/Drijvers setting.
+* **~~Trusted dealer, no DKG.~~ CLOSED** by `src/dkg.rs` and
+  `src/ceremony.rs`. Each cohort runs Serai's PedPoP independently; the two
+  components are composed by a commit-then-reveal ceremony with a cross-cohort
+  proof of possession; the output is a `CompositionArtifact` that `audit()`
+  checks from the artifact alone. The rogue-key attack is exhibited in
+  `tests/rogue_key.rs` and refused in `tests/rogue_key_inverted.rs`.
+  `Cohort::deal` and `CompositeSpend::simulate` remain for the tests that need
+  a dealing to compare against; a production `CompositeSpend` comes from
+  `CompositeSpend::from_ceremony` and reports `Provenance::Ceremony`.
+
+  What is still open is stated exactly in `src/ceremony.rs` under *"What a
+  funder can check, and what it still cannot"*. In short: the artifact does not
+  prove the commitments preceded the reveals — that half of the defence is
+  enforced at the share, by `prove_possession` refusing to answer a second
+  sealed composition, so it is a property of holders running this code and not
+  of the published bytes. It cannot distinguish a cohort that ran a DKG from one
+  that used a dealer and deleted the secret. And it does not make the view
+  service accountable for the subaddress offset: a lying view service can freeze
+  or misdirect a deposit, though unlike a rogue cohort it cannot spend one.
+
+  `run_dkg` and `CompositeSpend::simulate` are ordinary `pub` functions with no
+  feature gate, so a single process can still produce an artifact that audits.
+  `Provenance` records which route a spend came by, but nothing in this crate
+  reads it; refusing `Provenance::Simulated` is a release path's job.
 * **No mask-row split.** MLSAG row 1 (the commitment mask) is not split across
   cohorts. Only the spend row and the key image are two-cohort here.
 * **No transaction-level acceptance.** The tests drive `RingMLSAG::verify` —
@@ -172,45 +189,3 @@ became a library.
   `participant_terms_zeroize_their_weight` establishes that the wiring is real;
   it does not establish that dropped memory is scrubbed.
 
-## Workspace blocker
-
-`cargo test --offline -p two-cohort` currently fails before compiling
-anything:
-
-```text
-error: failed to load manifest for workspace member `crates/two-cohort`
-Caused by: failed to parse manifest at `vendor/mobilecoin/crypto/hashes/Cargo.toml`
-Caused by: error inheriting `rust-version` from workspace root manifest's
-           `workspace.package.rust-version`
-Caused by: `workspace.package.rust-version` was not defined
-```
-
-Cargo automatically makes any path dependency *residing inside the workspace
-directory* a member of that workspace. `vendor/mobilecoin` is a symlink placed
-under the workspace root by `scripts/setup.sh`, and cargo does not resolve the
-symlink before applying that rule — so the vendored MobileCoin crates are
-pulled into this workspace and try to inherit `workspace.package.rust-version`
-from the bridge root, which does not define it (MobileCoin's own root does).
-This affects every Rust crate in the repo equally, not just this one.
-
-The fix is one line in the root `Cargo.toml`, which this crate does not own:
-
-```toml
-[workspace]
-members = [...]
-exclude = ["vendor"]     # <-- vendored checkouts are not our members
-```
-
-Until that lands, the suite can be reproduced with a shadow root that differs
-from the real one only by that line:
-
-```bash
-SH=$(mktemp -d)
-# only two changes to the root manifest: exclude the vendored checkouts, and
-# drop the sibling members so this works before they land.
-sed 's/^resolver = "2"/resolver = "2"\nexclude = ["vendor"]/' Cargo.toml \
-  | grep -Ev '"crates/(ceremony|auditor|mc-return|e2e)"' > "$SH/Cargo.toml"
-ln -s "$PWD/vendor" "$SH/vendor"
-mkdir -p "$SH/crates" && ln -s "$PWD/crates/two-cohort" "$SH/crates/two-cohort"
-(cd "$SH" && cargo test --offline -p two-cohort)
-```

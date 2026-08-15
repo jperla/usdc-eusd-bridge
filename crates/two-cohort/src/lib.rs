@@ -76,11 +76,24 @@
 //! [`mlsag`] closed. None of the rest got easier because the code became a
 //! library.
 //!
-//! * **No DEALING ceremony.** Shares are dealt in ONE PROCESS. [`Cohort`] holds
-//!   every share; [`Cohort::share`] hands them out. [`mlsag`] made SIGNING a
-//!   live two-round protocol over explicit round messages, with participants
-//!   that can go offline or lie and are named when they do -- but the shares
-//!   that protocol drives still come from a single-process dealing.
+//! * **~~No DEALING ceremony.~~ CLOSED by [`dkg`] and [`ceremony`].** Each
+//!   cohort now runs Serai's PedPoP independently, so no process holds a
+//!   cohort's secret and every participant checks its share against the
+//!   dealer's published VSS commitments. The two components are then composed
+//!   by a commit-then-reveal ceremony with a cross-cohort proof of possession,
+//!   whose output is a [`CompositionArtifact`] any third party can [`audit`].
+//!   [`Cohort::deal`] remains, and [`CompositeSpend::simulate`] and
+//!   [`dkg::run_dkg`] with them, for the tests and the single-host simulations
+//!   that need a dealing to compare against. They are ordinary `pub` functions
+//!   with no feature gate, so **the dealer is gone from the honest path, not
+//!   from the crate**: one process can call `run_dkg` twice and produce an
+//!   artifact that audits, which is exactly what
+//!   `tests/composition.rs`'s end-to-end test is. A production
+//!   [`CompositeSpend`] is built by [`CompositeSpend::from_ceremony`], and its
+//!   [`provenance`](CompositeSpend::provenance) records which route it came by
+//!   -- but nothing in this crate READS that field, so refusing
+//!   [`Provenance::Simulated`] is a release path's job and not a check that has
+//!   already been made for it.
 //! * **~~No non-reconstruction signing.~~ CLOSED by [`mlsag`].** It produces a
 //!   `RingMLSAG` the unmodified verifier accepts without any process forming
 //!   the one-time scalar: each participant emits only `alpha_i - c*w_i`, and
@@ -101,12 +114,23 @@
 //!   The shape in `crates/ceremony/src/frost.rs` -- two commitments and a
 //!   per-participant binding factor over the whole round-one package -- is the
 //!   known fix and is not ported.
-//! * **Trusted dealer, no DKG.** [`CompositeSpend::simulate`] generates both
-//!   component secrets itself. There is no distributed key generation, no
-//!   proof-of-possession, and therefore no rogue-key defence: a cohort able to
-//!   choose its component after seeing the other's public value could steer
-//!   the sum. Defending that needs authenticated DKG with PoP and a
-//!   non-adaptive ceremony.
+//! * **~~Trusted dealer, no DKG.~~ CLOSED by [`dkg`] and [`ceremony`].** The
+//!   rogue-key attack is exhibited, performed, in `tests/rogue_key.rs` and
+//!   refused in `tests/rogue_key_inverted.rs`. What remains open is stated
+//!   precisely in [`ceremony`]'s "What a funder can check, and what it still
+//!   cannot": the artifact does not prove the commitments preceded the reveals
+//!   (that half is enforced at the share, by
+//!   [`ceremony::prove_possession`] refusing to answer a second sealed
+//!   composition, and is therefore a property of holders running THIS code
+//!   rather than of the published bytes), does not distinguish a cohort that ran
+//!   a DKG from one that used a dealer and deleted the secret, and does not make
+//!   the VIEW service accountable -- a view service that publishes a `D_i` that
+//!   is not a subaddress of the audited root can freeze or misdirect a deposit,
+//!   though unlike a rogue cohort it cannot spend it.
+//! * **Both DKGs assume an authenticated broadcast channel.** PedPoP requires
+//!   one and this crate does not supply one. A participant that sends two
+//!   different commitment messages to two different peers is faulty and
+//!   invisible here.
 //! * **No mask-row split.** MLSAG row 1 (the commitment mask) is not split
 //!   across cohorts. Only the spend row and the key image are two-cohort here.
 //! * **No transaction-level acceptance.** The tests drive
@@ -119,17 +143,24 @@
 //!   Zeroization here reduces the residue; it does not eliminate it.
 
 pub mod production;
+pub mod ceremony;
 pub mod cohort;
 pub mod composite;
 pub mod control;
 pub mod derive;
+pub mod dkg;
 pub mod error;
 pub mod fixture;
 pub mod mlsag;
 
+pub use ceremony::{
+    audit, audit_address, AuditedAddress, AuditedRoot, CeremonyError, CeremonyId, ComponentClaim,
+    ComponentCommitment, ComponentReveal, CompositionArtifact, Pop, SealedComposition,
+};
 pub use cohort::{lagrange_at_zero, Cohort, ParticipantTerm};
-pub use composite::{CohortSpec, CompositeSpend, KeyImageTerms};
+pub use composite::{CohortSpec, CompositeSpend, KeyImageTerms, Provenance};
 pub use control::{ControlDomain, Gates, Owners, NAMESPACE_SPAN};
+pub use dkg::{CohortKey, CohortShare, DkgError};
 pub use error::{Error, Result};
 
 /// MobileCoin token id for eUSD. Releases from the bridge are denominated in

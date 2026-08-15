@@ -15,6 +15,14 @@ mc-crypto-hashes = { workspace = true }
 # default-features off at the workspace level it is not otherwise enabled.
 curve25519-dalek = { workspace = true, features = ["digest", "zeroize"] }
 
+# Serai's PedPoP: Pedersen DKG with per-dealer VSS commitments and a Schnorr
+# proof-of-possession over a transcript. Vendored at rev 4b89cf02 and used
+# rather than reimplemented -- a hand-rolled DKG is exactly the kind of code
+# whose bugs only surface after funding.
+dkg-pedpop = { path = "../../vendor/serai/crypto/dkg/pedpop" }
+dalek-ff-group = { path = "../../vendor/serai/crypto/dalek-ff-group" }
+ciphersuite = { path = "../../vendor/serai/crypto/ciphersuite" }
+
 rand_core = { workspace = true }
 rand_chacha = { workspace = true }
 zeroize = { workspace = true }

@@ -61,6 +61,31 @@ pub enum Error {
         end: u64,
     },
 
+    /// The cohort's shares are held by its participants, not by this process.
+    ///
+    /// Returned by everything that would need a share as a scalar --
+    /// [`Cohort::weighted`](crate::Cohort::weighted),
+    /// [`Cohort::reconstruct`](crate::Cohort::reconstruct),
+    /// [`CompositeSpend::onetime`](crate::CompositeSpend::onetime) -- on a
+    /// cohort that came out of a real key-generation ceremony. It is not a
+    /// misconfiguration: it is the difference between a dealing and a DKG
+    /// showing up as a type error at runtime, and the caller's fix is to build
+    /// each signer where its share lives.
+    #[error("this cohort's shares are held by its participants, not by this process")]
+    SharesNotHeld,
+
+    /// The view private key supplied does not derive the subaddress the
+    /// audited address was checked against.
+    ///
+    /// [`audit_address`](crate::ceremony::audit_address) established `D_i = B +
+    /// Hs(a||i)*G` for ONE `a`;
+    /// [`CompositeSpend::from_ceremony`](crate::CompositeSpend::from_ceremony)
+    /// takes `a` again, and a different one silently yields a spend whose
+    /// `common` term does not belong to `D_i` -- an unspendable output found at
+    /// signing rather than at construction. Refused instead.
+    #[error("the view private key supplied does not derive the audited subaddress")]
+    ViewKeyMismatch,
+
     /// Wrapper that names which cohort rejected the input, since the two
     /// cohorts have separate rosters and thresholds and the caller needs to
     /// know which one it got wrong.
