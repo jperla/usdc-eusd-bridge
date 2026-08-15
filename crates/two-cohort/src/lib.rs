@@ -72,20 +72,35 @@
 //!
 //! # What this crate does NOT establish
 //!
-//! Carried forward verbatim from the spike this was promoted from. None of
-//! these got easier because the code became a library.
+//! Carried forward from the spike this was promoted from, minus the one
+//! [`mlsag`] closed. None of the rest got easier because the code became a
+//! library.
 //!
-//! * **No live ceremony.** Shares are dealt and combined in ONE PROCESS.
-//!   [`Cohort`] holds every share; [`Cohort::share`] hands them out. This is
-//!   the algebra, not a two-round protocol with round-one packages, commitment
-//!   transcripts, or any notion of a participant that can go offline or lie.
-//! * **No non-reconstruction signing.** [`CompositeSpend::onetime`]
-//!   materialises the one-time scalar so the stock MobileCoin signer can be
-//!   driven. The per-participant terms a real signer would combine in the
-//!   group are exposed ([`Cohort::point_terms`],
-//!   [`CompositeSpend::key_image_terms`]) so such a signer can be written
-//!   against the right shape -- but that signer does not exist here, and a
-//!   threshold MLSAG needs distributed nonces as well as distributed keys.
+//! * **No DEALING ceremony.** Shares are dealt in ONE PROCESS. [`Cohort`] holds
+//!   every share; [`Cohort::share`] hands them out. [`mlsag`] made SIGNING a
+//!   live two-round protocol over explicit round messages, with participants
+//!   that can go offline or lie and are named when they do -- but the shares
+//!   that protocol drives still come from a single-process dealing.
+//! * **~~No non-reconstruction signing.~~ CLOSED by [`mlsag`].** It produces a
+//!   `RingMLSAG` the unmodified verifier accepts without any process forming
+//!   the one-time scalar: each participant emits only `alpha_i - c*w_i`, and
+//!   the coordinator sums those. [`CompositeSpend::onetime`] remains, because
+//!   the tests need an independently computed `x` to check the key image
+//!   against, and a production signer still must not call it.
+//! * **No policy over a decoded transaction.** [`mlsag`] participants hold the
+//!   session they are signing -- message, ring, real index, output commitment
+//!   -- and derive the challenge from it themselves, so a coordinator cannot
+//!   carry round one into a different transaction. But the message is opaque
+//!   bytes to them. Reading amounts and recipients out of it needs
+//!   MobileCoin's `TxSummary` and its streaming verifier, which is not wired
+//!   up here. Until it is, a gate can refuse a session; it cannot refuse a
+//!   PAYEE.
+//! * **No concurrency defence.** [`mlsag`] aggregates one nonce commitment per
+//!   participant linearly, with no binding factor, and nothing bounds how many
+//!   sessions a share-holder may have open. That is the ROS/Drijvers setting.
+//!   The shape in `crates/ceremony/src/frost.rs` -- two commitments and a
+//!   per-participant binding factor over the whole round-one package -- is the
+//!   known fix and is not ported.
 //! * **Trusted dealer, no DKG.** [`CompositeSpend::simulate`] generates both
 //!   component secrets itself. There is no distributed key generation, no
 //!   proof-of-possession, and therefore no rogue-key defence: a cohort able to
@@ -110,6 +125,7 @@ pub mod control;
 pub mod derive;
 pub mod error;
 pub mod fixture;
+pub mod mlsag;
 
 pub use cohort::{lagrange_at_zero, Cohort, ParticipantTerm};
 pub use composite::{CohortSpec, CompositeSpend, KeyImageTerms};
