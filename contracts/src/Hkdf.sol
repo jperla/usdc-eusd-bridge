@@ -303,6 +303,15 @@ library Hkdf {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
+///
 /// Test wrapper: a library of `internal` functions has no ABI of its own.
 ///
 /// Nothing here returns a dynamic `bytes`. Encoding one into return data makes
@@ -310,7 +319,7 @@ library Hkdf {
 /// call fails with "invalid opcode" and looks like a bug in the library rather
 /// than in the probe. The OKM comes back as fixed words instead, with the
 /// caller slicing to `length`.
-contract HkdfProbe {
+contract HkdfProbe_DO_NOT_DEPLOY {
     /// Up to 128 bytes of OKM as four words, zero-padded past `length`.
     uint256 private constant MAX_WORDS = 4;
 

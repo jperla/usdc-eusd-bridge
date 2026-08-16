@@ -96,7 +96,7 @@ const nodeHkdf = (salt, ikm, info, len) =>
 // --------------------------------------------------------------------- chain
 
 const chain = await Chain.create({ only: ['Hkdf.sol'] });
-const probe = await chain.deploy('HkdfProbe');
+const probe = await chain.deploy('HkdfProbe_DO_NOT_DEPLOY');
 
 const ERRORS = {
   [selector('HkdfOutputTooLong(uint256,uint256)')]: 'HkdfOutputTooLong',

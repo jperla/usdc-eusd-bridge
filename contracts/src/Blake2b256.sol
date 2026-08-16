@@ -127,8 +127,17 @@ library Blake2b256 {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
 /// Test wrapper: libraries with internal functions have no ABI of their own.
-contract Blake2b256Probe {
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
+contract Blake2b256Probe_DO_NOT_DEPLOY {
     function hash(bytes memory input) external view returns (bytes32) {
         return Blake2b256.hash(input);
     }

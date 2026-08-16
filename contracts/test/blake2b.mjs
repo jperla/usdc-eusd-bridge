@@ -22,7 +22,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const V = JSON.parse(readFileSync(join(HERE, 'fixtures', 'blake2b.json'), 'utf8'));
 
 const chain = await Chain.create({ only: ['Blake2b256.sol'] });
-const probe = await chain.deploy('Blake2b256Probe');
+const probe = await chain.deploy('Blake2b256Probe_DO_NOT_DEPLOY');
 
 const hashOf = async (hexInput) => {
   const r = await chain.call(probe,

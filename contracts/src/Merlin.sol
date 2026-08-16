@@ -523,6 +523,15 @@ library MobileCoinTxOut {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
+///
 /// Test-facing surface: a tiny interpreter so a fixture can drive an arbitrary
 /// sequence of transcript operations without a bespoke contract per case.
 ///
@@ -546,7 +555,7 @@ library MobileCoinTxOut {
 /// 0.8.26 targets Cancun, so returning a dynamic `bytes` -- which compiles to
 /// MCOPY -- is an invalid opcode there. Comparing keccak256 of the whole
 /// output is the same assertion.
-contract MerlinProbe {
+contract MerlinProbe_DO_NOT_DEPLOY {
     using Merlin for Merlin.Transcript;
 
     error BadOpcode(uint8 opcode);

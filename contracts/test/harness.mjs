@@ -113,7 +113,16 @@ export function compileAll({ optimize = true, runs = 200, only = null } = {}) {
       optimizer: { enabled: optimize, runs },
       // viaIR keeps the deep-stack verifier compiling.
       viaIR: true,
-      outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } },
+      // `deployedBytecode` is the RUNTIME image -- what EIP-170's 24,576-byte
+      // limit applies to, and what `bytecode` is not. Selected so a size check
+      // can read it from the compiler instead of from a successful deployment:
+      // a contract that is over the limit cannot be deployed at all, so a
+      // check that deploys first cannot be the check that catches it.
+      outputSelection: {
+        '*': {
+          '*': ['abi', 'evm.bytecode.object', 'evm.deployedBytecode.object'],
+        },
+      },
     },
   };
   const out = JSON.parse(solc.compile(JSON.stringify(input)));

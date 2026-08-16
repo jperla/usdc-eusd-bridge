@@ -7,6 +7,7 @@ import {Ed25519} from "./Ed25519.sol";
 import {MobileCoinBlock, MobileCoinTxOut} from "./Merlin.sol";
 import {Blake2b256} from "./Blake2b256.sol";
 import {AmountOpener, MemoOpener} from "./AmountOpener.sol";
+import {MobileCoinGenerators} from "./MobileCoinGenerators.sol";
 
 /// Verifies that an eUSD output was paid to the bridge's return address and
 /// finalized in a MobileCoin block, for the Ethereum side of the return leg.
@@ -63,27 +64,24 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
 
     /// `B_token` for `eusdTokenId`: the Pedersen value generator, compressed.
     ///
-    /// Pinned at construction because MobileCoin derives it by hashing to the
-    /// curve and this contract accepts exactly one token id -- see
-    /// `AmountOpener.decodeGenerator`. Public so a deployment transaction, and
-    /// any later reader, can check it against MobileCoin's own
-    /// `generators(eusdTokenId)`.
+    /// DERIVED, not supplied. The constructor runs MobileCoin's own
+    /// construction -- Blake2b-512 over the domain-tagged basepoint XOR the
+    /// token id, then the ristretto255 one-way map -- so this getter is a
+    /// function of `eusdTokenId` and of nothing a deployer types. See
+    /// `MobileCoinGenerators`.
     ///
-    /// THE PAIR IS A DEPLOYMENT OBLIGATION THE CODE CANNOT DISCHARGE. The
-    /// constructor can check that this is a point and is not the identity; it
-    /// cannot check that it is the generator for `eusdTokenId`, because doing
-    /// so means running the Elligator hash-to-curve this contract deliberately
-    /// does not implement. A mismatched pair does not fail closed, it fails
-    /// OPEN in a specific way: the contract then verifies commitments in the
-    /// wrong group, so an amount MobileCoin rejects as `InconsistentCommitment`
-    /// verifies here. Deploying `(8192, generators(1))` and pairing fixture
-    /// case 4 with the commitment recomputed under `generators(1)` yields
-    /// 250,000,000,000 on chain against MobileCoin's refusal --
-    /// `test/verifier.mjs`, "a MISPAIRED token id and generator verifies an
-    /// amount MobileCoin refuses", which exists so this cannot be forgotten.
+    /// IT USED TO BE A CONSTRUCTOR ARGUMENT, and that was a fail-open. Nothing
+    /// related the point to the id beside it: a verifier deployed with token id
+    /// 8192 and `generators(1).B` passes the token-id check and then verifies
+    /// commitments in the wrong group, so an amount MobileCoin rejects as
+    /// `InconsistentCommitment` is accepted and paid out. The mitigation was a
+    /// comment asking whoever deployed to compare two getters by hand. The
+    /// argument is gone, so there is nothing left to mispair and nothing left
+    /// to check by hand.
     ///
-    /// So: check this against `generators(eusdTokenId)` before funding an
-    /// escrow that points at this verifier. Both are public getters.
+    /// Still public, because a funder reading this getter against MobileCoin's
+    /// `generators(eusdTokenId)` is a cheap end-to-end confirmation that the
+    /// derivation on this chain agrees with the one on that one.
     bytes32 public immutable eusdValueGenerator;
 
     /// See IRecipientCheck. A deployment that passes a permissive
@@ -154,26 +152,21 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         ValidatorRegistry _registry,
         bytes32 _returnSpendPublicKey,
         uint64 _eusdTokenId,
-        bytes32 _eusdValueGenerator,
         bytes32 _memoDomain,
         IRecipientCheck _recipientCheck
     ) {
         require(address(_recipientCheck) != address(0), "recipientCheck required");
-        // Fail at deployment, not at the first redemption. A generator that is
-        // not a point -- or is the identity, which makes the commitment
-        // independent of the value -- would otherwise sit in the code until
-        // somebody tried to redeem against it.
-        //
-        // What this does NOT establish is that the generator is the one for
-        // `_eusdTokenId`; see `eusdValueGenerator` for why that is not
-        // checkable here and what a mispaired deployment does.
-        AmountOpener.decodeGenerator(_eusdValueGenerator);
 
         recipientCheck = _recipientCheck;
         registry = _registry;
         returnSpendPublicKey = _returnSpendPublicKey;
         eusdTokenId = _eusdTokenId;
-        eusdValueGenerator = _eusdValueGenerator;
+        // THE ONE PLACE THE TOKEN ID AND THE GENERATOR MEET. Derived from the
+        // id assigned on the line above, in the constructor, once. A
+        // hash-to-curve is not cheap by EVM standards, but this is not on the
+        // redemption path: `verifyReturn` reads the resulting immutable and is
+        // unaffected. Paying for it here deletes a parameter and a fail-open.
+        eusdValueGenerator = MobileCoinGenerators.valueGenerator(_eusdTokenId);
         memoDomain = _memoDomain;
     }
 

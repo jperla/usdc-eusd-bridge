@@ -43,6 +43,21 @@ contract Escrow is Governed {
     IERC20 public immutable usdc;
 
     /// MobileCoin token id this bridge accepts on the return leg.
+    ///
+    /// A SEPARATE ARGUMENT FROM THE VERIFIER'S, AND NOTHING CHECKS THE TWO
+    /// AGAINST EACH OTHER HERE. `MobileCoinVerifier` takes its own
+    /// `_eusdTokenId` and derives `B_token` from it; this contract only
+    /// compares what the verifier RETURNS against what it was told to accept.
+    /// Deploy the two with different ids and every release reverts with
+    /// `WrongToken` -- fail-closed, so no funds are at risk, but the return leg
+    /// is dead until the escrow is replaced.
+    ///
+    /// Not checked in the constructor because the verifier is replaceable
+    /// (`proposeVerifier`/`executeVerifier`) while this is immutable: a
+    /// constructor check would establish agreement with a contract that can be
+    /// swapped out from under it, which reads as a guarantee and is not one.
+    /// The pairing is a deployment obligation, and
+    /// contracts/test/acceptance.mjs asserts what happens when it is not met.
     uint64 public immutable eusdTokenId;
 
     /// USDC has 6 decimals and eUSD amounts are u64 base units. If the two

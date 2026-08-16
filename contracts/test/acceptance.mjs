@@ -51,10 +51,12 @@ const AMOUNT = BigInt(FIX.expected.amount);
 const BOB = FIX.expected.beneficiary;
 const CAP = 1_000_000_000000n;
 
-// `B_token` for TOKEN_ID: MobileCoin derives the Pedersen value generator by
-// hashing to the curve, which is not something to do on chain, so the point for
-// the one token id this bridge accepts is pinned at deployment. This is
-// MobileCoin's own `generators(token_id).B`, published by tools/amount-fixtures.
+// `B_token` for TOKEN_ID, as MobileCoin's own `generators(token_id).B`,
+// published by tools/amount-fixtures.
+//
+// NOT a deployment parameter: the verifier's constructor derives it by hashing
+// to the curve on chain, so this is the EXPECTED value, to be compared against
+// what the deployed contract computed for itself.
 const VALUE_GENERATOR = AMT.generators.byTokenId
   .find((g) => g.tokenId === String(TOKEN_ID)).bToken;
 
@@ -197,7 +199,7 @@ async function deployBridge() {
     b32(FIX.disclosure.view_private_key));
   const verifier = await chain.deploy('MobileCoinVerifier',
     addrWord(reg) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
-    word(TOKEN_ID) + b32(VALUE_GENERATOR) + b32(MEMO_DOMAIN) + addrWord(rc));
+    word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
 
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
@@ -322,7 +324,7 @@ await test('LEG 3: a relayer cannot name the amount or the payee', async () => {
     b32(FIX.disclosure.view_private_key));
   const verifier = await chain.deploy('MobileCoinVerifier',
     addrWord(B.reg) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
-    word(TOKEN_ID) + b32(VALUE_GENERATOR) + b32(MEMO_DOMAIN) + addrWord(rc));
+    word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
@@ -357,7 +359,7 @@ await test('LEG 3: the recipient check is load-bearing, not decorative',
   const wrongD = '0x' + (BigInt(FIX.disclosure.recovered_subaddress_spend_key) ^ 1n)
     .toString(16).padStart(64, '0');
   const verifier = await chain.deploy('MobileCoinVerifier',
-    addrWord(B.reg) + b32(wrongD) + word(TOKEN_ID) + b32(VALUE_GENERATOR) +
+    addrWord(B.reg) + b32(wrongD) + word(TOKEN_ID) +
     b32(MEMO_DOMAIN) + addrWord(rc));
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
@@ -378,23 +380,24 @@ await test('LEG 3: the Pedersen commitment check is load-bearing in a FUNDED esc
   // cannot reach the check by editing a proof -- the old-layout attack above
   // dies on ABI decoding, several steps earlier.
   //
-  // The one lever that reaches it end to end is the deployment's Pedersen
-  // value generator. Same proof, same quorum, same membership, same recipient
-  // check, real money in the escrow -- one wrong curve point, and the
-  // recomputed commitment cannot be the block's. If the comparison is skipped,
-  // this releases and the assertions below fail.
+  // THE LEVER THIS TEST USED TO PULL IS GONE, DELIBERATELY. It deployed a
+  // verifier with a mismatched Pedersen value generator, which was possible
+  // only because `B_token` was a constructor argument -- the same fail-open
+  // that let a deployment verify commitments in the wrong group. The
+  // constructor now derives `B_token` from the token id, so no deployment
+  // reaches the commitment check any more.
+  //
+  // What is asserted instead, on a FUNDED escrow that has just paid out: the
+  // deployed verifier's own `openAmount` -- the function `verifyReturn` calls,
+  // in the bytecode behind the money -- refuses the block's masked amount
+  // paired with any other commitment. Deleting the comparison in AmountOpener
+  // turns this red, which is the property the test was written for.
   const usdc = await chain.deploy('MockERC20');
   const rc = await chain.deploy('RecipientCheck',
     b32(FIX.disclosure.view_private_key));
-
-  const wrongGenerator = AMT.generators.byTokenId
-    .find((g) => g.bToken !== VALUE_GENERATOR).bToken;
-  assert(wrongGenerator && wrongGenerator !== VALUE_GENERATOR,
-    'the oracle publishes only one generator -- this test proves nothing');
-
   const verifier = await chain.deploy('MobileCoinVerifier',
     addrWord(B.reg) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
-    word(TOKEN_ID) + b32(wrongGenerator) + b32(MEMO_DOMAIN) + addrWord(rc));
+    word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
@@ -403,24 +406,130 @@ await test('LEG 3: the Pedersen commitment check is load-bearing in a FUNDED esc
   assertEq(await balanceOf(usdc, escrow), AMOUNT * 4n,
     'the escrow must actually hold funds, or nothing is at stake here');
 
-  assert(!(await release(escrow, proof())).ok,
-    'a commitment that does not open must not release funds');
-  assertEq(await balanceOf(usdc, BOB), 0n, 'no USDC moved');
-  assertEq(await balanceOf(usdc, escrow), AMOUNT * 4n, 'the escrow is intact');
+  // Real money moves through this exact verifier.
+  const ok = await release(escrow, proof());
+  assert(ok.ok, `the honest proof must release: ${revertReason(ok.ret)}`);
+  assertEq(await balanceOf(usdc, BOB), AMOUNT, 'the payee was paid');
 
-  // And the SAME proof against a correctly configured escrow does release, so
-  // the refusal above is the generator and not some unrelated breakage.
-  const good = await chain.deploy('MobileCoinVerifier',
+  // Same contract, same masked amount, same shared secret -- one bit flipped in
+  // the commitment the block committed to. `openAmount` is public precisely so
+  // this branch is reachable on the production code path rather than on a copy.
+  const TXOUT = '(bytes32,uint64,bytes,bytes32,bytes32,bytes,bytes)';
+  const openWith = (commitment) => chain.call(verifier,
+    selector(`openAmount(bytes32,${TXOUT})`) +
+    b32(FIX.disclosure.shared_secret) + word(64) +
+    encodeTxOut({ ...proof().txOut, commitment }));
+
+  const real = FIX.tx_out.masked_amount.commitment;
+  const flipped = '0x' + (BigInt(real) ^ 1n).toString(16).padStart(64, '0');
+  const bad = await openWith(flipped);
+  assert(!bad.ok, 'a commitment that is not the output\'s still opened');
+  assertEq(bad.ret.slice(0, 10),
+    selector('InconsistentCommitment(bytes32,bytes32)'),
+    `refused for the wrong reason: ${revertReason(bad.ret)}`);
+
+  // The control: the block's real commitment opens, to the block's real value.
+  // So the refusal above is the commitment and nothing else.
+  const good = await openWith(real);
+  assert(good.ok, `the real commitment must open: ${revertReason(good.ret)}`);
+  assertEq(decodeUint(good.ret, 0), AMOUNT, 'the value it opens to');
+
+  // And the reason no deployment can reach that branch: the generator is
+  // derived from the token id, and it is MobileCoin's own.
+  assertEq((await chain.must(verifier, selector('eusdValueGenerator()'))).ret,
+    VALUE_GENERATOR,
+    'the derived B_token is not MobileCoin\'s generators(eusdTokenId)');
+  assertEq(await balanceOf(usdc, escrow), AMOUNT * 3n,
+    'exactly one release came out of the escrow');
+});
+
+await test('LIVENESS, NOT SAFETY: an escrow whose token id does not match its '
+  + 'verifier\'s releases nothing, ever', async () => {
+  // READ THE NAME OF THIS TEST BEFORE QUOTING IT. What is asserted here is a
+  // FAIL-CLOSED property: a bridge deployed with `Escrow.eusdTokenId` and
+  // `MobileCoinVerifier`'s `_eusdTokenId` set to different values pays nobody.
+  // Nobody is overpaid, no wrong payee is paid, no replay opens -- the return
+  // leg simply does not work. It is a bricked deployment, not a theft.
+  //
+  // It is worth a test anyway, and worth being explicit about which kind of
+  // property it is, because the two ids are SEPARATE constructor arguments and
+  // NOTHING CHECKS THEM AGAINST EACH OTHER AT CONSTRUCTION. Both deployments
+  // below succeed. The escrow never reads the verifier's id and the verifier
+  // never learns the escrow's; the disagreement surfaces only when the first
+  // real return arrives, which on a funded bridge is the worst moment to find
+  // out. That is a deployment-checklist item, and this is the test that says
+  // what it is protecting against.
+  //
+  // Note the shape it shares with the fail-open that was just closed: two
+  // arguments that have to agree and no code that makes them. That one --
+  // token id next to `_eusdValueGenerator` -- failed OPEN and paid out
+  // 250,000,000,000. This one fails closed. The difference is luck about which
+  // side of a comparison each argument lands on, not design.
+  const usdc = await chain.deploy('MockERC20');
+  const rc = await chain.deploy('RecipientCheck',
+    b32(FIX.disclosure.view_private_key));
+
+  // The verifier is correct: it is deployed for the token id the fixture's
+  // output really carries, and it will verify the real proof.
+  const verifier = await chain.deploy('MobileCoinVerifier',
     addrWord(B.reg) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
-    word(TOKEN_ID) + b32(VALUE_GENERATOR) + b32(MEMO_DOMAIN) + addrWord(rc));
-  const goodEscrow = await chain.deploy('Escrow',
-    addrWord(usdc) + addrWord(good) + word(TOKEN_ID) + word(CAP) +
+    word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
+
+  // The escrow is deployed for eUSD's 8192 -- a plausible mistake, since 8192
+  // is what a production deployment script would say and TOKEN_ID is what this
+  // scenario's ledger actually used.
+  const ESCROW_TOKEN_ID = 8192n;
+  assert(ESCROW_TOKEN_ID !== TOKEN_ID,
+    'this test needs two DIFFERENT token ids to be about anything');
+  const escrow = await chain.deploy('Escrow',
+    addrWord(usdc) + addrWord(verifier) + word(ESCROW_TOKEN_ID) + word(CAP) +
+    addrWord(GOV) + addrWord(AUDITOR) + word(0));
+
+  // THE FINDING, asserted rather than described: both constructors accepted
+  // the pairing. Neither reverted, neither emitted a warning, and the getters
+  // now disagree in a way only a human comparing two transactions would see.
+  assertEq(decodeUint((await chain.must(
+    verifier, selector('eusdTokenId()'))).ret, 0), TOKEN_ID,
+    'the verifier\'s token id');
+  assertEq(decodeUint((await chain.must(
+    escrow, selector('eusdTokenId()'))).ret, 0), ESCROW_TOKEN_ID,
+    'the escrow\'s token id');
+
+  await chain.must(usdc,
+    selector('mint(address,uint256)') + addrWord(escrow) + word(AMOUNT * 4n));
+  assertEq(await balanceOf(usdc, escrow), AMOUNT * 4n,
+    'the escrow must hold funds, or "releases nothing" is not a claim');
+
+  // The real proof -- the same bytes that pay out in LEG 3 above.
+  const r = await release(escrow, proof());
+  assert(!r.ok, 'a mismatched deployment released funds');
+  assertEq(r.ret.slice(0, 10), selector('WrongToken(uint64,uint64)'),
+    `refused for the wrong reason: ${revertReason(r.ret)}`);
+  // The error names both sides, which is the only diagnosis a deployer gets.
+  assertEq(decodeUint('0x' + r.ret.slice(10), 0), TOKEN_ID,
+    'the error must report what the verifier returned');
+  assertEq(decodeUint('0x' + r.ret.slice(10), 1), ESCROW_TOKEN_ID,
+    'the error must report what the escrow wanted');
+  assertEq(await balanceOf(usdc, escrow), AMOUNT * 4n, 'no USDC left');
+  assertEq(await balanceOf(usdc, BOB), 0n, 'nobody was paid');
+
+  // It is not one bad proof, it is every proof: the verifier is deterministic
+  // and its token id is immutable, so there is nothing a relayer can resubmit.
+  for (let i = 0; i < 2; i++) {
+    assert(!(await release(escrow, proof())).ok, `retry ${i} released funds`);
+  }
+
+  // THE CONTROL, and the thing that makes the refusal above about the pairing
+  // and not about the proof: the SAME verifier, the SAME proof, an escrow that
+  // agrees with it. This one pays.
+  const matched = await chain.deploy('Escrow',
+    addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
   await chain.must(usdc,
-    selector('mint(address,uint256)') + addrWord(goodEscrow) + word(AMOUNT * 4n));
-  const ok = await release(goodEscrow, proof());
-  assert(ok.ok, `the control must release: ${revertReason(ok.ret)}`);
-  assertEq(await balanceOf(usdc, BOB), AMOUNT, 'the control paid the payee');
+    selector('mint(address,uint256)') + addrWord(matched) + word(AMOUNT * 4n));
+  const good2 = await release(matched, proof());
+  assert(good2.ok, `the matched escrow must release: ${revertReason(good2.ret)}`);
+  assertEq(await balanceOf(usdc, BOB), AMOUNT, 'the payee was paid');
 });
 
 const ok = summary();
@@ -465,6 +574,9 @@ console.log('         All three come from one shared secret, S = [a]R, which');
 console.log('         the recipient check already had to compute. `Proof` has');
 console.log('         no amount, tokenId or beneficiary field: a proof in the');
 console.log('         old layout claiming 10x to an attacker releases nothing.');
+console.log('         B_token IS DERIVED FROM THE TOKEN ID in the constructor');
+console.log('         (ristretto255 one-way map, RFC 9496 4.3.4), so there is');
+console.log('         no generator argument a deployment can mispair.');
 console.log('');
 console.log('='.repeat(72));
 console.log('NOT ESTABLISHED — THE BRIDGE IS NOT READY TO HOLD FUNDS');
@@ -474,12 +586,21 @@ console.log('    artifacts reconstruct the composite scalar in one process, so')
 console.log('    the architecture gate is NOT closed and a composite address');
 console.log('    must not be funded on this evidence.');
 console.log('  * No live ceremony, no DKG, no deployment.');
-console.log('  * The verifier cannot check that its pinned Pedersen generator');
-console.log('    belongs to its token id -- that would be hash-to-curve on');
-console.log('    chain. A mispaired deployment fails OPEN: it verifies');
-console.log('    commitments in the wrong group and accepts amounts MobileCoin');
-console.log('    refuses (exhibited in test/verifier.mjs). Whoever deploys must');
-console.log('    diff eusdValueGenerator() against generators(eusdTokenId).');
+console.log('  * No audit of the ristretto255 one-way map that now derives the');
+console.log('    Pedersen value generator in the verifier\'s constructor. It');
+console.log('    reproduces MobileCoin\'s generators(id).B for all four token');
+console.log('    ids the oracle publishes, and agrees with a THIRD');
+console.log('    implementation (@noble/curves 1.9.7, neither the fixture nor');
+console.log('    the contract) on 56 token ids and 62 from_uniform_bytes');
+console.log('    vectors -- test/ristretto.mjs. That closes the mispaired-');
+console.log('    deployment fail-open and is real differential evidence, but');
+console.log('    agreeing with another implementation is not a review: a');
+console.log('    misreading of RFC 9496 that both share would pass.');
+console.log('  * The escrow\'s token id and the verifier\'s are separate');
+console.log('    constructor arguments checked against each other by nothing.');
+console.log('    A mismatch is fail-closed (asserted above) but bricks the');
+console.log('    return leg on a funded escrow. It is a deployment');
+console.log('    obligation, and there is no deployment procedure yet.');
 console.log('='.repeat(72));
 
 process.exitCode = ok ? 0 : 1;

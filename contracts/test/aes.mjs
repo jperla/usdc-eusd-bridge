@@ -38,7 +38,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const F = JSON.parse(readFileSync(join(HERE, 'fixtures', 'amount.json'), 'utf8'));
 
 const chain = await Chain.create({ only: ['Aes256.sol'] });
-const probe = await chain.deploy('Aes256Probe');
+const probe = await chain.deploy('Aes256Probe_DO_NOT_DEPLOY');
 
 // ------------------------------------------------------------------ encoding
 
@@ -48,7 +48,7 @@ const strip = (h) => h.replace(/^0x/, '').toLowerCase();
 const bN = (hex) => strip(hex).padEnd(64, '0');
 
 /// The probe returns variable-length results as four zero-filled words rather
-/// than as a `bytes` -- see the comment on `Aes256Probe`: solc 0.8.26 targets
+/// than as a `bytes` -- see the comment on `Aes256Probe_DO_NOT_DEPLOY`: solc 0.8.26 targets
 /// Cancun and ABI-encodes a returned dynamic array with MCOPY, which the
 /// Shanghai EVM the harness runs rejects as an invalid opcode. `len` is the
 /// number of bytes the caller asked for; anything past it is padding.

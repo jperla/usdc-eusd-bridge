@@ -122,12 +122,15 @@ proof object, not that the quantities are unverifiable on chain. The Ethereum
 verifier derives `amount`, `tokenId` and `beneficiary` from the output's own
 encrypted fields and trusts the relayer for none of them.
 
-What remains genuinely open here is the **pairing of `eusdTokenId` with
-`eusdValueGenerator`** at deployment: the contract does not implement
-hash-to-curve, so it cannot check that its pinned `B_token` is
-`generators(eusdTokenId)`, and a mispaired deployment verifies commitments in
-the wrong group. That is a deployment-configuration obligation, not something a
-proof submitter can reach.
+The **pairing of `eusdTokenId` with `eusdValueGenerator`** used to be open here,
+and is not any more. The contract took `B_token` as a constructor argument
+because deriving it needs hash-to-curve, so a mispaired deployment verified
+commitments in the wrong group -- an amount MobileCoin rejects verified on
+chain. `MobileCoinVerifier` now implements the ristretto255 one-way map
+(RFC 9496 §4.3.4) and derives `B_token` from `eusdTokenId` in its constructor.
+`eusdValueGenerator` survives as a getter, but it is derived, not supplied:
+there is no argument left to mispair. The derivation costs ~160k gas once at
+deployment and nothing at redemption.
 
 **The Merkle tree is a mirror, not upstream's code.** `merkle.rs` reproduces
 `mc-ledger-db`'s `tx_out_store.rs` (rev 05cb699f) rather than depending on it,

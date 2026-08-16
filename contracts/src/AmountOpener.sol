@@ -145,15 +145,25 @@ library AmountOpener {
     /// `B_token`, decoded, having refused the two encodings that would make the
     /// commitment check vacuous.
     ///
-    /// WHY THIS IS A PARAMETER AND NOT COMPUTED. MobileCoin builds `B_token` by
-    /// hashing to the curve -- `RistrettoPoint::from_hash(Blake2b512(tag ||
-    /// basepoint-XOR-token-id))`, which is an Elligator map over a 512-bit
-    /// digest. Implementing hash-to-curve on chain would be several hundred
-    /// lines of untested arithmetic to produce ONE point, because this contract
-    /// accepts exactly one token id. So the point is pinned at construction and
-    /// the derived token id is required to equal that id. `test/verifier.mjs`
-    /// asserts the pinned value is what MobileCoin's own `generators(token_id)`
-    /// produces; without that assertion the constant would be unfounded.
+    /// WHY THIS STILL TAKES AN ENCODING. `B_token` is no longer a deployment
+    /// parameter: `MobileCoinGenerators.valueGenerator` derives it from the
+    /// token id in `MobileCoinVerifier`'s constructor, so the caller passes the
+    /// derived immutable and there is no pair for a deployer to get wrong.
+    ///
+    /// It stays a `bytes32` argument rather than a token id because this
+    /// library is about opening an amount, not about which generator an amount
+    /// is denominated in -- and because a function that takes the generator can
+    /// be handed a WRONG one by a test, which is what keeps the commitment
+    /// comparison below reachable now that no deployment can reach it.
+    ///
+    /// The two refusals here are cheap and are kept: they are what makes a
+    /// degenerate generator fail loudly rather than verify everything. Each is
+    /// covered by a named test in contracts/test/verifier.mjs, driven through
+    /// `AmountOpenerProbe_DO_NOT_DEPLOY.decodeGenerator`, which exists for no
+    /// other reason: deleting either `revert` turns one of those two tests red
+    /// and nothing else. That was not true when this sentence was written --
+    /// the change that derived `B_token` on chain also deleted the only test
+    /// that reached here, and both refusals were unfalsifiable for a commit.
     function decodeGenerator(bytes32 encoded)
         internal
         view
@@ -161,9 +171,13 @@ library AmountOpener {
     {
         // The identity's encoding, refused before decoding because `decode`
         // accepts it -- it is a perfectly valid point, just a fatal generator.
+        // Covered by 'the identity is refused as a value generator, because
+        // under it every amount verifies'.
         if (encoded == bytes32(0)) revert InvalidValueGenerator(encoded);
         bool ok;
         (ok, p) = Ristretto255.decode(encoded);
+        // Covered by 'a value generator that is not a point is refused', over
+        // the ten encodings curve25519-dalek itself rejects.
         if (!ok) revert InvalidValueGenerator(encoded);
     }
 
@@ -293,14 +307,23 @@ library MemoOpener {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
 /// Test wrapper. Both libraries are `internal`, so nothing above has an ABI of
 /// its own and no test could reach a single step in isolation.
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
 ///
 /// Every function returns fixed-width words. A probe that returns `bytes` dies
 /// with "invalid opcode" on the Shanghai EVM the suite runs, because solc
 /// 0.8.26 ABI-encodes a returned dynamic array with MCOPY -- which looks like a
 /// library bug and is not one.
-contract AmountOpenerProbe {
+contract AmountOpenerProbe_DO_NOT_DEPLOY {
     function amountSharedSecret(bytes32 s) external view returns (bytes32) {
         return bytes32(AmountOpener.amountSharedSecret(s));
     }
@@ -371,6 +394,11 @@ contract AmountOpenerProbe {
         return Ristretto255.encode(Ristretto255.basepoint());
     }
 
+    /// `AmountOpener.decodeGenerator`, reachable. Both of its refusals are
+    /// dead ends inside `requireCommitment` -- the only encodings that reach
+    /// them there are ones no caller can now supply, since the generator is
+    /// derived -- so this is the only way a test can produce
+    /// `InvalidValueGenerator` at all.
     function decodeGenerator(bytes32 encoded) external view returns (bytes32) {
         return Ristretto255.encode(AmountOpener.decodeGenerator(encoded));
     }

@@ -60,8 +60,8 @@ const encodeTwoBytes = (sig, aHex, bHex) => {
 
 const u = (n, bytes) => BigInt(n).toString(16).padStart(bytes * 2, '0');
 
-/// Ops as emitted by the Rust generator -> the MerlinProbe script format
-/// documented on MerlinProbe. Big-endian here, deliberately unlike the
+/// Ops as emitted by the Rust generator -> the MerlinProbe_DO_NOT_DEPLOY script format
+/// documented on MerlinProbe_DO_NOT_DEPLOY. Big-endian here, deliberately unlike the
 /// transcript's own little-endian encodings, so a byte-order confusion between
 /// the two shows up rather than cancelling.
 function encodeScript(ops) {
@@ -165,8 +165,8 @@ async function sponge(chain, probe, rate, msgBytes, padByte, outLen) {
 // Only this component's sources: a half-written contract elsewhere in src/ is
 // someone else's problem, not a failure of the transcript.
 const chain = await Chain.create({ only: ['Keccak1600.sol', 'Merlin.sol'] });
-const kp = await chain.deploy('Keccak1600Probe');
-const mp = await chain.deploy('MerlinProbe');
+const kp = await chain.deploy('Keccak1600Probe_DO_NOT_DEPLOY');
+const mp = await chain.deploy('MerlinProbe_DO_NOT_DEPLOY');
 
 // Keccak-f[1600] applied to the all-zero state. All 25 lanes, from the Keccak
 // team's KeccakF-1600-IntermediateValues.txt ("After permutation"). Lane 0 is
@@ -357,7 +357,7 @@ await test('keccak256 length sweep vs ethereum-cryptography', async () => {
 // ----------------------------------------------------- merlin differentials
 
 /// The probe returns keccak256 of the concatenated challenge output (see
-/// MerlinProbe for why it cannot return the bytes themselves), so the fixture's
+/// MerlinProbe_DO_NOT_DEPLOY for why it cannot return the bytes themselves), so the fixture's
 /// expected hex is hashed the same way before comparing. `head` and `len` come
 /// back too, purely so a failure says something.
 const runScript = async (label, ops) => {

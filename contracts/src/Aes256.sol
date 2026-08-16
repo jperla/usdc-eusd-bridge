@@ -365,6 +365,15 @@ library Aes256 {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
+///
 /// Test wrapper: libraries with internal functions have no ABI of their own.
 ///
 /// EVERY VARIABLE-LENGTH RESULT LEAVES THIS CONTRACT AS FIXED WORDS, not as a
@@ -378,7 +387,7 @@ library Aes256 {
 /// API for the verifier: it builds its output a byte at a time and emits no
 /// MCOPY, which is why `keystreamGas` below runs the real function to
 /// completion on the same Shanghai EVM.
-contract Aes256Probe {
+contract Aes256Probe_DO_NOT_DEPLOY {
     /// The probe's four-word return cannot hold more than this.
     error ProbeOutputTooLong(uint256 len);
     /// The S-box is eight words wide.

@@ -53,13 +53,31 @@ library Ristretto255 {
     uint256 private constant D2 =
         16295367250680780974490674513165176452449235426866156013048779062215315747161;
 
-    /// sqrt(-1) mod p: dalek's SQRT_M1, the non-negative root.
+    /// sqrt(-1) mod p: the non-negative root, the exact integer published by
+    /// RFC 9496 section 4.1.
     ///
-    /// Which of the two roots this is changes no output, which is worth
-    /// recording rather than rediscovering. `_sqrtRatio` normalizes its result
-    /// to the non-negative root, and `encode`'s rotated branch scales both
-    /// coordinates by it before that same normalization; the roots differ only
-    /// in `_sqrtRatio`'s non-square case, whose `r` both callers discard.
+    /// WHICH ROOT THIS IS MATTERS. This comment used to say the opposite --
+    /// "changes no output" -- and that was true of the file it was written for
+    /// and false as soon as `_map` landed. The old reasoning covered only the
+    /// two callers that existed then: `_sqrtRatio` normalizes to the
+    /// non-negative root, and `encode`'s rotated branch scales both coordinates
+    /// by it before that same normalization, so decode and encode really are
+    /// insensitive to the choice.
+    ///
+    /// `_map` is not. It multiplies by this constant DIRECTLY, in
+    /// `r = SQRT_M1 * t^2`, and then consumes `_sqrtRatio`'s non-square result
+    /// in the false arm -- the one case the old argument dismissed as
+    /// discarded. Writing M_i for the map under root i, the other root gives
+    ///
+    ///     M_-i(t) = M_i(i*t)
+    ///
+    /// which is the same FUNCTION over the whole input space and a different
+    /// answer for any particular t. At t = 2 the two roots encode to
+    /// 5a603cec... and cefca57d..., which are different points. A generator
+    /// derived under the wrong root is a wrong `B_token`, silently.
+    ///
+    /// So the value is forced, and forced by the RFC rather than by dalek: the
+    /// oracles corroborate it, they are not the authority for it.
     uint256 private constant SQRT_M1 =
         19681161376707505956807079304988542015446066515923890162744021073123829784752;
 
@@ -67,6 +85,34 @@ library Ristretto255 {
     /// rotated branch uses it, where the final |s| makes its sign immaterial.
     uint256 private constant INVSQRT_A_MINUS_D =
         54469307008909316920995813868745141605393597292927456921205312896311721017578;
+
+    /// 1 - d^2, dalek's ONE_MINUS_EDWARDS_D_SQUARED, RFC 9496's ONE_MINUS_D_SQ.
+    ///
+    /// It is one minus d SQUARED, not (1 - d) squared. The two names sit next
+    /// to each other in the same formula and are different numbers.
+    uint256 private constant ONE_MINUS_D_SQ =
+        1159843021668779879193775521855586647937357759715417654439879720876111806838;
+
+    /// (d - 1)^2, dalek's EDWARDS_D_MINUS_ONE_SQUARED, RFC 9496's D_MINUS_ONE_SQ.
+    uint256 private constant D_MINUS_ONE_SQ =
+        40440834346308536858101042469323190826248399146238708352240133220865137265952;
+
+    /// sqrt(a*d - 1) with a = -1, i.e. sqrt(-d - 1): dalek's SQRT_AD_MINUS_ONE.
+    ///
+    /// WHICH ROOT THIS IS MATTERS. It scales `w1`, and `w1` multiplies both Y
+    /// and Z of the map's output, so y = Y/Z survives the swap while x = X/Z
+    /// flips sign -- the other root maps every input to the NEGATION of the
+    /// right point, quietly and without any error. (Stated precisely: the swap
+    /// sends (X,Y,Z,T) to (X,-Y,-Z,T), which is projectively (-X,Y,Z,-T), the
+    /// Edwards negation. Identity outputs are unmoved, since 0 = -0.)
+    ///
+    /// The exact integer is REQUIRED BY RFC 9496 section 4.1 -- it is the
+    /// odd/RFC-negative root of -d-1 -- so the choice is forced by the
+    /// specification, not by dalek's convention. The oracle corroborates it: p
+    /// minus this value reproduces none of amount.json's four `B_token`s, and
+    /// this value reproduces all four. That is evidence, not the authority.
+    uint256 private constant SQRT_AD_MINUS_ONE =
+        25063068953384623474111414158702152701244531502492656460079210482610430750235;
 
     /// (p - 5) / 8, the exponent of the square-root candidate formula. p = 5
     /// (mod 8), so no single exponent is a square root and the candidate has to
@@ -165,9 +211,11 @@ library Ristretto255 {
         uint256 u1 = mulmod(addmod(z, y, P), addmod(z, _neg(y), P), P);
         uint256 u2 = mulmod(x, y, P);
 
-        // Always a square, so the flag is not consulted; for the identity both
-        // u1 and u2 are zero and the zero root falls through to s = 0, which is
-        // the identity's encoding.
+        // The flag is not consulted, and the reason is NOT that the ratio is
+        // always a square -- it is not. At the identity u1 and u2 are both
+        // zero, so this is `_sqrtRatio(1, 0)`, which is the u != 0, v = 0 case
+        // and returns (false, 0). Ignoring the flag is still right: the zero
+        // root falls through to s = 0, which is the identity's encoding.
         (, uint256 invsqrt) =
             _sqrtRatio(1, mulmod(u1, mulmod(u2, u2, P), P));
 
@@ -189,6 +237,154 @@ library Ristretto255 {
         if (s & 1 == 1) s = P - s; // the encoding is always the non-negative s
 
         return _toLE(s);
+    }
+
+    // ------------------------------------------------------------ one-way map
+
+    /// The ristretto255 one-way map on a 64-byte uniform string: RFC 9496
+    /// section 4.3.4, dalek's `RistrettoPoint::from_uniform_bytes`.
+    ///
+    /// Each 32-byte half becomes a field element and is mapped separately, and
+    /// the two results are ADDED. One application of the map is not surjective
+    /// and not uniform; two and a sum are. Halving this to a single map would
+    /// still produce a point on the curve for every input, which is exactly why
+    /// it has to be pinned against an oracle rather than eyeballed.
+    ///
+    /// This is `from_hash` over a Blake2b-512 digest -- NOT `decode`. The input
+    /// is a hash, not an encoding, and there is no failure case: every 64-byte
+    /// string maps to a point.
+    ///
+    /// `lo` is digest bytes 0..32 and `hi` bytes 32..64, each little-endian.
+    function fromUniformBytes(bytes32 lo, bytes32 hi)
+        internal
+        view
+        returns (Point memory)
+    {
+        return add(_map(_fieldFromLE(lo)), _map(_fieldFromLE(hi)));
+    }
+
+    /// dalek's `FieldElement::from_bytes`: the low 255 bits, reduced.
+    ///
+    /// THE HIGH BIT IS DISCARDED, not rejected and not kept. A 64-byte hash has
+    /// no reason to be canonical, so this is not `decode`'s canonicality rule
+    /// wearing a different name -- it is what RFC 9496 section 4.3.4 specifies
+    /// for the one-way map, and it is deliberately different from section
+    /// 4.3.1, which requires `decode` to REJECT a set high bit. The two are
+    /// inconsistent only if you forget that one takes an encoding and the other
+    /// takes a hash.
+    ///
+    /// It changes the answer: 2^255 = 19 (mod p), so keeping the bit feeds the
+    /// map the field element t + 19 instead of t. NOT "the point 19 further
+    /// along" -- the map is not linear, and the output is not a translation of
+    /// the right one. It is an unrelated point.
+    ///
+    /// COVERAGE, STATED HONESTLY. Four of the eight halves the fixture's
+    /// generators hash to have this bit set, and contracts/test/ristretto.mjs's
+    /// 'the high bit of each half is DISCARDED' requires exactly four rather
+    /// than the "at least one" it used to require, which a regenerated fixture
+    /// could satisfy while quietly dropping most of the coverage.
+    ///
+    /// But those four are not spread one per generator, and it matters which:
+    ///
+    ///     token 0        low half only
+    ///     token 1        high half only
+    ///     token 8192     NEITHER
+    ///     u64::MAX       both
+    ///
+    /// So an implementation that skipped the mask still reproduces token
+    /// 8192 -- eUSD, the only id this bridge actually deploys for -- exactly.
+    /// The claim that used to sit here, that skipping the mask "reproduces none
+    /// of them", is false, and false precisely where it would be trusted most.
+    /// What defends the mask for eUSD is the 62-vector noble cross-check, not
+    /// amount.json.
+    ///
+    /// THE `% P` IS NOT OUTPUT-BEARING, AND IS NOT DEAD CODE. Removing it
+    /// leaves the whole suite green -- after masking the value is at most
+    /// p + 18, and every use of it in `_map` goes through `mulmod`, which
+    /// reduces anyway. It stays because RFC 9496 section 4.3.4 specifies the
+    /// reduction and because it is what keeps "this function returns a field
+    /// element" true for the next caller, which may not be `mulmod`. Recorded
+    /// here because "the tests still pass without it" is exactly the argument
+    /// that would delete it.
+    function _fieldFromLE(bytes32 b) private pure returns (uint256) {
+        return (_fromLE(b) & ((uint256(1) << 255) - 1)) % P;
+    }
+
+    /// MAP(t) from RFC 9496 section 4.3.4 -- dalek's
+    /// `elligator_ristretto_flavor`. Returns extended coordinates.
+    ///
+    /// Even: MAP(t) == MAP(-t). `r` depends on t^2 and the only other use of
+    /// `t` is inside an absolute value, so the sign of the input cannot reach
+    /// the output. Asserted in contracts/test/ristretto.mjs, because dropping
+    /// that absolute value is the easiest way to get this function subtly wrong.
+    ///
+    /// That evenness property used to be the ONLY thing standing over the
+    /// absolute value: none of the four `bToken` vectors from MobileCoin's own
+    /// crates fails when it is removed. It is now backed by a differential
+    /// check against noble-curves 1.9.7 (an implementation that is neither
+    /// this file nor the dalek behind the fixtures) over 62 map inputs and 56
+    /// token ids, in contracts/test/fixtures/ristretto-noble.json. That check
+    /// catches the same deletion at 20 and 21 of them respectively.
+    ///
+    /// `den` CAN BE ZERO, and must be left alone when it is. It vanishes at
+    /// r = -d and r = -1/d, both of which are reached by real field elements
+    /// (t^2 = i*d and t^2 = i/d are both squares). There `_sqrtRatio(n, 0)`
+    /// takes its u != 0, v = 0 case and returns (false, 0), the false arm sets
+    /// s = 0 and c = r, and the result is (0, w1, w1, 0) -- a valid
+    /// representation of the identity, satisfying both curve identities. No
+    /// input makes Z zero: the quadratics for N = 0 and 1 + s^2 = 0 have
+    /// discriminants -4d(d-1)^2 and 4d(d+1)(d-1)^2, both non-squares here.
+    ///
+    /// So there is nothing to defend against, and defending anyway is the
+    /// hazard. Adding `if (den == 0) den = 1;` -- the shape a "this cannot
+    /// happen" guard takes -- silently returns a DIFFERENT generator for any
+    /// token id whose digest reaches one of those r, and left the whole suite
+    /// green until contracts/test/ristretto.mjs grew 'the map's degenerate
+    /// branches are REACHED'. Those inputs are solved for from d and i rather
+    /// than copied from here, so editing this function cannot move them.
+    function _map(uint256 t) private view returns (Point memory) {
+        uint256 r = mulmod(SQRT_M1, mulmod(t, t, P), P);
+        uint256 n = mulmod(addmod(r, 1, P), ONE_MINUS_D_SQ, P);
+        // (c - d*r) * (r + d), with c = -1.
+        uint256 den = mulmod(
+            addmod(_neg(1), _neg(mulmod(D, r, P)), P), addmod(r, D, P), P
+        );
+
+        (bool wasSquare, uint256 s) = _sqrtRatio(n, den);
+        uint256 c = _neg(1);
+        if (!wasSquare) {
+            // s' = -|s*t|, and c becomes r. BOTH substitutions belong to this
+            // branch; upstream computes s' unconditionally and assigns it
+            // conditionally, which is the same thing without a branch. Two of
+            // the fixture's four generators reach this arm, so it is not
+            // decoration.
+            uint256 sp = mulmod(s, t, P);
+            if (sp & 1 == 0) sp = _neg(sp); // negate the non-negative one
+            s = sp;
+            c = r;
+        }
+
+        uint256 nt = addmod(
+            mulmod(mulmod(c, addmod(r, _neg(1), P), P), D_MINUS_ONE_SQ, P),
+            _neg(den),
+            P
+        );
+        uint256 ss = mulmod(s, s, P);
+
+        // dalek assembles a completed (P1xP1) point here and converts; the
+        // conversion is folded into the four products below so nothing has to
+        // model a second coordinate system.
+        uint256 w0 = mulmod(addmod(s, s, P), den, P);
+        uint256 w1 = mulmod(nt, SQRT_AD_MINUS_ONE, P);
+        uint256 w2 = addmod(1, _neg(ss), P);
+        uint256 w3 = addmod(1, ss, P);
+
+        return Point({
+            x: mulmod(w0, w3, P),
+            y: mulmod(w2, w1, P),
+            z: mulmod(w1, w3, P),
+            t: mulmod(w0, w2, P)
+        });
     }
 
     // -------------------------------------------------------------- arithmetic
@@ -279,8 +475,18 @@ library Ristretto255 {
 
     // ---------------------------------------------------------------- internal
 
-    /// dalek's SQRT_RATIO_M1: returns (u/v is a square and v != 0, r) with
-    /// r = sqrt(u/v) when that holds, and r = sqrt(i*u/v) when it does not.
+    /// dalek's SQRT_RATIO_M1, RFC 9496 section 4.2. All four cases the RFC
+    /// defines, which "u/v is a square and v != 0" does not quite describe:
+    ///
+    ///     u = 0, ANY v (including v = 0)  -> (true,  0)
+    ///     u != 0, v = 0                   -> (false, 0)
+    ///     u/v a non-zero square           -> (true,  +sqrt(u/v))
+    ///     u/v a non-zero non-square       -> (false, +sqrt(i*u/v))
+    ///
+    /// The u = v = 0 case returns TRUE, not false -- `_map` reaches v = 0 with
+    /// u != 0 (see the note there), and `encode` reaches u = v = 0 at the
+    /// identity, so both corners are live and neither is the one this comment
+    /// used to imply.
     ///
     /// The returned root is always the non-negative one. Both callers rely on
     /// that: it is what makes the decoded x and the encoded s canonical.
@@ -414,10 +620,19 @@ library Ristretto255 {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
 /// Test wrapper: the library's functions are internal, and points are memory
 /// structs no external caller can hold. Everything here takes and returns wire
 /// encodings, so a test can only assert what a real caller could observe.
-contract Ristretto255Probe {
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
+contract Ristretto255Probe_DO_NOT_DEPLOY {
     function decodes(bytes32 encoded) external view returns (bool ok) {
         (ok,) = Ristretto255.decode(encoded);
     }
@@ -482,5 +697,28 @@ contract Ristretto255Probe {
 
     function basepointEncoding() external view returns (bytes32) {
         return Ristretto255.encode(Ristretto255.basepoint());
+    }
+
+    /// The one-way map over a 64-byte string, as an encoding.
+    function fromUniformBytes(bytes32 lo, bytes32 hi)
+        external
+        view
+        returns (bytes32)
+    {
+        return Ristretto255.encode(Ristretto255.fromUniformBytes(lo, hi));
+    }
+
+    /// ONE application of MAP, so its evenness can be exercised on a chosen
+    /// input instead of only through a digest.
+    ///
+    /// MAP(0) is the identity, so pairing `t` with a zero half is MAP(t) and
+    /// not a sum of two maps. That is asserted by a test rather than taken on
+    /// trust here -- if it stopped holding, every use of this probe would be
+    /// measuring something else. Feeding the same bytes as BOTH halves would
+    /// give [2]MAP(t) and would not do.
+    function mapToPoint(bytes32 t) external view returns (bytes32) {
+        return Ristretto255.encode(
+            Ristretto255.fromUniformBytes(t, bytes32(0))
+        );
     }
 }

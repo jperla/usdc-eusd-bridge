@@ -375,10 +375,19 @@ library Keccak1600 {
     }
 }
 
+/// TEST ONLY -- NEVER DEPLOY.
+///
+/// It lives in this file, and not in `src/TestMocks.sol` with the other
+/// test-only contracts, because a wrapper for `internal` functions has to be
+/// compiled against the library that declares them. That is a constraint, not
+/// an exemption: `contracts/test/deployables.mjs` enumerates every contract in
+/// `src/` and fails unless it is either on the deployable allowlist or marked
+/// exactly like this one, so a production contract cannot arrive here unnamed.
+///
 /// Test-facing surface. Lives here rather than in the test directory because
 /// the harness compiles `src/` and calls real bytecode; there is no other way
 /// to reach an `internal` library function from a test.
-contract Keccak1600Probe {
+contract Keccak1600Probe_DO_NOT_DEPLOY {
     function f1600(uint256[25] memory a)
         external
         pure

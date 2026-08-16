@@ -45,6 +45,14 @@ const FIX = JSON.parse(readFileSync(
 const AMT = JSON.parse(readFileSync(
   join(HERE, 'fixtures', 'amount.json'), 'utf8'
 ));
+// tools/ristretto-fixtures' `rejects`: encodings curve25519-dalek itself
+// refuses, asserted refused on the Rust side before the file is written. Read
+// here for one reason -- `AmountOpener.decodeGenerator` has a refusal for a
+// generator that is not a point, and this is the only published supply of
+// things that are not points.
+const RIS = JSON.parse(readFileSync(
+  join(HERE, 'fixtures', 'ristretto.json'), 'utf8'
+));
 
 const GOV = '0x' + '11'.repeat(20);
 const MEMO_DOMAIN =
@@ -63,9 +71,10 @@ assertEq(ANCHOR.root_element.hash, FIX.merkle.known_root.hash,
 const TOKEN_ID = BigInt(FIX.expected.tokenId);
 
 /// `B_token`, MobileCoin's `generators(id).B`, as published by the oracle.
-/// Pinning it is a deployment decision -- see MobileCoinVerifier's
-/// `eusdValueGenerator` -- so every verifier below is built with the one that
-/// belongs to its token id, and one test asserts the pin is upstream's value.
+///
+/// NOT a deployment parameter any more. The constructor derives it from the
+/// token id, so this is only ever the EXPECTED value here: what the fixture
+/// says upstream computes, to be compared against what the contract computed.
 const GENERATOR = (id) => {
   const g = AMT.generators.byTokenId.find((x) => x.tokenId === String(id));
   assert(g, `amount.json has no generator for token id ${id}`);
@@ -222,17 +231,137 @@ async function registry(entityOf) {
   return reg;
 }
 
-/// A verifier, with whatever recipient check and token/generator pair a test
-/// wants. `rc` is an already-deployed address so a test can supply a
-/// constructed mock.
+/// A verifier, with whatever recipient check and token id a test wants. `rc` is
+/// an already-deployed address so a test can supply a constructed mock.
+///
+/// THERE IS NO `generator` OPTION, and that is the point of this change: the
+/// constructor derives `B_token` from `tokenId`, so no test -- and no deployer
+/// -- can pair one with the other's point.
 const deployVerifier = (reg, rc, {
   tokenId = TOKEN_ID,
-  generator = GENERATOR(TOKEN_ID),
   spendKey = FIX.disclosure.recovered_subaddress_spend_key,
   memoDomain = MEMO_DOMAIN,
 } = {}) => chain.deploy('MobileCoinVerifier',
-  addrWord(reg) + b32(spendKey) + word(tokenId) + b32(generator) +
+  addrWord(reg) + b32(spendKey) + word(tokenId) +
   b32(memoDomain) + addrWord(rc));
+
+/// What one `MobileCoinVerifier` deployment actually costs and produces: the
+/// whole transaction's gas, and the runtime code EIP-170 has to accept.
+///
+/// THE TRANSACTION, NOT THE EXECUTION. This used to return
+/// `executionGasUsed` alone, under a comment saying "a deployment is a
+/// transaction, so it has to fit in a block like any other" -- which is the
+/// argument for measuring the other ~509,000 gas it was leaving out. A
+/// contract creation pays, before a single opcode runs:
+///
+///   * 21,000 G_transaction, the base cost of any transaction,
+///   * 32,000 G_txcreate, charged because `to` is empty. MEASURED, not
+///     assumed: `evm.runCall` on init code that returns an empty runtime
+///     reports 6 gas, so ethereumjs charges this at the transaction layer,
+///     which this suite does not use. Leaving it out understates a deployment
+///     by 32,000 -- and the note that prompted this change left it out too.
+///   * 16 gas per non-zero and 4 per zero byte of init code, as calldata
+///     (EIP-2028); init code here is ~28.8 KB and almost entirely non-zero,
+///     which is where the bulk of the number comes from, and
+///   * 2 gas per 32-byte word of init code (EIP-3860, Shanghai).
+///
+/// The 200-gas-per-byte code deposit is NOT added here: it is already inside
+/// `executionGasUsed`. Measured the same way -- init code returning 32 bytes
+/// of runtime reports 6,409 gas, of which 6,400 is the deposit.
+///
+/// EIP-3860 also caps init code at 49,152 bytes, which is the other cliff and
+/// is reported below.
+///
+/// The calldata term depends on the ARGUMENT bytes as well as the code, so two
+/// deployments of the same contract differ by a few hundred gas according to
+/// how many zero bytes their addresses and keys happen to contain. That is
+/// real -- it is what the deployer pays -- and it is why this is reported
+/// rather than pinned.
+/// The intrinsic charge of a creation transaction: G_transaction + G_txcreate.
+/// Asserted below rather than only spelled out here -- see the gas-accounting
+/// test, which measures that neither term is already inside `executionGasUsed`.
+const G_TRANSACTION = 21_000;
+const G_TXCREATE = 32_000;
+
+/// A fresh EVM carrying EIP-2929's INITIAL ACCESS SET, which is what makes the
+/// execution term below a property of the contract rather than of whatever ran
+/// before it.
+///
+/// WHY THIS IS NOT `chain.evm`. `deployCost` used to run on the shared EVM,
+/// which by then had already deployed a `MobileCoinVerifier` at module scope.
+/// ethereumjs carries warm-account state across `runCall`s, so the execution
+/// term was warm -- and warm BY ACCIDENT. Deleting the module-scope deploy, or
+/// merely moving this test above it, would have moved the published figure by
+/// 5,000 gas with nothing turning red.
+///
+/// WHY THE FIX IS NOT SIMPLY "USE A FRESH EVM". A fresh `runCall` is COLDER
+/// than a real transaction, so that would have overstated the bill by the same
+/// 5,000. EIP-2929: "accessed_addresses is initialized to include the
+/// tx.sender, tx.to (or the address being created if it is a contract creation
+/// transaction) and the set of all precompiles." ethereumjs applies that
+/// initialization in `runTx`, in @ethereumjs/vm -- a package this repo does not
+/// install -- while `evm.runCall` warms only the created address
+/// (evm.js:688). So the sender and the precompiles have to be warmed here.
+///
+/// It is exactly two precompiles that matter, and they are why the number
+/// moved: the constructor calls modexp (0x05) and blake2f (0x09), at 2,500 gas
+/// each for a cold account access.
+///
+/// Measured all three ways, same init code: fresh EVM 5,021,677; fresh EVM
+/// with this initial set 5,016,677; shared EVM after a prior deploy 5,016,677.
+/// The last two agree, which is the point -- the modelled number and the
+/// accidental one are the same, so this change fixes the reasoning without
+/// moving the published figure.
+async function freshCreationEvm() {
+  const { EVM } = await import('@ethereumjs/evm');
+  const { Account } = await import('@ethereumjs/util');
+  const evm = await EVM.create();
+  await evm.stateManager.putAccount(chain.deployer, new Account(0n, 10n ** 24n));
+  evm.journal.addAlwaysWarmAddress(chain.deployer.toString());
+  // The precompiles. 0x01..0x0a covers every one this chain has; warming an
+  // address the constructor never touches costs nothing and models the EIP.
+  for (let i = 1; i <= 10; i++) {
+    evm.journal.addAlwaysWarmAddress('0x' + i.toString(16).padStart(40, '0'));
+  }
+  return evm;
+}
+
+async function deployCost(encodedArgs) {
+  const { hexToBytes, bytesToHex } = await import('@ethereumjs/util');
+  const initCode = hexToBytes(chain._bytecode('MobileCoinVerifier') + encodedArgs);
+  let zero = 0;
+  for (const b of initCode) if (b === 0) zero++;
+  const calldata = zero * 4 + (initCode.length - zero) * 16;
+  const initWords = 2 * Math.ceil(initCode.length / 32);
+
+  // The constructor reads its address arguments but calls none of them, so a
+  // state with nothing else deployed measures the same work.
+  const evm = await freshCreationEvm();
+  const r = await evm.runCall({
+    data: initCode,
+    gasLimit: 500_000_000n,
+    caller: chain.deployer,
+    origin: chain.deployer,
+  });
+  assert(!r.execResult.exceptionError,
+    `deploy failed: ${revertReason(bytesToHex(r.execResult.returnValue))}`);
+
+  const execution = Number(r.execResult.executionGasUsed);
+  const intrinsic = G_TRANSACTION + G_TXCREATE;
+  return {
+    initCodeBytes: initCode.length,
+    runtimeBytes: r.execResult.returnValue.length,
+    intrinsic,
+    calldata,
+    initWords,
+    execution,
+    total: intrinsic + calldata + initWords + execution,
+  };
+}
+
+/// EIP-170's runtime code limit, and EIP-3860's init code limit.
+const EIP_170_LIMIT = 24_576;
+const EIP_3860_LIMIT = 49_152;
 
 /// The REAL recipient check, holding the return address's published view
 /// private key. It is what computes `S = [a]R`, and every derived field below
@@ -314,6 +443,152 @@ await test('the returned amount, token id and payee are the ones MobileCoin '
     'beneficiary, vs the first 20 bytes of the decrypted memo data');
   assertEq(FIX.disclosure.memo_type, '0x8001',
     'the fixture must be a bridge-return memo, or this test proves nothing');
+});
+
+await test('report the gas for one deployment TRANSACTION, derivation included',
+  async () => {
+  // The number the deleted constructor argument was traded for. `B_token` used
+  // to be handed to the constructor because deriving it needs hash-to-curve;
+  // deriving it costs this much, ONCE, and `verifyReturn` never runs it.
+  //
+  // Reported against a ceiling rather than pinned: a deployment is a
+  // transaction, so it has to fit in a block like any other -- and that
+  // sentence is why this measures the transaction. `executionGasUsed` alone,
+  // which is what this test used to print, understates the bill by
+  // G_transaction, G_txcreate, the calldata cost of ~28.8 KB of init code and
+  // EIP-3860's per-word charge: about 509,000 gas, or 9% of the total.
+  const args = addrWord(REG) +
+    b32(FIX.disclosure.recovered_subaddress_spend_key) + word(TOKEN_ID) +
+    b32(MEMO_DOMAIN) + addrWord(realCheck);
+  const c = await deployCost(args);
+
+  assert(c.total < 30_000_000,
+    `the deployment transaction does not fit in a block: ${c.total}`);
+  console.log(`        deployment TRANSACTION: ${c.total.toLocaleString()} gas`
+    + ` (${(c.total / 30_000_000 * 100).toFixed(1)}% of a 30M block)`);
+  console.log(`          ${c.intrinsic.toLocaleString()} intrinsic `
+    + `(21,000 + 32,000 G_txcreate) + ${c.calldata.toLocaleString()} calldata `
+    + `+ ${c.initWords.toLocaleString()} EIP-3860 initcode words + `
+    + `${c.execution.toLocaleString()} execution (deposit included)`);
+  console.log(`          over ${c.initCodeBytes.toLocaleString()} bytes of `
+    + `init code (EIP-3860 limit ${EIP_3860_LIMIT.toLocaleString()}, `
+    + `${(c.initCodeBytes / EIP_3860_LIMIT * 100).toFixed(0)}%)`);
+
+  // The pre-execution charge is most of a small transaction on its own, and it
+  // is the part that scales with code size rather than with work done. Stated
+  // as an assertion so that a change which doubles the code cannot quietly
+  // present itself as costing only its own execution.
+  //
+  // THE THRESHOLD ALONE IS NOT ENOUGH, and that is why the line below it
+  // exists. `calldata` is 453,008 on its own, so `preExecution > 450_000`
+  // passes with the intrinsic term set to ZERO -- measured: reverting
+  // `intrinsic` to a bare 21,000 leaves this test green and printing
+  // 5,492,489. The 32,000 G_txcreate correction is the whole reason this
+  // helper was rewritten, so it gets an assertion of its own.
+  const preExecution = c.intrinsic + c.calldata + c.initWords;
+  assert(preExecution > 450_000,
+    `the pre-execution charge collapsed to ${preExecution} -- either the code `
+    + 'shrank enormously or this test stopped measuring the transaction');
+  assertEq(c.intrinsic, 53_000,
+    'a creation transaction pays G_transaction (21,000) AND G_txcreate '
+    + '(32,000). The gas-accounting test below measures that neither is '
+    + 'already inside executionGasUsed, which is what makes adding them right.');
+
+  // And it is a derivation, not a stored constant: eUSD's 8192 costs
+  // essentially the same as this fixture's token id 1, because the work does
+  // not depend on the id.
+  const eusd = await deployCost(
+    addrWord(REG) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
+    word(8192n) + b32(MEMO_DOMAIN) + addrWord(realCheck));
+  console.log(`        the same for eUSD's token id 8192: `
+    + `${eusd.total.toLocaleString()} gas`);
+  assert(Math.abs(eusd.execution - c.execution) < 50_000,
+    `deriving 8192 costs ${eusd.execution} against ${c.execution} for `
+    + `${TOKEN_ID} -- the derivation is not id-independent`);
+});
+
+await test('WHAT executionGasUsed DOES AND DOES NOT ALREADY CONTAIN', async () => {
+  // The two facts the deployment figure is assembled from. Both were measured
+  // when `deployCost` was written and then recorded only in a comment, which
+  // is the same as not having measured them: a later ethereumjs that moved
+  // either charge would leave every gas number in this file wrong and every
+  // test green.
+  //
+  // Neither probe involves MobileCoinVerifier. They are two-instruction init
+  // codes, so they isolate the accounting from the contract.
+  const { EVM } = await import('@ethereumjs/evm');
+  const { Account, hexToBytes } = await import('@ethereumjs/util');
+
+  const run = async (code) => {
+    const evm = await EVM.create();
+    await evm.stateManager.putAccount(chain.deployer, new Account(0n, 10n ** 24n));
+    const r = await evm.runCall({
+      data: hexToBytes(code), gasLimit: 500_000_000n,
+      caller: chain.deployer, origin: chain.deployer,
+    });
+    assert(!r.execResult.exceptionError, `probe failed: ${code}`);
+    return {
+      gas: Number(r.execResult.executionGasUsed),
+      runtime: r.execResult.returnValue.length,
+    };
+  };
+
+  // PUSH1 0, PUSH1 0, RETURN -- deploys an empty runtime.
+  const empty = await run('0x60006000f3');
+  assertEq(empty.runtime, 0, 'the empty probe must deploy no runtime');
+  // 6 gas is three 3-gas pushes/returns and nothing else. If G_txcreate were
+  // charged inside execution this would be at least 32,000, and adding it in
+  // deployCost would be double-counting.
+  assert(empty.gas < 1_000,
+    `an empty creation reports ${empty.gas} gas. G_txcreate (32,000) appears `
+    + 'to be charged inside executionGasUsed after all -- deployCost adds it '
+    + 'on top, so the published deployment figure is now 32,000 too high.');
+
+  // PUSH1 32, PUSH1 0, RETURN -- deploys 32 bytes of runtime.
+  const small = await run('0x60206000f3');
+  assertEq(small.runtime, 32, 'the deposit probe must deploy 32 bytes');
+  // The 200-gas-per-byte code deposit IS inside execution: 32 * 200 = 6,400.
+  assert(small.gas - empty.gas >= 6_400,
+    `depositing 32 bytes of runtime added only ${small.gas - empty.gas} gas, `
+    + 'where 6,400 is the EIP-170 deposit price. If the deposit is NOT inside '
+    + 'executionGasUsed then deployCost is understating every deployment by '
+    + '200 gas per runtime byte -- about 4.8M for this contract.');
+});
+
+await test('report the runtime code size against EIP-170 -- 345 bytes to spare',
+  async () => {
+  // THE NEARER CLIFF, AND THE ONE NOTHING USED TO MENTION. The deployment has
+  // 5.5x of headroom on gas. It has 1.4% on SIZE. A contract that cannot be
+  // deployed at all is a worse failure than one that is expensive to deploy.
+  //
+  // THIS TEST ONLY REPORTS, AND THAT IS NOT A CHOICE OF STYLE. It cannot be
+  // the assertion, because it cannot run when the assertion would be needed:
+  // this file deploys a verifier at module scope, so a MobileCoinVerifier over
+  // 24,576 bytes kills the whole suite at import with "code size to deposit
+  // exceeds maximum code size" before the first test executes. Measured, by
+  // padding the contract with 40 trivial external functions in an isolated
+  // copy: verifier.mjs produced no summary at all.
+  //
+  // THE ASSERTION LIVES IN contracts/test/deployables.mjs, which reads the
+  // runtime image out of the compiler and deploys nothing, so it still runs --
+  // and turns red -- when the contract is over the limit. That file also
+  // carries the note on what breaks and what the next change has to give up.
+  const c = await deployCost(addrWord(REG) +
+    b32(FIX.disclosure.recovered_subaddress_spend_key) + word(TOKEN_ID) +
+    b32(MEMO_DOMAIN) + addrWord(realCheck));
+
+  const headroom = EIP_170_LIMIT - c.runtimeBytes;
+  console.log(`        runtime code: ${c.runtimeBytes.toLocaleString()} of `
+    + `${EIP_170_LIMIT.toLocaleString()} bytes `
+    + `(${(c.runtimeBytes / EIP_170_LIMIT * 100).toFixed(1)}%), `
+    + `${headroom} bytes of headroom -- asserted in deployables.mjs`);
+
+  // The init code has its own limit and a much wider margin, and unlike the
+  // runtime limit this one CAN be asserted here: an over-3860 contract still
+  // deploys on the ethereumjs EVM the suite runs, so this file survives to
+  // report it.
+  assert(c.initCodeBytes <= EIP_3860_LIMIT,
+    `EIP-3860: ${c.initCodeBytes} bytes of init code exceeds ${EIP_3860_LIMIT}`);
 });
 
 await test('report the gas for one full verifyReturn', async () => {
@@ -573,9 +848,9 @@ await test('every intermediate of the derivation matches the oracle', async () =
   // The oracle publishes each step -- the amount shared secret, both 8-byte
   // masks, the 64 raw blinding bytes, the memo's AES key and nonce -- so that
   // a failure of the whole path localises to a step instead of to "the amount
-  // is wrong". These go through AmountOpenerProbe, which exposes the library's
+  // is wrong". These go through AmountOpenerProbe_DO_NOT_DEPLOY, which exposes the library's
   // internal functions; the library itself is the one `verifyReturn` uses.
-  const probe = await chain.deploy('AmountOpenerProbe');
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
   const at = (r, i) => '0x' + r.ret.slice(2 + i * 64, 2 + (i + 1) * 64);
 
   assertEq((await chain.must(probe, selector('bBlinding()'))).ret,
@@ -628,86 +903,81 @@ await test('every intermediate of the derivation matches the oracle', async () =
   }
 });
 
-await test('the pinned value generator is MobileCoin\'s own generators(tokenId)',
-  async () => {
-  // Without this assertion `eusdValueGenerator` is an unfounded constant, and
-  // the commitment check below is a comparison against a point nobody vouched
-  // for. amount.json's `generators` come from MobileCoin's `generators()`.
+await test('the constructor DERIVES MobileCoin\'s generators(tokenId) for every '
+  + 'token id the oracle publishes', async () => {
+  // What `eusdValueGenerator` used to be: an argument, vouched for by nothing
+  // but a comment asking the deployer to compare two getters. It is now a
+  // function of `eusdTokenId`, so this asserts a DERIVATION rather than that
+  // immutables round-trip.
   //
-  // The id is read back OFF THE CONTRACT rather than reused from the
-  // deployment arguments. Sol pointed out that comparing the getter against
-  // the same expression that was passed to the constructor establishes only
-  // that immutables round-trip; going through `eusdTokenId()` at least makes
-  // the fixture lookup a function of what the contract believes it accepts.
-  const id = decodeUint((await chain.must(V, selector('eusdTokenId()'))).ret, 0);
-  assertEq(id, TOKEN_ID, 'the deployed token id');
-  const got = (await chain.must(V, selector('eusdValueGenerator()'))).ret;
-  assertEq(got, GENERATOR(id), 'the deployed B_token');
-
-  // What actually vouches for the point is the oracle, so check the half of
-  // its construction that can be re-derived here without hash-to-curve: the
-  // preimage is the compressed ristretto basepoint with the token id's eight
-  // little-endian bytes XOR-ed over bytes 0..8
-  // (crypto/ring-signature/src/ring_signature/mod.rs). The Elligator step from
-  // that preimage to the point is what the fixture is for.
-  assert(AMT.generators.byTokenId.some(
-    (g) => g.preimage !== AMT.generators.basepointCompressed),
-    'every preimage is the bare basepoint -- the XOR is not being exercised');
+  // Every id in the fixture, not only the one this scenario uses: the four
+  // between them exercise both branches of the Elligator map and both settings
+  // of the masked high bit, and a verifier deployed for eUSD's 8192 must derive
+  // 8192's point on the same code path as this fixture's 1.
+  assert(AMT.generators.byTokenId.length >= 4,
+    'the oracle lost generators -- this test is weaker than it reads');
   for (const g of AMT.generators.byTokenId) {
-    const base = Buffer.from(
-      AMT.generators.basepointCompressed.replace(/^0x/, ''), 'hex');
-    const want = Buffer.from(base);
-    let v = BigInt(g.tokenId);
-    for (let i = 0; i < 8; i++) {
-      want[i] ^= Number(v & 0xffn);
-      v >>= 8n;
-    }
-    assertEq('0x' + want.toString('hex'), g.preimage,
-      `token id ${g.tokenId}: hash-to-point preimage`);
+    const v = await deployVerifier(REG, realCheck, { tokenId: BigInt(g.tokenId) });
+    // The id is read back OFF THE CONTRACT rather than reused from the
+    // deployment arguments. Sol pointed out that comparing the getter against
+    // the same expression that was passed to the constructor establishes only
+    // that immutables round-trip; going through `eusdTokenId()` makes the
+    // fixture lookup a function of what the contract believes it accepts.
+    const id = decodeUint((await chain.must(v, selector('eusdTokenId()'))).ret, 0);
+    assertEq(id, BigInt(g.tokenId), 'the deployed token id');
+    assertEq((await chain.must(v, selector('eusdValueGenerator()'))).ret,
+      GENERATOR(id), `the derived B_token for token id ${g.tokenId}`);
   }
 
-  // And the pin is token-id specific, which is the whole reason it is a
-  // deployment parameter: a different id is a different, orthogonal point.
+  // And the derivation is token-id specific, which is why a mispaired
+  // deployment used to be dangerous: a different id is a different, orthogonal
+  // point.
   for (const g of AMT.generators.byTokenId) {
     if (g.tokenId === String(TOKEN_ID)) continue;
     assert(g.bToken !== GENERATOR(TOKEN_ID),
       `generators for ${g.tokenId} and ${TOKEN_ID} collide`);
   }
 
-  // B_blinding is NOT a deployment parameter: MobileCoin's is the ristretto255
-  // basepoint, so the contract uses `Ristretto255.basepoint()` and there is
-  // nothing to configure. If the oracle ever says otherwise, the contract is
-  // wrong.
+  // B_blinding is NOT derived and NOT a parameter: MobileCoin's is the
+  // ristretto255 basepoint, so the contract uses `Ristretto255.basepoint()` and
+  // there is nothing to configure. If the oracle ever says otherwise, the
+  // contract is wrong.
+  //
+  // READ OFF THE CONTRACT. This line used to compare two fields of amount.json
+  // to each other, which no change to src/ could falsify -- coverage-shaped
+  // and not coverage. `bBlinding()` evaluates `Ristretto255.basepoint()`, so
+  // changing the library's basepoint constants turns it red (measured: it
+  // does).
+  //
+  // WHAT IT STILL DOES NOT ESTABLISH: the probe names the same expression
+  // `requireCommitment` names, it does not run `requireCommitment`. This pins
+  // the VALUE, not the wiring. The wiring is pinned by the commitment tests
+  // below -- MobileCoin formed those commitments over B_BLINDING, and they
+  // only reproduce on chain if `requireCommitment` uses the same point.
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
+  assertEq((await chain.must(probe, selector('bBlinding()'))).ret,
+    AMT.generators.bBlinding,
+    'the contract\'s B_blinding is not MobileCoin\'s');
   assertEq(AMT.generators.bBlinding, AMT.generators.basepointCompressed,
-    'B_blinding must be the ristretto basepoint');
+    'ORACLE CHECK (not coverage): amount.json now disagrees with itself about '
+    + 'the basepoint');
 });
 
-await test('a verifier cannot be deployed with a generator that is not a point',
-  async () => {
-  // The identity is refused separately from a bad encoding, and it is the
-  // dangerous one: with B_token = 0 the commitment is `blinding*G` for every
-  // value, so the value stops being committed to and any amount verifies.
-  for (const [name, bad] of [
-    ['identity', '0x' + '00'.repeat(32)],
-    ['not a canonical field element', '0x' + 'ff'.repeat(32)],
-    ['a non-square s', flip(GENERATOR(TOKEN_ID))],
-  ]) {
-    let threw = null;
-    try {
-      await deployVerifier(REG, realCheck, { generator: bad });
-    } catch (e) {
-      threw = e.message;
-    }
-    assert(threw, `constructor accepted ${name} as B_token`);
-    assert(threw.includes(selector('InvalidValueGenerator(bytes32)')) ||
-      threw.includes('InvalidValueGenerator'),
-      `${name}: wrong failure -- ${threw}`);
-  }
-
-  // The control: the real generator deploys. Otherwise the three above could
-  // be failing for a reason that has nothing to do with the generator.
-  await deployVerifier(REG, realCheck);
-});
+// THE CONSTRUCTOR-ARITY CHECK USED TO LIVE HERE, and could not do its job from
+// here. It asserted that `_eusdValueGenerator` is gone, under a comment saying
+// "Re-adding the argument turns this red" -- which was false for the mutation
+// it names. This file deploys a verifier at module scope, so re-adding a sixth
+// constructor argument makes `deployVerifier` pass five where six are wanted,
+// the deployment reverts, and verifier.mjs and acceptance.mjs die at IMPORT.
+// The named test never runs. It only fired once `deployVerifier` was also
+// updated to pass the new argument -- that is, against a regression that had
+// already been half-fixed.
+//
+// That is the identical defect this change diagnosed for EIP-170 and wrote up
+// at length: a check that deploys before it measures is dead exactly when it is
+// needed. It now lives in contracts/test/deployables.mjs, which reads the ABI
+// out of the compiler and deploys nothing, so it survives the import death and
+// turns red on the minimal mutation.
 
 /// A verifier configured for one of amount.json's token ids, with a recipient
 /// check that hands back a chosen shared secret. Used to drive `openAmount`
@@ -716,8 +986,7 @@ await test('a verifier cannot be deployed with a generator that is not a point',
 const openerFor = async (tokenId, secret) => {
   const rc = await chain.deploy('FixedSecretRecipient_DO_NOT_DEPLOY',
     b32(secret));
-  return deployVerifier(REG, rc,
-    { tokenId: BigInt(tokenId), generator: GENERATOR(tokenId) });
+  return deployVerifier(REG, rc, { tokenId: BigInt(tokenId) });
 };
 
 /// A TxOut carrying one of amount.json's masked amounts. The four fields
@@ -809,7 +1078,7 @@ await test('EVERY length but 8 is refused, not just the four the oracle ships',
   //
   // Driven through the probe rather than a verifier so the length can be
   // swept independently of any fixture's shared secret.
-  const probe = await chain.deploy('AmountOpenerProbe');
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
   const c = AMT.maskedAmounts[0];
   let refused = 0;
   for (let n = 0; n <= 40; n++) {
@@ -860,13 +1129,24 @@ await test('AN AMOUNT IN THE WRONG TOKEN IS REFUSED even though it opens cleanly
 
 await test('the real output will not open under the wrong value generator',
   async () => {
-  // Same proof, same everything, one deployment parameter changed: B_token for
-  // eUSD instead of B_token for this fixture's token id 1. The token id still
-  // derives to 1 and passes, so this reaches the commitment check and nothing
-  // else -- which makes it the end-to-end demonstration that the commitment
-  // comparison is enforced rather than skipped.
-  const v = await deployVerifier(REG, realCheck, { generator: GENERATOR(8192) });
-  const r = await callVerify(chain, v, good());
+  // The commitment comparison, on the library `verifyReturn` calls, with the
+  // block's own numbers: B_token for eUSD instead of B_token for this fixture's
+  // token id 1. Deleting the comparison in AmountOpener turns this red.
+  //
+  // DRIVEN THROUGH THE PROBE, NOT A DEPLOYMENT, and that is a change worth
+  // noting rather than hiding. This used to be a verifier deployed with a
+  // mismatched generator -- which was possible only because the mismatch itself
+  // was possible. The lever is gone with the argument; the check is not.
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
+  const openWith = (generator) => chain.call(probe,
+    selector('openAmount(bytes32,bytes32,uint64,bytes,bytes32)') +
+    b32(FIX.disclosure.shared_secret) +
+    b32(FIX.tx_out.masked_amount.commitment) +
+    word(BigInt(FIX.tx_out.masked_amount.masked_value)) +
+    word(160) + b32(generator) +
+    dynBytesArg(FIX.tx_out.masked_amount.masked_token_id));
+
+  const r = await openWith(GENERATOR(8192));
   assertRevertsWith(r, 'InconsistentCommitment(bytes32,bytes32)',
     'wrong generator');
 
@@ -878,24 +1158,134 @@ await test('the real output will not open under the wrong value generator',
     FIX.tx_out.masked_amount.commitment, 'the on-chain side of the mismatch');
   assert('0x' + args.slice(2, 66) !== FIX.tx_out.masked_amount.commitment,
     'the two sides of the mismatch are the same value');
+
+  // The control: the generator the constructor derives for this token id opens
+  // the same output. So the refusal above is the generator and nothing else.
+  const ok = await openWith(GENERATOR(TOKEN_ID));
+  assert(ok.ok, `the right generator must open it: ${errorOf(ok)}`);
+  assertEq(decodeUint(ok.ret, 0), BigInt(FIX.expected.amount), 'the value');
+  assertEq((await chain.must(V, selector('eusdValueGenerator()'))).ret,
+    GENERATOR(TOKEN_ID),
+    'and it is the one the deployed verifier derived for itself');
 });
 
-await test('a MISPAIRED token id and generator verifies an amount MobileCoin refuses',
-  async () => {
-  // Sol's finding, made executable. The constructor checks that
-  // `eusdValueGenerator` is a point and is not the identity; it cannot check
-  // that it is `generators(eusdTokenId)`, because that is the hash-to-curve
-  // this contract deliberately does not implement. This test EXHIBITS what a
-  // mismatched pair costs, so the obligation is written down as a running
-  // program rather than as a comment somebody may or may not read.
+// ------------------- the two refusals in AmountOpener.decodeGenerator
+//
+// RESTORED COVERAGE, and worth saying why it needs restoring. The change that
+// derived `B_token` on chain deleted `a verifier cannot be deployed with a
+// generator that is not a point`, which was the only test that reached either
+// refusal, and replaced it with nothing. Measured afterwards: deleting BOTH
+// `revert InvalidValueGenerator` statements left the suite at 323 passed, 0
+// failed. AmountOpener's own comment -- "The two refusals here are cheap and
+// are kept: they are what makes a degenerate generator fail loudly rather than
+// verify everything" -- was true of the code and unfalsifiable by the suite,
+// and `InvalidValueGenerator(bytes32)` sat in the ERR table above with nothing
+// producing it.
+//
+// The lever the old test used is gone with the constructor argument, so these
+// go through `AmountOpenerProbe_DO_NOT_DEPLOY.decodeGenerator`, which is the
+// library function itself and not a copy of it. One test per refusal, so a
+// mutation names which one it broke.
+
+await test('a value generator that is not a point is refused', async () => {
+  // The `decode` refusal. Every encoding here is one curve25519-dalek itself
+  // rejects -- tools/ristretto-fixtures asserts that on the Rust side before
+  // writing the file -- so an implementation that accepted any of them would
+  // be decoding something dalek says is not a ristretto point and then
+  // committing amounts against it.
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
+  const decode = (enc) =>
+    chain.call(probe, selector('decodeGenerator(bytes32)') + b32(enc));
+
+  assert(RIS.rejects.length >= 10, 'the ristretto oracle lost its rejects');
+  for (const [i, r] of RIS.rejects.entries()) {
+    // The identity has its own refusal and its own test; it is not in this
+    // list, but assert that rather than assume it.
+    assert(BigInt(r.encoded) !== 0n, `rejects[${i}] is the identity`);
+    const got = await decode(r.encoded);
+    assertRevertsWith(got, 'InvalidValueGenerator(bytes32)',
+      `rejects[${i}] ${r.encoded}`);
+    // The error names the encoding it refused, so a deployer reading a failed
+    // transaction can see WHICH bytes were wrong.
+    assertEq('0x' + got.ret.slice(10), '0x' + b32(r.encoded),
+      `rejects[${i}]: the error must carry the encoding`);
+  }
+
+  // The control. Every generator the oracle publishes decodes and re-encodes
+  // to itself, so the refusals above are about those encodings and not about
+  // `decodeGenerator` refusing everything -- which would also make the suite
+  // green while breaking every deployment.
+  for (const g of AMT.generators.byTokenId) {
+    const ok = await chain.must(probe,
+      selector('decodeGenerator(bytes32)') + b32(g.bToken));
+    assertEq(ok.ret, g.bToken, `B_token for ${g.tokenId} must decode`);
+  }
+});
+
+await test('the identity is refused as a value generator, because under it '
+  + 'every amount verifies', async () => {
+  // The other refusal, and the one that matters most: `bytes32(0)` is a
+  // perfectly valid ristretto encoding, so `decode` accepts it. With
+  // `B_token = 0` the commitment is `blinding*B_blinding` for EVERY value, so
+  // the value stops being committed to and any amount opens. That is a silent
+  // fail-open, not a wrong answer.
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
+  const IDENTITY = '0x' + '00'.repeat(32);
+
+  const r = await chain.call(probe,
+    selector('decodeGenerator(bytes32)') + b32(IDENTITY));
+  assertRevertsWith(r, 'InvalidValueGenerator(bytes32)', 'the identity');
+  assertEq('0x' + r.ret.slice(10), '0x' + b32(IDENTITY),
+    'the error must carry the encoding it refused');
+
+  // NOT VACUOUS, in the two senses that matter.
   //
-  // This is a deployment defect, not an attack: no proof submitter can change
-  // the pair after construction. It is recorded, not fixed, because fixing it
-  // on chain means Elligator on chain.
+  // First: `decode` ACCEPTS the identity. If it refused it, this guard would
+  // be a restatement of the one above and deleting it would cost nothing.
+  const ris = await chain.deploy('Ristretto255Probe_DO_NOT_DEPLOY');
+  const decodes = await chain.must(ris,
+    selector('decodes(bytes32)') + b32(IDENTITY));
+  assertEq(decodeUint(decodes.ret, 0), 1n,
+    'the identity must decode -- otherwise this refusal is dead weight and '
+    + 'the comment explaining it is wrong');
+
+  // Second: under B_token = 0 the value really does drop out. `[k]0 == 0` for
+  // every k, so `value*B_token` is the identity whatever the value is, and the
+  // commitment is `blinding*B_blinding` alone -- one point that opens to every
+  // amount at once.
+  for (const k of [1n, 250000000000n, (1n << 64n) - 1n]) {
+    const kLE = b32('0x' + Buffer.from(
+      k.toString(16).padStart(64, '0'), 'hex').reverse().toString('hex'));
+    const r2 = await chain.must(ris,
+      selector('mul(bytes32,bytes32)') + kLE + b32(IDENTITY));
+    assertEq(decodeUint(r2.ret, 0), 1n, `mul by ${k} failed`);
+    assertEq('0x' + r2.ret.slice(2).slice(64, 128), '0x' + b32(IDENTITY),
+      `[${k}]0 must be the identity -- if it is not, the reason given for `
+      + 'refusing B_token = 0 is not the real one');
+  }
+});
+
+await test('THE MISPAIRING THAT USED TO VERIFY 250,000,000,000 IS NOW REFUSED, '
+  + 'BY CONSTRUCTION', async () => {
+  // What this test was. Sol's finding: `eusdValueGenerator` was an argument, so
+  // deploying `(8192, generators(1).B)` produced a verifier that passed the
+  // token-id check and then compared commitments in the WRONG group. The old
+  // test asserted that such a deployment ACCEPTED a commitment MobileCoin
+  // rejects as InconsistentCommitment, and paid out 250,000,000,000 for it.
+  //
+  // What it is now. 8192 is a token id a deployer could plausibly pair with the
+  // wrong point -- it is eUSD's, and the point that used to sit next to it in a
+  // deployment script belonged to token id 1. The witness is unchanged: the
+  // same value and blinding, committed under B_1. A verifier deployed for 8192
+  // now DERIVES B_8192 and refuses it, and no deployment argument can make it
+  // do otherwise.
+  // The witness is the oracle's 250,000 eUSD case -- the one the old test named
+  // in its failure, selected by its value rather than by position so that a
+  // reordered fixture fails here instead of quietly testing a value of 1.
   const c = AMT.maskedAmounts.find((x) => x.tokenId === '8192'
-    && BigInt(x.value) > 0n);
-  assert(c, 'the oracle no longer publishes a non-zero 8192 case');
-  const probe = await chain.deploy('AmountOpenerProbe');
+    && BigInt(x.value) === 250000000000n);
+  assert(c, 'the oracle no longer publishes the 250,000,000,000 eUSD case');
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
 
   // The same value and blinding, committed in the WRONG group.
   const wrong = (await chain.must(probe,
@@ -904,27 +1294,26 @@ await test('a MISPAIRED token id and generator verifies an amount MobileCoin ref
   assert(wrong !== c.commitment,
     'B_1 and B_8192 commit identically -- this test proves nothing');
 
-  // MobileCoin, which computes B_8192 for a token id of 8192, refuses it:
-  // that is exactly the InconsistentCommitment case the correctly-paired
-  // verifier gives.
-  const right = await openerFor(8192, c.sharedSecret);
-  const refused = await callOpenAmount(chain, right, c.sharedSecret,
+  // A verifier for eUSD's token id. There is no second argument to get wrong.
+  const v = await openerFor(8192, c.sharedSecret);
+  assertEq((await chain.must(v, selector('eusdValueGenerator()'))).ret,
+    GENERATOR(8192), 'the constructor derived B_8192');
+  assert((await chain.must(v, selector('eusdValueGenerator()'))).ret
+    !== GENERATOR(1),
+    'B_1 and B_8192 are the same point -- this test proves nothing');
+
+  // The forged commitment, which the mispaired deployment used to accept.
+  const refused = await callOpenAmount(chain, v, c.sharedSecret,
     { ...amountTxOut(c), commitment: wrong });
   assertRevertsWith(refused, 'InconsistentCommitment(bytes32,bytes32)',
-    'a correctly paired verifier agrees with MobileCoin');
+    'the mispairing must no longer verify');
 
-  // The mispaired one accepts it, and pays out the value.
-  const rc = await chain.deploy('FixedSecretRecipient_DO_NOT_DEPLOY',
-    b32(c.sharedSecret));
-  const mispaired = await deployVerifier(REG, rc,
-    { tokenId: 8192n, generator: GENERATOR(1) });
-  const accepted = await callOpenAmount(chain, mispaired, c.sharedSecret,
-    { ...amountTxOut(c), commitment: wrong });
-  assert(accepted.ok,
-    `the witness no longer holds -- re-read this test: ${errorOf(accepted)}`);
-  assertEq(decodeUint(accepted.ret, 0), BigInt(c.value),
-    'the value a mispaired deployment would pay');
-  assertEq(decodeUint(accepted.ret, 1), 8192n, 'under the configured id');
+  // And the honest commitment still opens on the same deployment, so the
+  // refusal above is about the forged point and not about the verifier.
+  const ok = await callOpenAmount(chain, v, c.sharedSecret, amountTxOut(c));
+  assert(ok.ok, `the genuine 8192 amount must open: ${errorOf(ok)}`);
+  assertEq(decodeUint(ok.ret, 0), BigInt(c.value), 'the genuine value');
+  assertEq(decodeUint(ok.ret, 1), 8192n, 'under its own token id');
 });
 
 await test('a shared secret that is not this output\'s opens nothing', async () => {
