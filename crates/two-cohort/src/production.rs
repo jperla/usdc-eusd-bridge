@@ -6,20 +6,51 @@
 //! take its shape from here.
 //!
 //! **Decided: 3 operators at 2-of-3, and 1 independent gate.** Four seats;
-//! three must be compromised before funds can move -- *given* THREE premises,
-//! none of which the constants below, or anything in this crate, establish:
+//! three must be compromised before funds can move -- *given* three premises.
+//! **One of the three is now enforced in code; the other two are not, and
+//! nothing any artifact can carry would enforce them:**
 //!
-//!   1. the four seats are four independent principals;
-//!   2. nobody else holds a copy of a seat's share -- a dealer that dealt to
-//!      four real parties and kept copies is one principal, not three, and the
-//!      artifact is identical either way;
-//!   3. the party that SIGNED for a seat is the party holding a share behind it.
-//!      This one is false in this crate today; see below.
+//!   1. **UNBUILDABLE.** The four seats are four independent principals. Four
+//!      keys are four keys; whether four keys are four organisations is a fact
+//!      about the world that no algebra reaches.
+//!   2. **UNBUILDABLE.** Nobody else holds a copy of a seat's share -- a dealer
+//!      that dealt to four real parties and kept copies is one principal, not
+//!      three, and the artifact is identical either way. Possession is copyable;
+//!      no proof of possession is a proof of EXCLUSIVE possession.
+//!   3. **CLOSED IN CODE.** The party that endorsed a seat knows a share behind
+//!      it. This was FALSE in this crate and is now enforced: a seat endorsement
+//!      is an AND-composed proof of knowledge of the seat's identity secret and
+//!      of the share the claim publishes for it, under one challenge. Stated
+//!      exactly -- an accepted endorsement is an ARGUMENT OF KNOWLEDGE for
+//!      `Id = d*B AND V_i = s*G` under the discrete-log and random-oracle
+//!      assumptions, `Id` being the key the CHECKER supplied. Read it narrowly:
+//!      not that one actor held both secrets, not that the endorser is the
+//!      share's only holder (that is premise 2), not that the two witnesses are
+//!      distinct, and not present possession.
 //!
 //! Premise 2 was missing from this headline and premise 3 was not stated
 //! anywhere until review; both are rows in
 //! `proofs/tla/AttributionCoverage.tla`, and each of them alone drops the
-//! minimum coalition below three. See "What this module does NOT encode".
+//! minimum coalition below three. Premise 3's row is now the `TRUE` baseline and
+//! the `FALSE` row prices the fix. See "What this module does NOT encode".
+//!
+//! There is a fourth thing, and it is not a premise but an ADMISSIBILITY check,
+//! recorded here because closing premise 3 opened it TWICE: a seat key must be a
+//! key. Replacing the seat endorsement's Ed25519 signature with a sigma proof
+//! dropped `verify_strict`'s small-order refusal, and a 32-byte string on the
+//! curve but outside the prime-order subgroup admitted a verifying identity half
+//! with no secret behind it at all -- so a dealer holding every share could fill
+//! three seats with values that are not keys and the artifact audited. The first
+//! fix, a subgroup check, then let the IDENTITY element through: it is in the
+//! subgroup, and its `d = 0` is public, so its identity half verifies for every
+//! challenge with no work at all. Both are now refused by
+//! `ComponentClaim::check_shape` as `CeremonyError::SeatKeyNotUsable`, with the
+//! cause named, and `tests/seat_key_torsion.rs` performs both forgeries.
+//!
+//! Recorded rather than smoothed over because the pattern is the point: each
+//! time, a CHECK was replaced by an ARGUMENT about why the check was
+//! unnecessary, and each argument was wrong in a way only an attempt at the
+//! forgery revealed.
 //!
 //! Why four and not three, since three was the stated constraint: three
 //! entities *can* reach the same compromise threshold, as 2-of-2 operators
@@ -69,46 +100,61 @@
 //!     **The artifact now distinguishes those cases by KEY, which it did not
 //!     before.** [`audit`](crate::audit) is told one identity key per SEAT as
 //!     well as one per cohort, each seat's verification share carries that
-//!     seat's own signature, and the signature is checked under the key the
+//!     seat's own endorsement, and the endorsement is checked under the key the
 //!     funder obtained from the party -- so an organisation that deals all three
-//!     operator shares to itself must produce a valid signature from each of the
-//!     three seat keys the funder holds, rather than one organisation key.
+//!     operator shares to itself must produce a valid endorsement from each of
+//!     the three seat keys the funder holds, rather than one organisation key.
 //!     `tests/forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`
-//!     performs the two ways it can mount that WITHOUT those signatures -- its
+//!     performs the two ways it can mount that WITHOUT those endorsements -- its
 //!     own keys, or the real holders' public keys it is free to copy -- and both
-//!     are refused at `audit_address`, before any spend exists. Read "must
-//!     produce a valid signature" exactly: it is not "must hold the seat keys",
-//!     which an earlier version of this sentence said and the paragraph below
-//!     refutes.
+//!     are refused at `audit_address`, before any spend exists.
+//!
+//!     Read "must produce a valid endorsement" exactly. It is not "must hold the
+//!     seat keys": whoever holds a key can endorse, and the funder cannot tell
+//!     one holder of a key from another. What it now also requires is the SHARE
+//!     behind the seat, because a seat endorsement is a proof of knowledge of
+//!     both -- so the three seat-holders can no longer supply it for a dealing
+//!     they were not dealt into, which is the paragraph below and was the
+//!     opposite of the paragraph below until the linked proof landed.
 //!
 //! Both remain organisational facts and no test here can see them, and neither
 //! is fully closable by any artifact. Said exactly, so this paragraph is not
 //! read as more than it is: per-seat keys do NOT establish that four keys are
-//! four entities, they do NOT stop a dealer that distributed shares to four real
-//! parties while keeping copies, and -- the one an adversarial review had to
-//! point out -- they do NOT bind the party that SIGNED for a seat to the party
-//! that holds a share behind it. A dealer can keep every share, make every proof
-//! of possession itself, and collect the genuine seat signatures it needs over
-//! public bytes that cost the signers nothing -- THREE of them for a dealt owner
-//! cohort, the honest gate signing its own seat, which is the count the line
-//! below writes out;
-//! `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
-//! performs exactly that and it audits, and
-//! `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
-//! performs the sharper form, in which the three named parties DO hold real
-//! shares from a real DKG and endorse a substituted dealing anyway, because
-//! `ceremony::endorse_seat` never consults a share.
+//! four entities, and they do NOT stop a dealer that distributed shares to four
+//! real parties while keeping copies.
 //!
-//! What they changed is the number of distinct SIGNATURES a forgery must
-//! collect, counted per FORGERY rather than per artifact: from one to FOUR for a
-//! dealt-owner forgery at this shape -- the owner organisation's plus one from
-//! each of the three operator SEATS, the gate organisation's signature and the
-//! gate seat's endorsement being the honest gate's own and not the forger's to
-//! collect -- or from two to six if both cohorts are fabricated. An earlier
+//! A third item stood here, and it has since been CLOSED: they did not bind the
+//! party that signed for a seat to a share behind it, so a dealer could keep
+//! every share, make every proof of possession itself, and collect the seat
+//! signatures it needed over public bytes that cost the signers nothing. A seat
+//! endorsement is now a proof of knowledge of the seat's identity secret AND of
+//! the share behind it, AND-composed under one challenge -- see
+//! `ceremony::SeatEndorsement`. The two tests that performed that forgery, and
+//! passed, are now refusals with named errors:
+//! `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`
+//! and
+//! `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_substituted_dealing`.
+//!
+//! **Read that narrowly.** It says the share was USED, not that one actor holds
+//! both secrets, and not that the named party is the share's only holder. The
+//! second residual above is exactly the case it leaves open, and it is performed
+//! by name:
+//! `tests/seat_identity.rs::a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`
+//! deals real shares to the three named parties, keeps copies, collects genuine
+//! endorsements from parties that really do hold what they endorse with, and it
+//! audits -- while the dealer alone reconstructs the owner component.
+//!
+//! What per-seat keys changed is the number of distinct ENDORSEMENTS a forgery
+//! must collect, counted per FORGERY rather than per artifact: from one to FOUR
+//! for a dealt-owner forgery at this shape -- the owner organisation's plus one
+//! from each of the three operator SEATS, the gate organisation's signature and
+//! the gate seat's endorsement being the honest gate's own and not the forger's
+//! to collect -- or from two to six if both cohorts are fabricated. An earlier
 //! version of this line said "from one to five", which is neither count, and a
 //! later one described the same forgery as collecting four SEAT signatures,
 //! which is the artifact's total; see `ceremony`'s module docs, where the
-//! arithmetic is written out.
+//! arithmetic is written out. What the LINKED endorsement changed is what each
+//! of those costs: they can only be made where a share is.
 //!
 //! # The release gate
 //!

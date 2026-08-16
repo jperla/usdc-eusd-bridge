@@ -11,9 +11,12 @@ Four switches, all mutation-tested, and they are THREE DIFFERENT KINDS of thing:
   * AttributionPerSeat  -- a design choice, and the one this rework made.
   * MaxKeysPerPrincipal, NoRetainedCopies -- assumptions about the world that no
     artifact can discharge.
-  * EndorserHoldsShare  -- a property of THIS implementation, currently FALSE,
-    with a Rust counterexample. It was added after an adversarial review found
-    the model's baseline silently assuming it. Buildable; not built.
+  * EndorserHoldsShare  -- a property of THIS implementation. It was added
+    after an adversarial review found the model's baseline silently assuming
+    it, and it was FALSE with a Rust counterexample until the seat endorsement
+    became a linked proof of knowledge of BOTH the identity secret and the
+    share. It is now TRUE in the tree, and the FALSE row below is kept because
+    it prices what the implementation buys.
 
 They are switches rather than omissions so that each residual is exhibited.
 
@@ -70,11 +73,16 @@ ROWS = [
     # signer of a seat to the holder of that seat's share. Rust performs it.
     ("EndorserHoldsShare = FALSE", dict(off="EndorserHoldsShare"),
      {GUARANTEE: True, BAR: False, SHAPE: True},
-     "GAP        -- buildable, and NOT built. This is where the code is TODAY",
-     "`ceremony::endorse_seat` is public, takes a claim and an identity key, "
-     "and consults no share. seat_forgery.rs::a_seat_holder_with_a_real_share_"
-     "endorses_a_substituted_dealing_and_it_audits performs it: a real DKG, "
-     "three real share-holders, a substituted dealing, and it audits."),
+     "BUILT      -- the code is NO LONGER on this branch; this prices it",
+     "what a decoupled endorser costs, kept as the row that measures the fix. "
+     "`ceremony::endorse_seat` now takes the SHARE as well as the identity key "
+     "and produces an AND-composed proof of knowledge of both, so neither an "
+     "identity key alone nor a share alone yields a verifying endorsement. "
+     "seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_"
+     "substituted_dealing and seat_identity.rs::a_dealer_that_keeps_the_shares_"
+     "is_refused_at_the_seat_endorsement are the two former counterexamples, "
+     "inverted. NOT closed by it: a dealer that dealt REAL shares and kept "
+     "copies, which is the NoRetainedCopies row below."),
 
     ("MaxKeysPerPrincipal = 4", dict(max_keys=4),
      {GUARANTEE: True, BAR: False, SHAPE: True},
@@ -145,9 +153,10 @@ def main():
     print("=" * 78)
     print("BASELINE -- per-seat attribution, all three residuals assumed away")
     print("=" * 78)
-    print("  This is the BEST CASE, and it is NOT where the code is: it assumes")
-    print("  the rework landed, the world cooperates, AND that a seat's endorser")
-    print("  holds that seat's share -- which seat_forgery.rs disproves.")
+    print("  This is the BEST CASE. It assumes the rework landed, that a seat's")
+    print("  endorser holds that seat's share -- which the linked endorsement")
+    print("  now enforces -- and that the world cooperates, which is the half")
+    print("  no artifact can discharge.")
     for inv in ["TypeOK"] + INVARIANTS:
         # Each invariant in its own run. TLC halts at the first violation, so a
         # single run over a list cannot establish that the others were checked.
@@ -390,11 +399,12 @@ def main():
     print("  dropping the operator quorum to 1 breaks it.")
     print()
     print("  Read 'assumed away' strictly. One of those three is not a fact")
-    print("  about the world but a property of this code, and it is FALSE here:")
-    print("  the EndorserHoldsShare row is the same coalition of two, at the")
-    print("  same shape, with all four attribution slots filled and resolving")
-    print("  to four DISTINCT principals, and no dealer retaining anything. So")
-    print("  the baseline is the criterion, not a description of the tree.")
+    print("  about the world but a property of this code -- EndorserHoldsShare")
+    print("  -- and it is now enforced rather than assumed: the endorsement is")
+    print("  an AND-composed proof of knowledge of the identity secret and the")
+    print("  share. The other two remain assumptions. So the baseline is still")
+    print("  not a description of the tree, but for two reasons rather than")
+    print("  three.")
     print("  (Slots and their holders, not key VALUES -- this model has no key")
     print("  values in it, and the Rust counterpart is what carries those.)")
     print()
@@ -414,7 +424,7 @@ def main():
     print()
     print("WHAT IT ASSUMES, precisely -- all three are rows above and all three")
     print("break the guarantee. TWO of them are not buildable by anyone. The")
-    print("THIRD is buildable, is not built, and is false in this tree today:")
+    print("THIRD was buildable, and has now been built:")
     print("  1. the parties behind the attributed slots are distinct entities.")
     print("     NOT BUILDABLE. The ORACLE row prices it exactly: the decided")
     print("     structure tolerates ZERO collusion. Two names, one controller,")
@@ -423,16 +433,15 @@ def main():
     print("  2. no dealer kept copies of the shares it handed out. NOT")
     print("     BUILDABLE: a dealt cohort and a DKG'd cohort publish identical")
     print("     material.")
-    print("  3. the party that SIGNS for a seat HOLDS a share behind it.")
-    print("     BUILDABLE, AND NOT BUILT -- so this one is a design gap, not a")
-    print("     fact about the world, and an earlier version of this section")
-    print("     said all its assumptions were unbuildable, which hid it.")
-    print("     `ceremony::endorse_seat` never consults a share;")
-    print("     `seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_")
-    print("     substituted_dealing_and_it_audits` is the counterexample. Two")
-    print("     ways it COULD be built, neither attempted: endorse over a value")
-    print("     derived from the share, or route holders through")
-    print("     `CohortShare::endorse` and record which entry point signed.")
+    print("  3. the party that ENDORSES a seat used a share behind it.")
+    print("     NO LONGER ASSUMED: it is enforced. `ceremony::endorse_seat`")
+    print("     takes the identity key AND the share and produces one proof")
+    print("     under one challenge, so neither secret alone verifies. The two")
+    print("     former counterexamples are now refusals, by exact error.")
+    print("     What it still does NOT give: that ONE actor held both secrets")
+    print("     (two parties can run the sigma protocol between them), nor that")
+    print("     the named party is the share's only holder -- which is")
+    print("     assumption 2, and is why that row is still here.")
     print()
     print("  Per-seat attribution therefore raises the BAR from 2 attribution")
     print("  slots to 4. It does not turn four slots into four entities, nor")

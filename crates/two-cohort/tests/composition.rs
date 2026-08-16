@@ -543,6 +543,81 @@ fn a_missing_pop_is_refused() {
     );
 }
 
+/// The twin of the test above, and it had no test at all until an adversarial
+/// review of an unrelated change noticed the gap.
+///
+/// A reveal carrying a proof from somebody the roster does not contain is
+/// refused, naming them. Both arms of [`CeremonyError::PopUnexpected`] are
+/// asserted, because they are different guards in different functions and only
+/// one of them is reachable by an auditor:
+///
+///   * `ComponentReveal::check_pops` -- the AUDIT arm. An artifact with an extra
+///     proof stapled on. Refused rather than ignored: a pop nobody on the roster
+///     made is a proof about a share nobody on the roster holds, and an auditor
+///     that silently drops it has been shown key material it did not account
+///     for;
+///   * `Pop::prove` -- the PROVER arm, and a courtesy rather than a boundary. A
+///     holder asked to prove for a seat the claim publishes no share for is told
+///     so instead of indexing into nothing.
+///
+/// CONTROL: the same reveal without the extra proof audits.
+#[test]
+fn a_pop_from_someone_off_the_roster_is_refused() {
+    let h = honest();
+
+    // Someone the gate roster does not contain -- an owner seat, so the id is
+    // real and only its membership is wrong.
+    let stranger = Owners::nth(0);
+    assert!(!h.gates.claim.roster().contains(&stranger));
+
+    let mut extra = h.gate_reveal.pops().clone();
+    extra.insert(
+        stranger,
+        h.owner_reveal
+            .pops()
+            .get(&stranger)
+            .expect("the owner cohort proved for it")
+            .clone(),
+    );
+    let reveal = ComponentReveal::from_parts(
+        h.gates.claim.clone(),
+        extra,
+        h.gate_reveal.seat_endorsements().clone(),
+        h.gates.salt,
+    );
+    assert_eq!(
+        h.sealed
+            .open(h.owner_reveal.clone(), reveal, &parties())
+            .unwrap_err(),
+        CeremonyError::PopUnexpected {
+            cohort: "gates",
+            participant: stranger,
+        },
+    );
+
+    // CONTROL: one input different -- the extra proof removed -- and the same
+    // call succeeds.
+    h.sealed
+        .clone()
+        .open(h.owner_reveal.clone(), h.gate_reveal.clone(), &parties())
+        .expect("CONTROL: without the extra proof the same reveal audits");
+
+    // The PROVER arm: asked to prove for a seat this claim has no share for.
+    assert_eq!(
+        Pop::prove_unchecked(
+            &h.sealed,
+            &h.gates.claim,
+            stranger,
+            &Scalar::from(1u64),
+        )
+        .expect_err("the claim publishes no verification share for this participant"),
+        CeremonyError::PopUnexpected {
+            cohort: "gates",
+            participant: stranger,
+        },
+    );
+}
+
 /// Verification shares that do not lie on a polynomial of the declared degree
 /// are refused, naming two quorums that disagree.
 ///
@@ -676,7 +751,7 @@ fn attempt_at(
     }
     // `assemble` re-checks the proofs, so reaching `open` at all already means
     // every participant proved possession.
-    let endorsements = seat_endorsements::<Gates>(&ceremony, &claim);
+    let endorsements = seat_endorsements::<Gates>(&ceremony, &claim, secrets);
     let reveal = ComponentReveal::assemble(&sealed, claim, pops, endorsements, salt)?;
     sealed
         // The funder's seats are THIS probe's roster, not the file's default:
@@ -726,7 +801,10 @@ fn an_identity_component_is_refused() {
     .expect("well-formed");
     let pop = Pop::prove_unchecked(&sealed, &claim, Gates::nth(0), &Scalar::ZERO)
         .expect("zero opens the identity, which is the point");
-    let endorsements = seat_endorsements::<Gates>(&ceremony, &claim);
+    // Zero endorses the identity too: `0*G` IS the identity, so the seat really
+    // does hold the share behind its own verification share. The endorsement is
+    // therefore genuine and the refusal below cannot be it.
+    let endorsements = seat_endorsements::<Gates>(&ceremony, &claim, &[Scalar::ZERO]);
     let reveal = ComponentReveal::from_parts(
         claim,
         BTreeMap::from([(Gates::nth(0), pop)]),
@@ -1073,7 +1151,12 @@ fn an_identity_verification_share_is_refused() {
     // compositions differ, and a share answers only one -- see
     // `prove_possession`. Both owner cohorts are honest 2-of-3 and the
     // assertions are about the gate seats.
-    let run = |seed: u64, shares: Vec<RistrettoPoint>| -> CeremonyError {
+    // Driven by the SECRETS rather than by the points, because a seat endorsement
+    // now needs the share as well as the key: `secrets[k]*G` is the published
+    // verification share, so seat 0 carrying `Scalar::ZERO` is the identity share
+    // and the seats really do endorse what they hold. Asserted just below rather
+    // than left to the reader.
+    let run = |seed: u64, secrets: Vec<Scalar>| -> CeremonyError {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let ceremony = CeremonyId::draw("phantom seat", &mut rng);
         let owners = CohortSide::<Owners>::generate(&ceremony, &owners_spec(), &mut rng);
@@ -1082,7 +1165,7 @@ fn an_identity_verification_share_is_refused() {
             2,
             roster.clone(),
             real * G,
-            shares,
+            secrets.iter().map(|s| s * G).collect(),
             seat_keys_over::<Gates>(&roster),
         );
         let salt = [0x5A; 32];
@@ -1100,7 +1183,7 @@ fn an_identity_verification_share_is_refused() {
                 ComponentReveal::from_parts(
                     claim.clone(),
                     pops,
-                    seat_endorsements::<Gates>(&ceremony, &claim),
+                    seat_endorsements::<Gates>(&ceremony, &claim, &secrets),
                     salt,
                 ),
             ),
@@ -1113,7 +1196,7 @@ fn an_identity_verification_share_is_refused() {
     // by the proof check, so `Pop::from_parts` is not what makes a proof
     // acceptable and the acceptance below would be about the identity.
     assert_eq!(
-        run(0x1D3, vec![real * G, (real + Scalar::ONE) * G]),
+        run(0x1D3, vec![real, real + Scalar::ONE]),
         CeremonyError::PopFailed {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -1130,7 +1213,7 @@ fn an_identity_verification_share_is_refused() {
     );
 
     assert_eq!(
-        run(0x1D4, vec![RistrettoPoint::identity(), real * G]),
+        run(0x1D4, vec![Scalar::ZERO, real]),
         CeremonyError::IdentityVerificationShare {
             cohort: "gates",
             participant: Gates::nth(0),
@@ -1481,7 +1564,7 @@ fn a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree() {
         );
     }
     // Every proof verifies: this is not caught anywhere in the proving path.
-    let endorsements = seat_endorsements::<Gates>(&ceremony, &claim);
+    let endorsements = seat_endorsements::<Gates>(&ceremony, &claim, &secrets);
     let reveal = ComponentReveal::assemble(&sealed, claim, pops, endorsements, salt)
         .expect("a genuine dealing on a genuine polynomial");
 
@@ -1537,7 +1620,7 @@ fn a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree() {
             Pop::prove_unchecked(&sealed2, &claim2, id, &secrets2[i]).expect("opens its own"),
         );
     }
-    let endorsements2 = seat_endorsements::<Gates>(&ceremony2, &claim2);
+    let endorsements2 = seat_endorsements::<Gates>(&ceremony2, &claim2, &secrets2);
     let reveal2 =
         ComponentReveal::assemble(&sealed2, claim2, pops2, endorsements2, salt2).expect("genuine");
     let artifact2 =

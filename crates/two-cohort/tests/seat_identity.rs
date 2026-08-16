@@ -20,19 +20,28 @@
 //!     a value that guard already accepted, so it establishes that the guard
 //!     admits honest input, not that it is independent of it;
 //!   * the endorsements in the attacks are made to VERIFY wherever the test is
-//!     about something else, so a refusal is never the signature check standing
-//!     in for the check under test.
+//!     about something else, so a refusal is never the endorsement check
+//!     standing in for the check under test. That got harder, and better, when
+//!     the endorsement became a linked proof: a fixture can no longer produce
+//!     one from public data, so every test that endorses is driving a party that
+//!     really holds the share -- see `common::own_share_scalar`.
 //!
-//! What none of it establishes: that four keys are four entities. See
-//! `two_cohort::ceremony`'s module docs, and the last test in this file, which
-//! performs the residual rather than describing it.
+//! What none of it establishes: that four keys are four entities, and that the
+//! party that endorses a seat is the only holder of its share. The last two
+//! tests in this file perform those two residuals rather than describing them --
+//! `a_dealer_that_dealt_real_shares_and_kept_copies_still_passes` and
+//! `the_residual_is_a_party_that_holds_every_seat_key`. The one BETWEEN them and
+//! the rest, `a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`,
+//! used to be a third residual and is now a refusal. See
+//! `two_cohort::ceremony`'s module docs.
 
 mod common;
 
 use std::collections::BTreeMap;
 
 use common::{
-    identity_of, parties_over, seat_key_of, seat_keys_over, seal_and_sign, CohortSide, Honest,
+    identity_of, own_share_scalar, parties_over, seat_key_of, seat_keys_over, seal_and_sign,
+    CohortSide, Honest,
 };
 use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
 use rand_chacha::ChaCha20Rng;
@@ -40,10 +49,10 @@ use rand_core::SeedableRng;
 use two_cohort::{
     audit,
     ceremony::{
-        endorse_seat, seat_endorsement_message, ComponentClaim, ComponentCommitment,
-        ComponentReveal, SealedComposition, SeatRoster, MAX_AUDITED_ROSTER,
+        endorse_seat, endorse_seat_unchecked, ComponentClaim, ComponentCommitment, ComponentReveal,
+        SealedComposition, SeatEndorsement, SeatRoster, MAX_AUDITED_ROSTER,
     },
-    identity::{IdentityKey, IdentityPublic, IdentitySignature},
+    identity::{IdentityKey, IdentityPublic},
     CeremonyError, CeremonyId, CohortSpec, CompositionArtifact, ControlDomain, Gates, Owners,
     Parties,
 };
@@ -83,25 +92,48 @@ fn reattributed(claim: &ComponentClaim, seat: u64, key: IdentityPublic) -> Compo
     )
 }
 
-/// Endorsements that VERIFY against whatever `claim` says, signed with the key
-/// the caller supplies per seat.
+/// Endorsements that VERIFY against whatever `claim` says, made with the key and
+/// the share the caller supplies per seat.
 ///
-/// Raw signing rather than `endorse_seat`, for `tests/forgery.rs`'s reason:
-/// the checked entry point refuses to sign a seat attributed to somebody else,
-/// which protects an honest holder and constrains nobody who holds a key.
+/// `endorse_seat_unchecked` rather than `endorse_seat`, for `tests/forgery.rs`'s
+/// reason: the checked entry point refuses to endorse a seat attributed to
+/// somebody else, which protects an honest holder and constrains nobody who
+/// holds a key. The SHARE check is not skipped and cannot be -- a proof taken
+/// with a scalar that does not open `V_i` does not verify, so a caller here must
+/// supply the real one, which is why every call site below has a share-holder
+/// behind it.
 fn endorse_with(
     ceremony: &CeremonyId,
     claim: &ComponentClaim,
     key_of: impl Fn(u64) -> IdentityKey,
-) -> BTreeMap<u64, IdentitySignature> {
+    secret_of: impl Fn(u64) -> Scalar,
+) -> BTreeMap<u64, SeatEndorsement> {
     claim
         .roster()
         .iter()
         .map(|&id| {
-            let msg = seat_endorsement_message(ceremony, claim, id).expect("on the roster");
-            (id, key_of(id).sign(&msg))
+            (
+                id,
+                endorse_seat_unchecked(ceremony, claim, id, &key_of(id), &secret_of(id))
+                    .expect("the caller supplies a share that opens this seat's own V_i"),
+            )
         })
         .collect()
+}
+
+/// A seat endorsement that is not one: four values off the wire that no witness
+/// produced.
+///
+/// `SeatEndorsement::from_parts` is public for exactly this, and an attacker is
+/// not restricted to the crate's provers. Used where a test needs the SHAPE of an
+/// endorsement and not a valid one.
+fn junk_endorsement(tag: u8) -> SeatEndorsement {
+    SeatEndorsement::from_parts(
+        [tag; 32],
+        Scalar::from(u64::from(tag) + 1) * G,
+        Scalar::from(u64::from(tag) + 2),
+        Scalar::from(u64::from(tag) + 3),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -276,13 +308,22 @@ fn re_attributing_a_seat_fails_at_the_proof() {
     // from each share's own key generation, so what they sign is THEIR claim --
     // the one naming the real seat-holder -- under this sealed composition.
     let pops = owners.pops(&sealed);
-    let endorsements = endorse_with(&ceremony, &swapped, |id| {
-        if id == seat {
-            IdentityKey::from_seed(&[0xD2; 32])
-        } else {
-            seat_key_of::<Owners>(id)
-        }
-    });
+    let endorsements = endorse_with(
+        &ceremony,
+        &swapped,
+        |id| {
+            if id == seat {
+                IdentityKey::from_seed(&[0xD2; 32])
+            } else {
+                seat_key_of::<Owners>(id)
+            }
+        },
+        // The real shares: the re-attribution leaves every `V_i` alone, so the
+        // honest holders' own scalars still open them and every endorsement here
+        // VERIFIES. Without that the refusal below could be the endorsement
+        // check standing in for the proof check.
+        |id| own_share_scalar(&owners, id),
+    );
 
     let named: Vec<(u64, IdentityPublic)> = owners_spec()
         .ids()
@@ -331,6 +372,192 @@ fn re_attributing_a_seat_fails_at_the_proof() {
 // 4. The endorsement is checked under the FUNDER's key.
 // ---------------------------------------------------------------------------
 
+/// **BOTH halves of the linked endorsement are checked, and each one on its
+/// own.**
+///
+/// The endorsement is an AND-composition: one challenge over two commitments,
+/// two responses. An audit that verified only the identity equation would accept
+/// an endorsement made without the share -- which is the Ed25519 signature this
+/// replaced, and the two forgeries it admitted. An audit that verified only the
+/// share equation would accept one made without the identity key, which is the
+/// dealer that holds every share.
+///
+/// Both are performed on a GENUINE endorsement with one response perturbed, so
+/// nothing else about the artifact changes and the two mutations differ from the
+/// control in one scalar each. Perturbing a response leaves the challenge alone
+/// -- `c` is a function of the two COMMITMENTS and the transcript -- so the other
+/// equation still holds, and each half is therefore tested in isolation.
+///
+/// The CONTROL is the untouched endorsement in the same artifact, which audits.
+#[test]
+fn each_half_of_the_linked_endorsement_is_checked_on_its_own() {
+    let h = honest(0x5EBE);
+    let seat = Owners::nth(0);
+    let genuine = h
+        .artifact
+        .owners()
+        .seat_endorsements()
+        .get(&seat)
+        .copied()
+        .expect("the honest owner cohort endorsed every seat");
+
+    let perturbed = |identity: Scalar, share: Scalar| {
+        let mut map = h.artifact.owners().seat_endorsements().clone();
+        map.insert(
+            seat,
+            SeatEndorsement::from_parts(
+                genuine.identity_commitment(),
+                genuine.share_commitment(),
+                genuine.identity_response() + identity,
+                genuine.share_response() + share,
+            ),
+        );
+        rebuilt_owner_endorsements(&h, map)
+    };
+
+    // Only the SHARE response is wrong: `z_d*B == A + c*Id` still holds, so an
+    // audit that checked the identity half alone would accept this.
+    assert_eq!(
+        audit(&perturbed(Scalar::ZERO, Scalar::ONE), &h.parties).unwrap_err(),
+        CeremonyError::SeatEndorsementInvalid {
+            cohort: Owners::NAME,
+            participant: seat,
+            signer: seat_key_of::<Owners>(seat).public(),
+        },
+        "the share half of the endorsement is verified",
+    );
+
+    // Only the IDENTITY response is wrong: `z_s*G == R + c*V` still holds, so an
+    // audit that checked the share half alone would accept this.
+    assert_eq!(
+        audit(&perturbed(Scalar::ONE, Scalar::ZERO), &h.parties).unwrap_err(),
+        CeremonyError::SeatEndorsementInvalid {
+            cohort: Owners::NAME,
+            participant: seat,
+            signer: seat_key_of::<Owners>(seat).public(),
+        },
+        "the identity half of the endorsement is verified",
+    );
+
+    // CONTROL: the same artifact with both responses as the holder made them.
+    // Rebuilt through the same helper, so the control differs from the two
+    // refusals in the perturbation alone.
+    audit(
+        &perturbed(Scalar::ZERO, Scalar::ZERO),
+        &h.parties,
+    )
+    .expect("control: the untouched endorsement audits");
+}
+
+/// **A perturbation that CANCELS under a summed check, and does not under two.**
+///
+/// The guard this protects is not a line of code -- it is the shape of
+/// `SeatEndorsement::verify`, which computes two booleans and conjoins them. A
+/// future edit that "simplifies" it into one equal-weight equation,
+/// `z*B == A + R + c*(Id + V)` or any fixed-coefficient sum, would be satisfied
+/// by knowledge of `d + s` alone and the whole linkage would be gone. Nothing in
+/// the suite noticed that shape until adversarial review named it.
+///
+/// The exhibit is one honest endorsement with `z_d += delta` and
+/// `z_s -= delta`. Each equation fails by `delta*B` and `-delta*G`
+/// respectively; a fixed equal-weight sum of the two cancels them exactly.
+///
+/// **What this test is, labelled honestly: a TRIPWIRE, not evidence.** No
+/// mutation of the current `verify` makes it fail. The two equations live in two
+/// groups, `RistrettoPoint` does not expose its Edwards representative outside
+/// `curve25519-dalek`, and so the dangerous shape -- one scalar checked against
+/// `A + R + c*(Id + V)` -- is not expressible here in one edit. Every mutation
+/// that IS expressible (drop either equation, drop either commitment from the
+/// challenge) is already killed by
+/// [`each_half_of_the_linked_endorsement_is_checked_on_its_own`] and
+/// `seat_challenge_coverage.rs`. This test costs one artifact and would go red
+/// the day someone lifts one side into the other's group to "simplify" the
+/// check, which is the only way that edit gets written. The repo's standard is
+/// that an unfalsified guard says so; this is it saying so.
+///
+/// CONTROL: `delta = 0`, the same artifact through the same helper.
+#[test]
+fn an_equal_weight_collapse_of_the_two_equations_is_refused() {
+    let h = honest(0x5E17);
+    let seat = h.owners.claim.roster()[0];
+    let genuine = *h
+        .artifact
+        .owners()
+        .seat_endorsements()
+        .get(&seat)
+        .expect("the honest owner cohort endorsed every seat");
+
+    let shifted = |delta: Scalar| {
+        let mut map = h.artifact.owners().seat_endorsements().clone();
+        map.insert(
+            seat,
+            SeatEndorsement::from_parts(
+                genuine.identity_commitment(),
+                genuine.share_commitment(),
+                genuine.identity_response() + delta,
+                genuine.share_response() - delta,
+            ),
+        );
+        rebuilt_owner_endorsements(&h, map)
+    };
+
+    assert_eq!(
+        audit(&shifted(Scalar::from(7u64)), &h.parties).unwrap_err(),
+        CeremonyError::SeatEndorsementInvalid {
+            cohort: Owners::NAME,
+            participant: seat,
+            signer: seat_key_of::<Owners>(seat).public(),
+        },
+        "a shift that cancels in a summed check must still be refused: the two \
+         equations are checked separately and neither may be collapsed into the \
+         other",
+    );
+
+    // CONTROL: delta = 0 is the untouched endorsement, through the same helper.
+    audit(&shifted(Scalar::ZERO), &h.parties)
+        .expect("control: the untouched endorsement audits");
+}
+
+/// **A seat endorsement does not carry from one SEAT to another.**
+///
+/// Asserted on an honest artifact by swapping two seats' endorsements, which is
+/// the smallest form of the move.
+///
+/// **What separates the two seats, said accurately.** Not the participant id,
+/// though that is in the challenge preamble: deleting it from the preamble
+/// leaves this test passing, which was checked rather than assumed. What
+/// separates them is each seat's own VERIFICATION SHARE, which is in the
+/// preamble and is what its half of the proof is about, and each seat's own
+/// signer key. So this test establishes the property -- an endorsement is bound
+/// to one seat -- without establishing that any particular field is what binds
+/// it. `seat_endorsement_preamble` lists which fields are falsifiable and which
+/// are not.
+///
+/// The CONTROL is the same artifact unswapped.
+#[test]
+fn a_seat_endorsement_does_not_carry_to_another_seat() {
+    let h = honest(0x5EBF);
+    let ids = owners_spec().ids().to_vec();
+    let mut swapped = h.artifact.owners().seat_endorsements().clone();
+    let first = swapped[&ids[0]];
+    let second = swapped[&ids[1]];
+    swapped.insert(ids[0], second);
+    swapped.insert(ids[1], first);
+    assert_ne!(first, second, "the two seats really made different endorsements");
+
+    assert_eq!(
+        audit(&rebuilt_owner_endorsements(&h, swapped), &h.parties).unwrap_err(),
+        CeremonyError::SeatEndorsementInvalid {
+            cohort: Owners::NAME,
+            participant: ids[0],
+            signer: seat_key_of::<Owners>(ids[0]).public(),
+        },
+    );
+
+    // CONTROL: unswapped.
+    audit(&h.artifact, &h.parties).expect("control");
+}
+
 /// **A seat endorsement made by the wrong key is refused, under the key the
 /// funder supplied.**
 ///
@@ -356,13 +583,22 @@ fn a_seat_endorsement_by_another_key_is_refused() {
 
     // Every seat but one signs for itself; that one is signed by an impostor.
     let impostor = IdentityKey::from_seed(&[0xD3; 32]);
-    let forged = endorse_with(&ceremony, &owners.claim, |id| {
-        if id == seat {
-            IdentityKey::from_seed(&[0xD3; 32])
-        } else {
-            seat_key_of::<Owners>(id)
-        }
-    });
+    let forged = endorse_with(
+        &ceremony,
+        &owners.claim,
+        |id| {
+            if id == seat {
+                IdentityKey::from_seed(&[0xD3; 32])
+            } else {
+                seat_key_of::<Owners>(id)
+            }
+        },
+        // Every endorsement is made with the REAL share, including the
+        // impostor's: the impostor is a party that got hold of the share half
+        // and not the identity half, which is the only thing left for this test
+        // to be about now that the endorsement covers both.
+        |id| own_share_scalar(&owners, id),
+    );
     assert_ne!(
         forged.get(&seat),
         owners.endorsements.get(&seat),
@@ -419,7 +655,7 @@ fn a_missing_or_stray_seat_endorsement_is_refused() {
     );
 
     let mut stray = h.artifact.owners().seat_endorsements().clone();
-    stray.insert(Owners::nth(9), IdentitySignature([0; 64]));
+    stray.insert(Owners::nth(9), junk_endorsement(0x11));
     assert_eq!(
         audit(&rebuilt_owner_endorsements(&h, stray), &h.parties).unwrap_err(),
         CeremonyError::SeatEndorsementUnexpected {
@@ -435,7 +671,7 @@ fn a_missing_or_stray_seat_endorsement_is_refused() {
 /// The same artifact with a different owner endorsement map.
 fn rebuilt_owner_endorsements(
     h: &Honest,
-    endorsements: BTreeMap<u64, IdentitySignature>,
+    endorsements: BTreeMap<u64, SeatEndorsement>,
 ) -> CompositionArtifact {
     CompositionArtifact::from_parts(
         h.sealed,
@@ -468,7 +704,9 @@ fn a_seat_endorsement_from_another_ceremony_does_not_carry() {
         .expect("well-formed");
 
     // Genuine signatures by the genuine seat-holders -- over ceremony A.
-    let stale = endorse_with(&a, &owners.claim, seat_key_of::<Owners>);
+    let stale = endorse_with(&a, &owners.claim, seat_key_of::<Owners>, |id| {
+        own_share_scalar(&owners, id)
+    });
 
     let artifact = CompositionArtifact::from_parts(
         sealed,
@@ -490,7 +728,9 @@ fn a_seat_endorsement_from_another_ceremony_does_not_carry() {
     );
 
     // CONTROL: the same signatures over ceremony B, which is where they belong.
-    let fresh = endorse_with(&b, &owners.claim, seat_key_of::<Owners>);
+    let fresh = endorse_with(&b, &owners.claim, seat_key_of::<Owners>, |id| {
+        own_share_scalar(&owners, id)
+    });
     let ok = CompositionArtifact::from_parts(
         sealed,
         ComponentReveal::from_parts(owners.claim.clone(), owners.pops(&sealed), fresh, owners.salt),
@@ -509,15 +749,26 @@ fn a_seat_endorsement_from_another_ceremony_does_not_carry() {
 ///
 /// The commitment is re-sealed over the altered claim, so the commitment check
 /// cannot fire; and the seat KEYS are untouched, so the comparison in
-/// `check_seats` cannot fire either. What is left is the signature.
+/// `check_seat_attribution` cannot fire either. What is left is the endorsement.
 ///
-/// Not fully isolated, and review was right to say so: the reused proofs of
-/// possession name the old claim too, so they would fail as well if the audit
-/// got that far. `check_seats` runs before `check_pops`, so the reported error
-/// is the signature. What this establishes is that the endorsement is
-/// claim-bound AND that a claim-bound failure is reported at the seat layer;
-/// the mutation that removes `claim_digest` from the payload is caught here
-/// because it turns this into `PopFailed`.
+/// **Now fully isolated, which it was not before.** The earlier version reused
+/// the honest proofs of possession, which name the old claim and would have
+/// failed too -- it relied on the seat checks running first to decide which
+/// error was reported. Since the linked endorsement moved after `check_pops`,
+/// that would report `PopFailed` and prove nothing about the endorsement, so the
+/// proofs here are re-made over the INFLATED claim with the holders' own share
+/// scalars. They verify, and the mutation that removes `claim_digest` from the
+/// endorsement transcript is what this test catches -- measured, it is the only
+/// test that fails for it.
+///
+/// **What it is NOT is "the endorsement is the only invalid thing here", and an
+/// earlier version said that.** Inflating the threshold from 2 to 3 leaves the
+/// verification shares on a degree-1 polynomial, so `check_consistency` would
+/// object to this artifact as well -- with
+/// [`CeremonyError::ThresholdOverstated`], from a check that runs AFTER the
+/// endorsements. The exact error asserted below therefore proves the endorsement
+/// check runs and refuses first; it does not prove the rest of the artifact was
+/// sound. Adversarial review made that distinction and it is worth keeping.
 #[test]
 fn a_seat_endorsement_does_not_carry_to_a_different_claim() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x5EB9);
@@ -538,12 +789,33 @@ fn a_seat_endorsement_does_not_carry_to_a_different_claim() {
     let signed = seal_and_sign::<Owners>(&ceremony, &inflated, &salt);
     let sealed = SealedComposition::new(ceremony, signed, gates.commitment).expect("well-formed");
 
+    // Proofs of possession over the INFLATED claim, made with the holders' own
+    // shares, so every one of them verifies and the refusal below is the
+    // endorsement alone.
+    let pops: BTreeMap<u64, two_cohort::Pop> = owners
+        .claim
+        .roster()
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                two_cohort::Pop::prove_unchecked(
+                    &sealed,
+                    &inflated,
+                    id,
+                    &own_share_scalar(&owners, id),
+                )
+                .expect("each holder's own share opens its own verification share"),
+            )
+        })
+        .collect();
+
     let artifact = CompositionArtifact::from_parts(
         sealed,
         ComponentReveal::from_parts(
             inflated,
-            owners.pops(&sealed),
-            // The seats' genuine signatures -- over the claim they really made.
+            pops,
+            // The seats' genuine endorsements -- over the claim they really made.
             owners.endorsements.clone(),
             salt,
         ),
@@ -809,6 +1081,16 @@ fn a_claim_with_the_wrong_number_of_seat_keys_is_refused() {
 /// first inside `assemble` -- passes and the length guard is what refuses it.
 /// Hand-made secrets, because a DKG's shares cannot be re-proved against a claim
 /// that is not their own.
+///
+/// **One honest limit, which adversarial review named.** The endorsement map is
+/// EMPTY. So without the length guard this would not reach the out-of-bounds
+/// index it is described as preventing -- it would return
+/// [`CeremonyError::SeatEndorsementMissing`] from the loop's first lookup
+/// instead. What the assertion below establishes is that the length disagreement
+/// is reported as a length disagreement, ahead of anything else. The panic it is
+/// named for is prevented by the guard, and that is reasoning, not a
+/// measurement; no test in this suite can reach the index, because the guard is
+/// the only thing between it and every caller.
 #[test]
 fn assemble_refuses_a_short_seat_key_vector_rather_than_indexing_it() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x5EBD);
@@ -891,9 +1173,14 @@ fn the_gate_cohorts_seats_are_attributed_and_endorsed_too() {
     // The gate seat's endorsement is somebody else's signature. Made over the
     // right message, by the wrong key, so what refuses it is the verification
     // and not the shape.
-    let forged = endorse_with(&h.ceremony, h.artifact.gates().claim(), |_| {
-        IdentityKey::from_seed(&[0xD9; 32])
-    });
+    let forged = endorse_with(
+        &h.ceremony,
+        h.artifact.gates().claim(),
+        |_| IdentityKey::from_seed(&[0xD9; 32]),
+        // With the gate seat's REAL share, so the endorsement is well-formed and
+        // what refuses it is whose key it was made under.
+        |id| own_share_scalar(&h.gates, id),
+    );
     let artifact = CompositionArtifact::from_parts(
         h.sealed,
         h.artifact.owners().clone(),
@@ -1225,72 +1512,65 @@ fn the_release_gate_refuses_a_spend_audited_under_other_seat_keys() {
 // 8. The residual, performed.
 // ---------------------------------------------------------------------------
 
-/// **THE RESIDUAL THAT MATTERS, and it is cheaper for the attacker than the one
-/// below.**
+/// **THE FORGERY THAT NO LONGER WORKS: a dealer keeps every share and collects
+/// endorsements, and there is nothing left for the named parties to give it.**
 ///
-/// A dealer runs no DKG for the OWNER cohort, deals every owner share to itself,
-/// and keeps them. It does NOT hold the seat-holders' identity private keys and
-/// never asks for them. It writes the three genuine owner seat keys into its
-/// claim, produces every owner proof of possession itself -- it knows every
-/// share -- and asks each named party for one signature over
-/// [`seat_endorsement_message`], which is public bytes that reveal no secret and
-/// cost the signer nothing.
+/// # What this test used to assert
 ///
-/// **What this test asserts is that the artifact AUDITS**, and that the dealer
-/// knows the discrete log of the whole owner component. It stops there: it does
-/// not call `check_decided_structure` or `authorize_release`. The end-to-end
-/// half -- audit, decided-structure check, release gate, `deposit_spend_key`,
-/// and an output opened by two principals -- is
-/// `seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`.
-/// This doc said "reaches the release gate" of a test that never calls it, and
-/// review caught it.
+/// It was `a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
+/// and it PASSED. A dealer ran no DKG for the owner cohort, dealt every share to
+/// itself, wrote the three genuine seat keys into its claim, produced every
+/// proof of possession itself, and asked each named party for ONE SIGNATURE over
+/// public bytes that revealed no secret and cost the signer nothing. The
+/// artifact audited. Its doc said that when an endorsement was bound to
+/// possession of the share, this test should be replaced by the refusal,
+/// asserted by exact error. This is that replacement.
 ///
-/// **This was missed in the first version of this work and an adversarial review
-/// found it.** `tests/forgery.rs` claimed a dealer had exactly two options for
-/// its seat keys -- its own, or the real holders' public keys with signatures it
-/// cannot make -- and "no third option". This is the third: the real holders'
-/// public keys with signatures they really made, about a cohort they were never
-/// dealt into.
+/// # The same attack, and the two places it now dies
 ///
-/// So the precise statement of what a seat endorsement buys is:
+/// The dealer holds every share of its own dealing and none of the three
+/// parties' identity keys. The three parties hold their identity keys and, in
+/// this mounting, NO SHARE AT ALL -- they were never dealt into anything.
 ///
-/// > seat `i`'s named key signed a statement naming `V_i` and this claim.
+///   * **the named party has nothing to endorse with.** `endorse_seat` now takes
+///     a share, and the only scalars a party in this position has are ones it
+///     invented. Any of them is refused with
+///     [`CeremonyError::SeatShareNotOwn`], asserted below over a scalar the party
+///     picks itself. There is no scalar it could pick that would work: the
+///     refusal is `share*G != V_i`, and `V_i` is the dealer's;
+///   * **the dealer cannot make up the difference.** It can answer the share half
+///     of every endorsement -- it holds every share -- but not the identity half,
+///     and one challenge covers both. That is the CAPABILITY statement, and it is
+///     why there is no artifact of the shape the dealer wants.
 ///
-/// and NOT:
+///     How the artifact it CAN assemble dies is a different sentence, and an
+///     earlier version of this comment ran the two together: it endorses with
+///     three keys of its own, `Id` is in the challenge preamble, so verifying
+///     under the named party's key recomputes a different `c` and **both**
+///     equations fail. The refusal is
+///     [`CeremonyError::SeatEndorsementInvalid`], which deliberately does not say
+///     which half. Deleting either verification equation on its own leaves this
+///     test passing, so what it establishes is that the endorsement check runs
+///     and refuses this artifact -- not which equation did it.
+///     [`each_half_of_the_linked_endorsement_is_checked_on_its_own`] is the ONLY
+///     test in the suite that fails for either deletion -- measured -- and so the
+///     only thing standing between the two equations and a future edit that drops
+///     one.
 ///
-/// > seat `i`'s named party holds a share behind `V_i`.
+/// # What did NOT change, and is a test of its own
 ///
-/// The proof of possession says a share exists; the endorsement says a named key
-/// signed; nothing in the artifact binds those to one actor. What the bar became
-/// is the number of DISTINCT SIGNATURES a forgery needs, and the arithmetic is
-/// per FORGERY, not per artifact -- review found this line inflating it:
+/// The dealer's own arithmetic. It still holds `b_owner`, the discrete log of
+/// the whole owner component, and every proof of possession in the artifact is
+/// genuine. Nothing here makes the attack impossible; what it makes impossible
+/// is an artifact a funder accepts. And a dealer that deals REAL shares to the
+/// named parties and keeps copies is untouched --
+/// [`a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`], immediately
+/// below, and it is the residual that remains.
 ///
-///   * THIS test, which forges the owner cohort only: the owner organisation's
-///     signature plus the THREE owner seats' -- four, up from one. The gate
-///     cohort here is honest, so the gate organisation's signature and the gate
-///     seat's endorsement are the honest gate's own and are not the forger's to
-///     collect;
-///   * a forgery that fabricates BOTH cohorts: six, up from two.
-///
-/// Either way it is a real cost -- parties must be induced to sign something --
-/// and it is not custody evidence.
-///
-/// The CONTROL is the same dealer without those signatures, which is
-/// `tests/forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`:
-/// it differs from this test in the signatures alone and is refused.
-///
-/// # If this test fails, it has been FIXED, not broken
-///
-/// It asserts that a forgery SUCCEEDS, which is the only way to keep a residual
-/// measurable and is also a test that will one day go red for a good reason.
-/// Binding a seat endorsement to possession of that seat's share is buildable
-/// and is tracked as such in `proofs/tla/AttributionCoverage.tla`
-/// (`EndorserHoldsShare`). When it is built, this test and
-/// `seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
-/// fail together. Replace them with the refusal, asserted by exact error. Do not
-/// weaken an assertion to make either pass again.
+/// The CONTROL is an honest ceremony at the same shape, audited under the same
+/// funder keys.
 #[test]
-fn a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes() {
+fn a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x5EC0);
     let ceremony = CeremonyId::draw("signatures without shares", &mut rng);
     let ids = owners_spec().ids().to_vec();
@@ -1315,7 +1595,9 @@ fn a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes() {
     let gates = CohortSide::<Gates>::generate(&ceremony, &gates_spec(), &mut rng);
     let sealed = SealedComposition::new(ceremony, signed, gates.commitment).expect("well-formed");
 
-    // Every proof of possession is the DEALER's: it knows every share.
+    // Every proof of possession is the DEALER's: it knows every share. This half
+    // of the artifact is exactly what it always was, so the refusals below are
+    // attributable to the endorsements and to nothing else.
     let pops: BTreeMap<u64, two_cohort::Pop> = ids
         .iter()
         .map(|&id| {
@@ -1332,27 +1614,223 @@ fn a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes() {
         })
         .collect();
 
-    // Every endorsement is the named party's own. `endorse_seat` is happy,
-    // because the claim really does attribute the seat to the key doing the
-    // signing. No share is involved, and none of the four parties learns
-    // anything by signing.
+    // ---- 1. the named party, asked to endorse, has nothing to endorse with ----
     //
-    // `endorse_seat` is the UNCHECKED entry point, not the checked one -- an
-    // earlier version of this comment had it the other way round. The checked
-    // one is `CohortShare::endorse`, and it is unavailable here for a reason
-    // that is part of the residual rather than a fixture detail: these parties
-    // hold no share, so there is no `CohortShare` to call it on. What makes the
-    // residual sharper than that reading suggests is
-    // `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`,
-    // where the parties DO hold real shares, `CohortShare::endorse` refuses, and
-    // `endorse_seat` signs anyway.
-    let endorsements: BTreeMap<u64, IdentitySignature> = ids
+    // It holds its own identity key and no share of this dealing -- of any
+    // dealing. `endorse_seat` requires both, so the best it can do is offer a
+    // scalar of its own, and that is refused by its own software rather than
+    // signed. `CohortShare::endorse` is not even callable: there is no
+    // `CohortShare` in this party's possession, which is the whole of what
+    // "share-less bystander" means.
+    let a_scalar_the_party_invented = Scalar::random(&mut rng);
+    for &id in &ids {
+        assert_eq!(
+            endorse_seat(
+                &ceremony,
+                &claim,
+                id,
+                &seat_key_of::<Owners>(id),
+                &a_scalar_the_party_invented,
+            )
+            .expect_err("this party holds no share behind the seat it is being asked to endorse"),
+            CeremonyError::SeatShareNotOwn {
+                cohort: Owners::NAME,
+                participant: id,
+            },
+        );
+    }
+    // And it is not the scalar that is unlucky: the DEALER's share for that seat
+    // is the one value that would work, and the party does not have it. Asserted
+    // so that the refusal above reads as "no share" rather than "wrong call" --
+    // one input changes, the share argument, and the call succeeds.
+    //
+    // **Nobody in this scenario can make this call.** An earlier version of this
+    // line said it "succeeds for whoever holds the share -- which is the dealer",
+    // and that is wrong: `endorse_seat` checks `claimed != key.public()` FIRST,
+    // and the key passed here is `seat_key_of::<Owners>(ids[0])`, the named
+    // party's. The dealer alone gets `SeatKeyNotOwn` from it; the named party
+    // alone gets `SeatShareNotOwn`, which is the assertion above. What succeeds
+    // here is a caller holding BOTH, which this test process does and no
+    // participant in the attack does. That is the point of the whole file, and
+    // stating it the other way turned the control into a claim about capability
+    // it cannot support.
+    endorse_seat(
+        &ceremony,
+        &claim,
+        ids[0],
+        &seat_key_of::<Owners>(ids[0]),
+        &dealt.share(ids[0]).expect("dealt"),
+    )
+    .expect("CONTROL: the share argument is the only thing wrong above");
+
+    // ---- 2. so the dealer endorses with what it has: shares, and its own keys ----
+    let its_own_keys: Vec<IdentityKey> = (0..3u8)
+        .map(|k| IdentityKey::from_seed(&[0xC0 + k; 32]))
+        .collect();
+    let endorsements: BTreeMap<u64, SeatEndorsement> = ids
+        .iter()
+        .enumerate()
+        .map(|(k, &id)| {
+            (
+                id,
+                endorse_seat_unchecked(
+                    &ceremony,
+                    &claim,
+                    id,
+                    &its_own_keys[k],
+                    &dealt.share(id).expect("dealt"),
+                )
+                .expect("it holds every share, and these are its OWN keys -- so this call \
+                         succeeds and produces a proof bound to the wrong signer"),
+            )
+        })
+        .collect();
+
+    // Each of those endorsements is WELL FORMED under the key that made it.
+    // Asserted before the refusal below, because `SeatEndorsementInvalid` is
+    // deliberately generic: without this, a prover bug that produced garbage
+    // whenever the signer differs from the claim's key would give exactly the
+    // same expected error, and the test would pass for the wrong reason.
+    // Adversarial review asked for this and it was not there.
+    for (k, &id) in ids.iter().enumerate() {
+        let v = claim.verification_share(id).expect("on the roster");
+        assert!(
+            endorsements[&id].verify(&ceremony, &claim, id, &v, &its_own_keys[k].public()),
+            "the dealer's endorsement of seat {id} verifies under the dealer's OWN \
+             key -- what it cannot do is verify under the named party's",
+        );
+    }
+
+    let artifact = CompositionArtifact::from_parts(
+        sealed,
+        ComponentReveal::from_parts(claim, pops, endorsements, salt),
+        gates.reveal(&sealed),
+    );
+
+    // ---- and the funder refuses it, under the keys it collected from the real
+    // parties ----
+    assert_eq!(
+        audit(&artifact, &parties()).expect_err("the residual is closed"),
+        CeremonyError::SeatEndorsementInvalid {
+            cohort: Owners::NAME,
+            participant: ids[0],
+            signer: seat_key_of::<Owners>(ids[0]).public(),
+        },
+        "holding every share is half of an endorsement, and the other half is a \
+         key this dealer does not have",
+    );
+
+    // THE HARM THAT DID NOT HAPPEN. The dealer still holds the discrete log of
+    // the whole owner component -- the arithmetic is untouched -- but the
+    // component never becomes an audited root.
+    assert_eq!(artifact.owners().component(), b_owner * G);
+    for &id in &ids {
+        assert_ne!(
+            artifact.owners().component(),
+            artifact
+                .owners()
+                .claim()
+                .verification_share(id)
+                .expect("on the roster"),
+            "the dealing is a real 2-of-3, so this is not a degenerate shape the \
+             threshold checks would have caught",
+        );
+    }
+
+    // CONTROL: an honest ceremony at the same shape, under the same funder keys.
+    let h = honest(0x5EC1);
+    audit(&h.artifact, &h.parties).expect("control: an honest 2-of-3 owner cohort still audits");
+}
+
+/// **THE RESIDUAL THAT REMAINS: a dealer that deals REAL shares to the named
+/// parties and keeps copies produces an artifact that audits.**
+///
+/// Named, and kept passing, because a reader who has just seen two forgeries
+/// inverted will otherwise assume this one was closed with them. It was not, and
+/// it cannot be by anything an artifact carries.
+///
+/// The dealer deals a secret it chose to the three real parties over the decided
+/// roster and KEEPS EVERY SHARE. Each party then endorses honestly: it holds the
+/// identity key the claim names for it, and it holds a share that really does
+/// open the verification share published for it, so the linked proof is
+/// available to it and it is genuine. Every proof of possession is genuine too.
+/// The artifact audits, and the dealer alone can spend, because it holds enough
+/// shares to reconstruct.
+///
+/// **Why no proof can close this.** A proof of possession -- linked or not --
+/// establishes that a witness was available to whoever made it. Possession is
+/// copyable: `s_i` in two places is the same scalar, and the two are
+/// indistinguishable in any transcript either can produce. What would be needed
+/// is a proof of EXCLUSIVE possession, which no group element carries. The
+/// remedy is the DKG, where no dealer ever holds a share -- and whether a cohort
+/// ran one is precisely what `dkg`'s own module docs say the published bytes
+/// cannot show.
+///
+/// # If this test fails, check the harness before rewriting anything
+///
+/// Like the two-organisations residual in `tests/attribution.rs`, it asserts
+/// that something SUCCEEDS. A red here almost certainly means an unrelated
+/// change broke artifact construction, not that the residual is gone.
+#[test]
+fn a_dealer_that_dealt_real_shares_and_kept_copies_still_passes() {
+    let mut rng = ChaCha20Rng::seed_from_u64(0x5EC2);
+    let ceremony = CeremonyId::draw("dealt, and copies kept", &mut rng);
+    let ids = owners_spec().ids().to_vec();
+
+    // The dealer's secret, dealt 2-of-3 to the three real parties. It keeps
+    // `dealt`, which is every share.
+    let b_owner = Scalar::random(&mut rng);
+    let dealt = two_cohort::Cohort::deal_in::<Owners, _>(&b_owner, 2, &ids, &mut rng)
+        .expect("dealt");
+    let claim = ComponentClaim::from_parts(
+        Owners::NAME,
+        2,
+        ids.clone(),
+        b_owner * G,
+        ids.iter()
+            .map(|&id| dealt.verification_share(id).expect("on the roster"))
+            .collect(),
+        seat_keys_over::<Owners>(&ids),
+    );
+    let salt = [0x92; 32];
+    let signed = seal_and_sign::<Owners>(&ceremony, &claim, &salt);
+    let gates = CohortSide::<Gates>::generate(&ceremony, &gates_spec(), &mut rng);
+    let sealed = SealedComposition::new(ceremony, signed, gates.commitment).expect("well-formed");
+
+    let pops: BTreeMap<u64, two_cohort::Pop> = ids
         .iter()
         .map(|&id| {
             (
                 id,
-                endorse_seat(&ceremony, &claim, id, &seat_key_of::<Owners>(id))
-                    .expect("the named party signs for its own seat"),
+                two_cohort::Pop::prove_unchecked(
+                    &sealed,
+                    &claim,
+                    id,
+                    &dealt.share(id).expect("dealt"),
+                )
+                .expect("a share behind every seat, because the parties really were dealt one"),
+            )
+        })
+        .collect();
+
+    // Each named party endorses with its OWN identity key and the share it was
+    // DEALT. Through `endorse_seat`, the entry point an honest party reaches
+    // for -- nothing here is unchecked, and nothing here is a forgery of any
+    // kind. Every one of these endorsements is exactly what an honest seat
+    // produces.
+    let endorsements: BTreeMap<u64, SeatEndorsement> = ids
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                endorse_seat(
+                    &ceremony,
+                    &claim,
+                    id,
+                    &seat_key_of::<Owners>(id),
+                    &dealt.share(id).expect("this party was dealt a real share"),
+                )
+                .expect("it holds the key AND a share that opens its own verification share"),
             )
         })
         .collect();
@@ -1363,41 +1841,41 @@ fn a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes() {
         gates.reveal(&sealed),
     );
 
-    // It audits, under the keys a funder collected from the real parties.
-    //
-    // SCOPE, corrected after review. This forges the OWNER cohort only -- the
-    // gate cohort is honest here -- so the signatures the dealer had to collect
-    // are the THREE owner seats', not four. The gate seat's endorsement is the
-    // honest gate's own. And the assertion below is over the owner structure,
-    // which has THREE seats; its message said "four", which is the artifact's
-    // total across both cohorts and not what is being compared.
-    let audited = audit(&artifact, &parties()).expect("this is the residual");
+    let audited = audit(&artifact, &parties()).expect("THIS IS THE RESIDUAL: it audits");
     let (o, _) = audited.structure();
     assert_eq!(
         o.seats(),
         ids.iter()
             .map(|&id| (id, seat_key_of::<Owners>(id).public()))
             .collect::<Vec<_>>(),
-        "the funder is told the three real parties hold the three owner seats",
+        "the funder is told the three real parties hold the three owner seats, \
+         and they do",
     );
-    assert_eq!(o.seats().len(), 3, "the owner cohort, not the whole artifact");
 
-    // THE HARM: the dealer holds the discrete log of the whole owner component,
-    // which no member of an honest 2-of-3 cohort does. The three named parties
-    // hold nothing at all.
+    // THE HARM: the dealer kept copies, so it holds the discrete log of the
+    // whole owner component, which no member of a cohort that ran a DKG would.
+    // Every check in the module passes and nothing in the artifact differs from
+    // the honest case.
     assert_eq!(o.component(), b_owner * G);
-    for &id in &ids {
-        assert_ne!(
-            o.component(),
-            artifact
-                .owners()
-                .claim()
-                .verification_share(id)
-                .expect("on the roster"),
-            "the dealing is a real 2-of-3, so this is not a degenerate shape the \
-             threshold checks would have caught",
-        );
-    }
+    let quorum = [ids[0], ids[1]];
+    let reconstructed: Scalar = quorum
+        .iter()
+        .map(|&id| {
+            two_cohort::lagrange_at_zero(
+                ids.iter().position(|&r| r == id).unwrap() as u64 + 1,
+                &quorum
+                    .iter()
+                    .map(|&q| ids.iter().position(|&r| r == q).unwrap() as u64 + 1)
+                    .collect::<Vec<_>>(),
+            )
+            .expect("public arithmetic")
+                * *dealt.share(id).expect("dealt")
+        })
+        .sum();
+    assert_eq!(
+        reconstructed, b_owner,
+        "the dealer's copies reconstruct the owner component by themselves",
+    );
 }
 
 /// **A party holding all four seat keys produces an artifact that audits, while

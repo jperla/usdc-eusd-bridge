@@ -40,14 +40,15 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{parties_over, seal_and_sign, seat_endorsements, CohortSide};
-use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
+use common::{
+    own_share_scalar, own_share_scalars, parties_over, seal_and_sign, seat_endorsements, CohortSide,
+};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     audit,
     ceremony::{ComponentClaim, ComponentReveal, Pop, SealedComposition},
-    lagrange_at_zero, CeremonyError, CeremonyId, CohortSpec, ControlDomain, Gates, Owners,
+    CeremonyError, CeremonyId, CohortSpec, ControlDomain, Gates, Owners,
 };
 
 fn owners_spec() -> CohortSpec<Owners> {
@@ -157,54 +158,6 @@ fn the_default_entry_point_produces_the_same_proof_as_prove_for() {
     audit(&artifact, &parties()).expect("and it audits standing alone");
 }
 
-/// A holder's own share scalar, recovered from public material.
-///
-/// `CohortShare::secret` is `pub(crate)`, so this is how a holder outside the
-/// crate reaches its own secret -- and it is not a trick: the roster is public,
-/// the evaluation points are `1..=n` by position as `dkg` documents, and
-/// `lagrange_at_zero` is a public function of those.
-/// `composition.rs::a_holder_can_recover_its_own_share_through_public_api` is
-/// the test that owns this property; here it is only the means of driving the
-/// raw prover as a holder actually would.
-fn own_share_scalar<C: ControlDomain>(side: &CohortSide<C>, id: u64) -> Scalar {
-    let share = side.share_of(id);
-    let roster = share.key().roster().to_vec();
-    // A quorum containing this holder. Which other seats are in it does not
-    // matter: `term` weights the share for exactly this quorum and the Lagrange
-    // weight below is computed over the same one, so they cancel.
-    let mut quorum: Vec<u64> = vec![id];
-    for &r in &roster {
-        if quorum.len() == side.claim.threshold() {
-            break;
-        }
-        if r != id {
-            quorum.push(r);
-        }
-    }
-    quorum.sort_unstable();
-
-    let points: Vec<u64> = quorum
-        .iter()
-        .map(|q| roster.iter().position(|r| r == q).unwrap() as u64 + 1)
-        .collect();
-    let mine = roster.iter().position(|r| *r == id).unwrap() as u64 + 1;
-    let lambda = lagrange_at_zero(mine, &points).expect("public arithmetic");
-
-    let recovered = *share
-        .term(&quorum)
-        .expect("a quorum member's own term")
-        .weight()
-        * lambda.invert();
-    assert_eq!(
-        recovered * G,
-        side.claim
-            .verification_share(id)
-            .expect("on the roster"),
-        "the recovered scalar opens this seat's published verification share",
-    );
-    recovered
-}
-
 /// **The two provers separated, on one share, one composition, one claim.**
 ///
 /// The same inflated claim that the default entry point refuses is SIGNED by the
@@ -267,7 +220,12 @@ fn the_raw_prover_signs_what_the_default_entry_point_refuses() {
     // `assemble` VERIFIES every proof it is given, and it accepts these: the
     // holders' signatures are on the coordinator's threshold. Nothing in the
     // proving path objected.
-    let endorsements = seat_endorsements::<Gates>(sealed.ceremony(), &inflated);
+    // The seats endorse the inflated claim with the shares they really hold --
+    // their own `V_i` is unchanged by the threshold, so the linked endorsement
+    // verifies. Same point as the proofs above: nothing in the holder's own
+    // proving or endorsing path objects to a coordinator's threshold.
+    let endorsements =
+        seat_endorsements::<Gates>(sealed.ceremony(), &inflated, &own_share_scalars(&gates));
     let inflated_reveal =
         ComponentReveal::assemble(&sealed, inflated, pops, endorsements, gates.salt)
             .expect("every forged proof verifies against the claim it was taken over");

@@ -102,8 +102,10 @@ subsets is the correctness condition for the scheme, not bookkeeping.
 | `attribution.rs::one_organisation_named_for_both_cohorts_is_refused` | `PartiesNotDistinct`; isolated by auditing **one** artifact under two `Parties` values, so only the funder's input differs |
 | `attribution.rs::a_holders_proof_is_bound_to_the_counterparty_it_dealt_with` | the two signer keys are inside the pop transcript, not layered beside it |
 | **`forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`** | **the inversion**: a dealt owner cohort, endorsed with the organisation's own real key, is now refused at `audit_address` — mounted both ways a dealer WITHOUT seat signatures can (dealer names itself → `SeatUnexpected`; dealer copies the real seat-holders' public keys → `SeatEndorsementInvalid`), with an honest ceremony at the same shape still publishing. A third mounting — collecting genuine signatures — is not refused; see below |
-| `seat_identity.rs` (20 tests) | one identity key per seat: sealed by the commitment, welded into every pop transcript, checked under the key the *funder* supplied, and refused when two seats share a key — plus the residual, performed |
-| **`seat_forgery.rs` (3 tests)** | **the residual sharpened**: three parties that ran a real DKG and hold real shares endorse a *substituted* dealing, and the artifact audits, passes `authorize_release`, reaches `deposit_spend_key` and is opened by **two** principals — plus the two transposition cases (seat keys within a roster; the deployment's roster against the audit's) that keep the key multiset identical |
+| `seat_identity.rs` (23 tests) | one identity key per seat: sealed by the commitment, welded into every pop transcript, checked under the key the *funder* supplied, and refused when two seats share a key — plus `a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement` (was a passing forgery, now a refusal), `each_half_of_the_linked_endorsement_is_checked_on_its_own` (the **only** test isolating either verification equation), and the two residuals, performed |
+| **`seat_forgery.rs` (3 tests)** | **the residual, inverted**: three parties that ran a real DKG and hold real shares are asked to endorse a *substituted* dealing and refuse at `SeatShareNotOwn`; the dealer's own assembly is refused at `SeatEndorsementInvalid`; an honest ceremony at the same shape still reaches its published address — plus the two transposition cases (seat keys within a roster; the deployment's roster against the audit's) that keep the key multiset identical |
+| **`seat_challenge_coverage.rs` (2 tests)** | **the guard the whole rework rests on**: each half's commitment must be in the challenge before either response exists. One test forges from a share-holder's position, one from an identity-key holder's, by solving for the commitment after learning the challenge. Each fails under the deletion of its own `h.update` and only its own; before them, deleting either left all 326 tests green |
+| **`seat_key_torsion.rs` (6 tests)** | **a seat key must be a key**: replacing the signature with a sigma proof dropped `verify_strict`'s small-order refusal, and a dealer holding every share forged three identity halves over values with no secret behind them and the artifact audited. Now `SeatKeyNotUsable`. Each test asserts the forged equation is *satisfied* before asserting the refusal, so a green test cannot mean the forgery was malformed |
 | `forgery.rs` (8 further tests) | endorsement lifted from another ceremony, transposed commitments, transposed reveals, transposed funder keys, an overstated threshold, and a simulated root — each refused by a named error |
 | `release_gate.rs::a_simulated_root_reaches_the_funding_path_today` | the gap the gate closes, performed: a simulated root is published at the decided shape and then spent |
 | `release_gate.rs::the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_name` | a ceremony run by a different pair of organisations differs in nothing else, and is refused on the endorser arm alone |
@@ -214,37 +216,124 @@ and `check_consistency` now enumerates every size below `t`.
   cohorts collects **six**, every identity signature the artifact carries. This
   paragraph said "five", which is neither.
 
-  It does **not** establish that four keys are four entities; it does not
-  stop a dealer that dealt to four real parties while keeping copies; and it does
-  **not** bind the party that *signed* for a seat to the party that *holds a
-  share* behind it. A dealer can keep every share, make every proof of possession
-  itself, and collect the seat signatures it needs over public bytes that cost
-  the signers nothing — three of them for a dealt OWNER cohort, since the honest
-  gate signs its own seat; review found "four" here, which is the artifact's
-  total and not the forger's bill —
-  `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
-  performs that and it audits.
+  It does **not** establish that four keys are four entities, and it does not
+  stop a dealer that dealt REAL shares to four real parties while keeping copies.
 
-  **The sharper form, and the one a deployment should read.** The signers need
-  not be share-less bystanders. `ceremony::endorse_seat` — a public free function
-  taking a claim and an identity key, and the only endorsing entry point
-  available to a seat whose long-term key lives away from its share — consults no
-  share at all. So a party that ran the real DKG and holds a real share **can**
-  endorse a *substituted* dealing — a claim over a component the attacker chose,
-  with the attacker holding its discrete log. `dkg::CohortShare::endorse` is the
-  only entry point that refuses (`CeremonyError::ClaimNotOwn`), and the artifact
-  records which one was used nowhere.
+  **What it now DOES bind, and what it took.** A seat endorsement used to be an
+  Ed25519 signature over public bytes: it did not bind the party that signed for
+  a seat to a *share* behind it, so a dealer could keep every share, make every
+  proof of possession itself, and collect the signatures it needed at no cost to
+  the signers. That is closed. `ceremony::endorse_seat` now takes the seat's
+  **share** as well as its identity key and produces one AND-composed proof of
+  knowledge of `d` (with `Id = d·B`) and `s` (with `V = s·G`) under a single
+  challenge over the same transcript the claim was already bound to. Neither
+  secret alone yields a verifying endorsement, so a share-less party cannot
+  endorse and a share-holding dealer cannot endorse without the named party's
+  key. The two tests that performed the passing forgery are now refusals with
+  named errors:
+  `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`
+  (`CeremonyError::SeatShareNotOwn` at the holder, `SeatEndorsementInvalid` at
+  the audit) and
+  `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_substituted_dealing`,
+  where the named parties hold REAL shares of a real DKG and their own key
+  material is what refuses the substituted dealing.
 
-  "Can", not "will" — the word this paragraph used, which review was right to
-  strike. Whether a holder signs is a question about that holder's own software
-  and discipline, and the endorsement is worth exactly what that discipline is
-  worth. The artifact cannot tell a funder which of the two entry points
-  produced any signature it carries, so the funder cannot use the distinction.
-  `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
-  performs it end to end: it audits, it passes `authorize_release`, it reaches
-  `deposit_spend_key`, and **two** principals — the operator organisation and the
-  gate — then open an output paid to the published address, against a decided
-  `COMPROMISE_THRESHOLD` of three.
+  **The two GROUPS are two groups; the two BASES are one number.** Said this way
+  because the previous wording — "the two generators are not one generator" —
+  leaned on a difference that cannot carry the argument. `Id` is an Ed25519 point
+  compressed as an Edwards `y`; `V` is a Ristretto point with its own encoding;
+  no point of one is a point of the other. But `RISTRETTO_BASEPOINT_POINT`'s
+  representative *is* `ED25519_BASEPOINT_POINT`, so `V`'s representative is `s·B`
+  and `Id` is `d·B` over one numeric base. What keeps the two witnesses from
+  collapsing is that there are **two responses checked by two equations**, never
+  a single `z` against `A + c·(Id + V)` — knowledge of `d + s` alone would
+  satisfy that. Sharing the challenge scalar is sound because both groups have
+  the same prime order. A **fixed equal-weight** collapse of the two equations is
+  unsafe; a batch with **unpredictable random coefficients** is not — an earlier
+  version of this line said any batching would break it, which review corrected.
+  The rule is: two responses, and no verification equation whose coefficients an
+  adversary can predict.
+  `seat_identity.rs::an_equal_weight_collapse_of_the_two_equations_is_refused` is
+  a tripwire for the unsafe form, labelled as such because no mutation of the
+  current `verify` makes it fail — the dangerous shape is not expressible without
+  lifting one group into the other.
+
+  **A seat key must be a key, and closing the premise briefly cost that.** The
+  Ed25519 signature this replaced went through `verify_strict`, which refuses a
+  small-order signer outright. The sigma proof did not, and its comment argued no
+  subgroup check was needed — which is false, because `A` is the *prover's*
+  choice. A pure-torsion `Id`, behind which no secret exists, admits a verifying
+  identity half found by grinding about 8 challenges, so a dealer holding every
+  share could fill three seats with values that are not keys and the artifact
+  audited. **The first fix was also incomplete**, and adversarial review caught
+  it: a subgroup check passes the *identity element*, which is in the subgroup
+  and whose `d = 0` is public — its identity half verifies for every challenge
+  with no grinding at all. Both are now refused by `ComponentClaim::check_shape`
+  as `CeremonyError::SeatKeyNotUsable`, with the cause named, and by
+  `IdentityPublic::edwards` on the public verify path.
+  `tests/seat_key_torsion.rs` performs both forgeries, asserts the forged equation
+  is satisfied before asserting the refusal, and builds complete artifacts so that
+  removing the guard makes `audit` return `Ok` — verified by removing both guards
+  in a throwaway clone. This is the exact twin of
+  `CeremonyError::IdentityVerificationShare`, which had been refusing `V = 0` on
+  the share side all along.
+
+  A related scope note raised in review and closed by enumeration rather than by
+  argument: Dalek accepts some non-canonical Edwards encodings and neither `Id`
+  nor `A` is recompressed. For `Id` the whole non-canonical space is 19 values,
+  every curve point among them is the identity or torsion-bearing, and
+  `every_non_canonical_seat_key_encoding_is_refused` walks all 19. For `A` the
+  challenge absorbs its raw bytes, so a re-encoding is a different transcript.
+  `IdentityPublic::unusable_reason` is public so an independent implementation —
+  or a deployment collecting seat keys — can apply the same rule.
+
+  **Stated in the form a cryptographer would accept**, because "an act used both
+  secrets" is intuition rather than what a proof of knowledge delivers, and
+  adversarial review asked for the exact version:
+
+  > Assuming discrete logarithms are hard and the domain-separated BLAKE2b
+  > challenge is modelled as a random oracle, a `SeatEndorsement` accepted
+  > through `audit` is an *argument of knowledge* for `Id = d·B ∧ V_i = s·G`,
+  > where `Id` is the key the **checker** supplied for that seat and `V_i` is the
+  > claim's non-identity verification share for it. An efficient producer that
+  > succeeds with non-negligible probability admits extraction of both scalars.
+
+  **What it still does not say**, stated because the last four versions of this
+  paragraph each overclaimed something:
+
+  * not that ONE actor holds both secrets. Two parties, one with the identity
+    key and one with the share, can run the sigma protocol between them. What is
+    gone is the *offline, free* endorsement a party with no share could hand over;
+  * not that the named party is the share's ONLY holder. Possession is copyable,
+    and no proof of possession is a proof of exclusive possession. A dealer that
+    dealt real shares to the four named parties and kept copies produces an
+    artifact whose every endorsement is genuine and it audits —
+    `tests/seat_identity.rs::a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`
+    performs it, and it is named so that a reader who has just seen two forgeries
+    inverted does not assume this one went with them. The remedy for it is the
+    DKG, where no dealer ever holds a share, and whether a cohort ran one is not
+    visible in the published bytes;
+  * not that four keys are four entities, which no artifact can carry;
+  * not that the two witnesses are independent or distinct. A statement
+    deliberately built with `s = d` is opened by one scalar. That is not a
+    collapse of the protocol, but it is not excluded by it;
+  * not present possession, and not which of several collaborating parties
+    supplied which scalar.
+
+  Two scope notes that belong with it. The nonce derivation is deterministic and
+  safe **for this crate's prover only** — `SeatEndorsement::from_parts` and the
+  public challenge helper let an outside implementation build an endorsement any
+  way it likes, and one that reuses a nonce gives up its witness as in any
+  Schnorr scheme. And the two-party mounting above cannot simply reuse this
+  key-derivation function: each nonce absorbs *both* secrets, so two separated
+  holders would have to derive independently, and a holder that derives
+  deterministically from only its own secret can be made to answer two challenges
+  on one commitment by a malicious peer. A real two-holder deployment needs fresh
+  one-use nonces with response state, or a distributed Schnorr protocol.
+
+  A deployment cost that comes with it: there are no longer any *bytes* a seat
+  can sign to endorse, so a long-term key held in an HSM must be able to answer a
+  Schnorr challenge over `B` rather than sign a message.
 * **That two keys are two organisations.** A party holding both identity private
   keys signs both halves and the audit passes —
   `attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys`.

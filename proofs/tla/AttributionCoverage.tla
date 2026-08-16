@@ -49,27 +49,30 @@
 (* WHAT THIS MODEL DOES NOT ESTABLISH. Per-seat keys do NOT establish that   *)
 (* four keys are four entities, for the same reason two cohort keys do not   *)
 (* establish two organisations. They do not stop a dealer that distributed   *)
-(* shares to four real parties while keeping copies. And -- the third, added *)
-(* after an adversarial review showed the first version of this file assumed *)
-(* it away without saying so -- they do not bind the party that SIGNED for a *)
-(* seat to the party that HOLDS a share behind it. All three are switches    *)
+(* shares to four real parties while keeping copies. Those two remain.       *)
+(* The third -- added after an adversarial review showed the first version   *)
+(* of this file assumed it away without saying so -- was that they did not   *)
+(* bind the party that ENDORSED a seat to the share behind it; that one has  *)
+(* since been built and is no longer a residual. All three are switches      *)
 (* here: `MaxKeysPerPrincipal`, `NoRetainedCopies`, `EndorserHoldsShare`.    *)
 (* Turning any of them off breaks the guarantee.                            *)
 (*                                                                          *)
 (* THE THREE ARE NOT THE SAME KIND OF THING, and the runner says which is    *)
 (* which. The first two are facts about the world that no artifact could     *)
-(* carry. The THIRD is a property of THIS implementation, it is currently    *)
-(* FALSE, and `crates/two-cohort/tests/seat_forgery.rs::                     *)
-(* a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_    *)
-(* audits` is the counterexample in Rust: `ceremony::endorse_seat` takes a   *)
-(* claim and an identity key, checks only that the claim attributes that     *)
-(* seat to that key, and consults no share -- so three parties holding real  *)
-(* shares from a real DKG endorsed a SUBSTITUTED dealing and the artifact    *)
-(* audited. Unlike the other two it is buildable (endorse over a value       *)
-(* derived from the share, or record which entry point produced the          *)
-(* signature); it is simply not built. An earlier version of the runner      *)
+(* carry. The THIRD is a property of THIS implementation, it WAS false, and  *)
+(* it has since been built: `ceremony::endorse_seat` now takes the identity  *)
+(* key AND the share, and produces an AND-composed proof of knowledge of     *)
+(* both under one challenge, so neither secret alone yields a verifying      *)
+(* endorsement. The two Rust counterexamples were inverted rather than       *)
+(* deleted -- `seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_      *)
+(* endorse_a_substituted_dealing` and `seat_identity.rs::a_dealer_that_      *)
+(* keeps_the_shares_is_refused_at_the_seat_endorsement`. The FALSE row is    *)
+(* kept because it PRICES the fix. It does not price the residual next to    *)
+(* it: a dealer that dealt REAL shares and kept copies still passes, which   *)
+(* is `NoRetainedCopies` and is not buildable by anyone. (Historic: it was   *)
+(* an Ed25519 signature over public bytes, an earlier version of the runner  *)
 (* said both of its assumptions were "not buildable by any implementation",  *)
-(* which was true of the two it listed and hid the one it did not.           *)
+(* which was true of the two it listed and hid the one it did not.)          *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
@@ -95,8 +98,9 @@ CONSTANTS
        a design choice this repo has now made (`AttributionPerSeat`); two
        assumptions about the world that no design can discharge
        (`MaxKeysPerPrincipal`, `NoRetainedCopies`); and one property of this
-       implementation that is buildable, currently FALSE, and has a Rust
-       counterexample (`EndorserHoldsShare`). *)
+       implementation that was buildable, had a Rust counterexample, and has
+       now been BUILT (`EndorserHoldsShare`). The FALSE row is kept because it
+       prices the fix, not because it describes the tree. *)
 
     AttributionPerSeat,
         \*  TRUE: the artifact pins one identity key per SEAT, sealed by the
@@ -142,11 +146,19 @@ CONSTANTS
         \* nothing more -- so this is not observable either.
 
     EndorserHoldsShare
-        \* Residual 3, and the one this file's first version ASSUMED WITHOUT
-        \* SAYING SO. TRUE assumes the party whose signature fills seat s's
-        \* attribution slot is the party holding s's share. FALSE decouples
-        \* them: the slot is filled, by the right key, and says nothing about
-        \* who holds the share.
+        \* Was residual 3, and the one this file's first version ASSUMED
+        \* WITHOUT SAYING SO. TRUE: the party whose endorsement fills seat s's
+        \* attribution slot used s's share to make it. FALSE decouples them:
+        \* the slot is filled, by the right key, and says nothing about who
+        \* holds the share.
+        \*
+        \* TRUE is now ENFORCED rather than assumed -- the endorsement is an
+        \* AND-composed proof of knowledge of the identity secret and of the
+        \* share, under one challenge -- so the FALSE branch prices the fix
+        \* rather than describing the tree. Read TRUE narrowly: it says the
+        \* share was USED, not that one actor held both secrets, and not that
+        \* the named party is its only holder. The second of those is
+        \* `NoRetainedCopies`, still FALSE-able and still not buildable.
         \*
         \* WHY IT IS SEPARATE FROM THE OTHER TWO, in both directions. It is not
         \* covered by `MaxKeysPerPrincipal`, which is about how many keys one
@@ -155,15 +167,14 @@ CONSTANTS
         \* `NoRetainedCopies`, which lets a dealer keep a copy of a share the
         \* named party DOES hold -- here the named party may hold no share of
         \* the published dealing at all. And unlike both it is a fact about
-        \* code, not about the world: `ceremony::endorse_seat` is public, takes
-        \* a claim and an identity key, checks only that the claim attributes
-        \* this seat to this key, and never touches a share.
-        \* `seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_
-        \* substituted_dealing_and_it_audits` performs the consequence: a real
-        \* DKG, three real share-holders, each asked to endorse a SUBSTITUTED
-        \* dealing over the same ids, and the artifact audits and reaches a
-        \* published address. So the FALSE branch is the branch the
-        \* implementation is on today.
+        \* code, not about the world, which is why it could be and was fixed:
+        \* `ceremony::endorse_seat` now takes the identity key AND the share
+        \* and proves knowledge of both under one challenge.
+        \* `seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_
+        \* substituted_dealing` is the former counterexample, inverted: the
+        \* real share-holders' own key material now refuses the substituted
+        \* dealing, by exact error, and the dealer's own assembly of the
+        \* artifact is refused at the audit.
 
 Seats == OwnerSeats \cup GateSeats
 
@@ -237,8 +248,10 @@ NameHolders ==
    definition plus the two assumptions, and is evidence about the STRUCTURE of
    the argument. It is not evidence that any implementation achieves the
    binding; that is a Rust and test-vector question in crates/two-cohort -- and
-   `EndorserHoldsShare` is the part of that question this repo has ANSWERED, in
-   the negative, with a test. *)
+   `EndorserHoldsShare` is the part of that question this repo has ANSWERED --
+   in the AFFIRMATIVE as of the linked endorsement, with tests that fail without
+   it. This sentence said "in the negative" while the row above already said the
+   opposite; an adversarial review caught the contradiction. *)
 SeatHolders(nh) ==
     IF AttributionPerSeat /\ EndorserHoldsShare
       THEN {[s \in Seats |-> nh[s]]}
@@ -348,10 +361,11 @@ INV_SpendNeedsThresholdPrincipals ==
    being violated by a coalition of ONE. It also survives CompromiseT = 4, in
    the run where the guarantee does not.
 
-   The `EndorserHoldsShare = FALSE` row is the sharpest case, because it is the
-   row this implementation is actually on: four slots, four distinct genuine
-   keys, four distinct principals holding them, no retained copies -- this
-   invariant clean -- and a coalition of two spending anyway.
+   The `EndorserHoldsShare = FALSE` row is the sharpest case, and it is no
+   longer the row this implementation is on -- it is the row it CAME FROM, kept
+   to price the linked endorsement. Four slots, four distinct genuine keys, four
+   distinct principals holding them, no retained copies -- this invariant clean
+   -- and a coalition of two spending anyway.
 
    Stated at the strength the runs actually support, across the configurations
    the runner examines: every configuration that fails this also fails the

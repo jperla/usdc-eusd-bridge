@@ -2186,6 +2186,7 @@ dependencies = [
  "curve25519-dalek",
  "dalek-ff-group",
  "dkg-pedpop",
+ "ed25519-dalek",
  "hex",
  "mc-crypto-hashes",
  "mc-crypto-keys",

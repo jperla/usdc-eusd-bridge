@@ -154,30 +154,38 @@
 //!   rather than of the published bytes), **does not distinguish a cohort that
 //!   ran a DKG from one that used a dealer** -- a dealer that KEPT the secret,
 //!   not merely one that deleted it, which is the case that matters. What that
-//!   dealer must now COLLECT is a signature from every named SEAT key as well as
-//!   its own organisation signature, because the artifact carries one identity
-//!   per seat and each seat signs for its own verification share --
+//!   dealer must now COLLECT is an endorsement from every named SEAT key as well
+//!   as its own organisation signature, because the artifact carries one
+//!   identity per seat and each seat endorses its own verification share --
 //!   `tests/forgery.rs` mounts the dealer forgery the two ways a dealer with no
-//!   such signatures can mount it and both are refused. It need not hold those
-//!   private keys: the signed bytes are public and reveal nothing, so parties
-//!   that sign without ever being dealt a share are enough, which
-//!   `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
-//!   performs -- that test forges the OWNER cohort and therefore collects THREE
-//!   seat signatures plus the owner organisation's, the honest gate supplying
-//!   the artifact's fourth seat endorsement itself. So the audit does not
-//!   establish that the two organisation keys
+//!   such endorsements can mount it and both are refused. **Those endorsements
+//!   can no longer be collected from a party that holds no share.** A seat
+//!   endorsement is now a proof of knowledge of the seat's identity secret AND
+//!   of the share behind it, AND-composed under one challenge, so neither a
+//!   share-less signer nor a share-holding dealer can produce one alone. (And a
+//!   seat key must be a usable KEY: replacing the signature with a sigma proof
+//!   dropped `verify_strict`'s small-order refusal, so a value outside the
+//!   prime-order subgroup -- or the identity element, which the first fix let
+//!   through -- admitted a verifying identity half with no secret behind it.
+//!   `CeremonyError::SeatKeyNotUsable`, performed by `tests/seat_key_torsion.rs`.)
+//!   The two
+//!   tests that used to perform that forgery, and passed, are now refusals by
+//!   exact error:
+//!   `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`
+//!   and
+//!   `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_substituted_dealing`.
+//!   So the audit does not establish that the two organisation keys
 //!   are two independent organisations, does not establish that the four seat
-//!   keys are four independent principals, and does not bind a seat's signer to
-//!   a seat's share-holder -- what changed is the number of distinct signatures
-//!   a forgery must collect: from one to FOUR for a dealt-owner forgery at the
-//!   decided shape, or from two to six if both cohorts are fabricated. ("From
-//!   one to five" stood here and was neither; `ceremony`'s module docs write the
-//!   arithmetic out, and
-//!   `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`
-//!   counts it. That test is also the sharper residual: the named parties hold
-//!   REAL shares from a real DKG and endorse a substituted dealing anyway,
-//!   because `ceremony::endorse_seat` consults no share and
-//!   `dkg::CohortShare::endorse` is the only entry point that does.) It also
+//!   keys are four independent principals, and does not establish that a seat's
+//!   endorser is the ONLY holder of its share -- a dealer that dealt REAL shares
+//!   to four real parties and kept copies is untouched by the linked proof,
+//!   which
+//!   `tests/seat_identity.rs::a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`
+//!   performs and names. What changed is the number of distinct endorsements a
+//!   forgery must collect -- from one to FOUR for a dealt-owner forgery at the
+//!   decided shape, or from two to six if both cohorts are fabricated ("from one
+//!   to five" stood here and was neither; `ceremony`'s module docs write the
+//!   arithmetic out) -- and what each one costs the party that makes it. It also
 //!   does not make the VIEW service accountable -- a service that publishes a
 //!   `D_i` which is not a subaddress of the audited root sends deposits
 //!   somewhere the cohorts cannot sign for. **It CAN spend them.** This line
@@ -217,7 +225,7 @@ pub mod mlsag;
 pub use ceremony::{
     audit, audit_address, AuditedAddress, AuditedRoot, CeremonyError, CeremonyId, CohortStructure,
     ComponentClaim, ComponentCommitment, ComponentReveal, CompositionArtifact, Parties, Pop,
-    SealedComposition, SeatRoster, SignedCommitment,
+    SealedComposition, SeatEndorsement, SeatRoster, SignedCommitment,
 };
 pub use identity::{IdentityKey, IdentityPublic, IdentitySignature};
 pub use cohort::{lagrange_at_zero, Cohort, ParticipantTerm};

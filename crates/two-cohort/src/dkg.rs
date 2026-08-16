@@ -90,13 +90,13 @@ use zeroize::Zeroizing;
 
 use crate::{
     ceremony::{
-        endorse_seat, CeremonyError, CeremonyId, ComponentClaim, Pop, SealedComposition, SeatRoster,
-        MAX_AUDITED_ROSTER,
+        endorse_seat, CeremonyError, CeremonyId, ComponentClaim, Pop, SealedComposition,
+        SeatEndorsement, SeatRoster, MAX_AUDITED_ROSTER,
     },
     cohort::{Cohort, ParticipantTerm},
     composite::CohortSpec,
     control::{ControlDomain, NAMESPACE_SPAN},
-    identity::{IdentityKey, IdentitySignature},
+    identity::IdentityKey,
 };
 
 /// PedPoP's `EncryptionKeyMessage<Ristretto, Commitments<Ristretto>>`.
@@ -951,43 +951,55 @@ impl<C: ControlDomain> CohortShare<C> {
         Pop::prove_for(sealed, self, claim, salt)
     }
 
-    /// **Endorse this seat's own verification share** under the seat-holder's
-    /// long-term identity key.
+    /// **Endorse this seat's own verification share** with the seat-holder's
+    /// long-term identity key AND this share.
     ///
     /// The other half of what a seat contributes to an artifact. The proof of
     /// possession says *somebody* knows `s_i`; a threshold transcript can say
     /// nothing more, because the quorum it would incriminate could reproduce it.
-    /// This says the holder of a NAMED long-term key stands behind that seat,
-    /// which is the statement [`audit`](crate::audit) checks against a key the
-    /// funder obtained from that party.
+    /// This says an act that used a NAMED long-term key AND the share behind
+    /// that seat produced the endorsement, which is the statement
+    /// [`audit`](crate::audit) checks against a key the funder obtained from
+    /// that party. See [`SeatEndorsement`](crate::ceremony::SeatEndorsement) for
+    /// the construction and for the two things it still does not say.
     ///
-    /// Two refusals, and they answer different mistakes:
+    /// The share comes from `self` and is not a parameter: a caller that could
+    /// pass one could pass somebody else's, and the point of this entry point is
+    /// that the two secrets it uses are the ones this holder actually has.
+    ///
+    /// Three refusals, and they answer different mistakes:
     ///
     ///   * `claim` must be this share's own, field for field, so a coordinator
-    ///     cannot collect a seat signature over its own roster or component --
+    ///     cannot collect a seat endorsement over its own roster or component --
     ///     [`CeremonyError::ClaimNotOwn`], the same check [`Pop::prove_for`]
     ///     makes and for the same reason;
     ///   * `key` must be the identity the claim attributes to THIS seat, so a
-    ///     holder handed a claim that re-attributes its own seat signs nothing
-    ///     -- [`CeremonyError::SeatKeyNotOwn`].
+    ///     holder handed a claim that re-attributes its own seat endorses
+    ///     nothing -- [`CeremonyError::SeatKeyNotOwn`];
+    ///   * this share must open the verification share the claim publishes for
+    ///     this seat -- [`CeremonyError::SeatShareNotOwn`]. Unreachable through
+    ///     THIS entry point, because the claim comparison above already forces
+    ///     the two equal, and said so rather than left to look like a third
+    ///     independent guard: it is [`endorse_seat`]'s refusal, and it is what
+    ///     protects a holder that reaches for the free function instead.
     ///
-    /// It is not a capability boundary. Whoever holds the private key can
-    /// produce these bytes without this function; what it changes is what an
-    /// honest holder's software does by default. Same limit, stated the same
-    /// way, as [`CohortShare::prove`].
+    /// It is not a capability boundary. Whoever holds both secrets can produce
+    /// the proof without this function; what it changes is what an honest
+    /// holder's software does by default. Same limit, stated the same way, as
+    /// [`CohortShare::prove`].
     pub fn endorse(
         &self,
         ceremony: &CeremonyId,
         claim: &ComponentClaim,
         key: &IdentityKey,
-    ) -> Result<IdentitySignature, CeremonyError> {
+    ) -> Result<SeatEndorsement, CeremonyError> {
         if *claim != ComponentClaim::of(&self.key) {
             return Err(CeremonyError::ClaimNotOwn {
                 cohort: C::NAME,
                 participant: self.id,
             });
         }
-        endorse_seat(ceremony, claim, self.id, key)
+        endorse_seat(ceremony, claim, self.id, key, &self.secret)
     }
 
     /// The raw share.

@@ -13,11 +13,11 @@ use rand_core::SeedableRng;
 use two_cohort::{
     ceremony::{
         draw_salt, endorse_seat, prove_possession, ComponentClaim, ComponentCommitment,
-        ComponentReveal, CompositionArtifact, Parties, Pop, SealedComposition, SeatRoster,
-        SignedCommitment,
+        ComponentReveal, CompositionArtifact, Parties, Pop, SealedComposition, SeatEndorsement,
+        SeatRoster, SignedCommitment,
     },
     dkg::{run_dkg, CohortShare},
-    identity::{IdentityKey, IdentityPublic, IdentitySignature},
+    identity::{IdentityKey, IdentityPublic},
     CeremonyId, CohortSpec, ControlDomain, Gates, Owners,
 };
 
@@ -112,20 +112,34 @@ pub fn parties() -> Parties {
     )
 }
 
-/// Every seat's endorsement of its own verification share, signed with that
-/// seat's own key.
+/// Every seat's linked endorsement of its own verification share, made with
+/// that seat's own identity key AND the share behind it.
+///
+/// `secrets` is parallel to the claim's roster. It is a PARAMETER because an
+/// endorsement is no longer something a fixture can produce from public data:
+/// since `endorse_seat` began proving knowledge of the share, a caller that has
+/// no share has nothing to pass, which is the property under test in
+/// `seat_identity.rs` and `seat_forgery.rs`. Every test that builds a claim by
+/// hand already holds the secrets it dealt.
 pub fn seat_endorsements<C: ControlDomain>(
     ceremony: &CeremonyId,
     claim: &ComponentClaim,
-) -> std::collections::BTreeMap<u64, IdentitySignature> {
+    secrets: &[Scalar],
+) -> std::collections::BTreeMap<u64, SeatEndorsement> {
+    assert_eq!(
+        secrets.len(),
+        claim.roster().len(),
+        "one share per seat: a fixture that endorses without them is the forgery, not the harness",
+    );
     claim
         .roster()
         .iter()
-        .map(|&id| {
+        .zip(secrets)
+        .map(|(&id, secret)| {
             (
                 id,
-                endorse_seat(ceremony, claim, id, &seat_key_of::<C>(id))
-                    .expect("the fixture's seat keys are the ones in the claim"),
+                endorse_seat(ceremony, claim, id, &seat_key_of::<C>(id), secret)
+                    .expect("the fixture's seat keys and shares are the ones in the claim"),
             )
         })
         .collect()
@@ -133,6 +147,70 @@ pub fn seat_endorsements<C: ControlDomain>(
 
 pub fn identity_public<C: ControlDomain>() -> IdentityPublic {
     identity_of::<C>().public()
+}
+
+/// A holder's own share scalar, recovered from public material.
+///
+/// `CohortShare::secret` is `pub(crate)`, so this is how a holder outside the
+/// crate reaches its own secret -- and it is not a trick: the roster is public,
+/// the evaluation points are `1..=n` by position as `dkg` documents, and
+/// `lagrange_at_zero` is a public function of those.
+/// `composition.rs::a_holder_can_recover_its_own_share_through_public_api` is
+/// the test that owns this property.
+///
+/// It lives here rather than in one test file because the seat endorsement now
+/// needs a share as well as a key, so every test that endorses a hand-built
+/// claim over a DKG'd cohort's verification shares needs the scalar. Note what
+/// that means and does not mean: the recovery is a HOLDER's, not an outsider's
+/// -- `term` comes off a secret-bearing `CohortShare` -- so a test using it is
+/// modelling a party that holds the share, which is exactly the party a linked
+/// endorsement is supposed to be available to.
+pub fn own_share_scalar<C: ControlDomain>(side: &CohortSide<C>, id: u64) -> Scalar {
+    let share = side.share_of(id);
+    let roster = share.key().roster().to_vec();
+    // A quorum containing this holder. Which other seats are in it does not
+    // matter: `term` weights the share for exactly this quorum and the Lagrange
+    // weight below is computed over the same one, so they cancel.
+    let mut quorum: Vec<u64> = vec![id];
+    for &r in &roster {
+        if quorum.len() == side.claim.threshold() {
+            break;
+        }
+        if r != id {
+            quorum.push(r);
+        }
+    }
+    quorum.sort_unstable();
+
+    let points: Vec<u64> = quorum
+        .iter()
+        .map(|q| roster.iter().position(|r| r == q).unwrap() as u64 + 1)
+        .collect();
+    let mine = roster.iter().position(|r| *r == id).unwrap() as u64 + 1;
+    let lambda = two_cohort::lagrange_at_zero(mine, &points).expect("public arithmetic");
+
+    let recovered = *share
+        .term(&quorum)
+        .expect("a quorum member's own term")
+        .weight()
+        * lambda.invert();
+    assert_eq!(
+        recovered * curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT,
+        side.claim.verification_share(id).expect("on the roster"),
+        "the recovered scalar opens this seat's published verification share",
+    );
+    recovered
+}
+
+/// Every seat's share scalar of a DKG'd cohort, in roster order.
+///
+/// The parallel vector [`seat_endorsements`] takes.
+pub fn own_share_scalars<C: ControlDomain>(side: &CohortSide<C>) -> Vec<Scalar> {
+    side.claim
+        .roster()
+        .iter()
+        .map(|&id| own_share_scalar(side, id))
+        .collect()
 }
 
 /// Seal a claim and endorse it as cohort `C`'s organisation.
@@ -159,8 +237,8 @@ pub struct CohortSide<C: ControlDomain> {
     pub salt: [u8; 32],
     /// The seal, endorsed by this cohort's organisation.
     pub commitment: SignedCommitment,
-    /// Each seat's endorsement of its own verification share.
-    pub endorsements: std::collections::BTreeMap<u64, IdentitySignature>,
+    /// Each seat's linked endorsement of its own verification share.
+    pub endorsements: std::collections::BTreeMap<u64, SeatEndorsement>,
     pub ceremony: CeremonyId,
 }
 
@@ -173,16 +251,17 @@ impl<C: ControlDomain> CohortSide<C> {
         let claim = ComponentClaim::of(shares[0].key());
         let salt = draw_salt(rng);
         let commitment = seal_and_sign::<C>(ceremony, &claim, &salt);
-        // Each seat signs for itself, through the checked holder entry point, so
-        // the harness produces what a deployment would rather than a shortcut
-        // around it.
+        // Each seat endorses for itself, through the checked holder entry point,
+        // so the harness produces what a deployment would rather than a shortcut
+        // around it. That entry point is on `CohortShare`, which is what makes
+        // the honest path the one where the endorser holds the share.
         let endorsements = shares
             .iter()
             .map(|s| {
                 (
                     s.id(),
                     s.endorse(ceremony, &claim, &seat_key_of::<C>(s.id()))
-                        .expect("each seat holds the key the claim attributes to it"),
+                        .expect("each seat holds the key AND the share the claim attributes to it"),
                 )
             })
             .collect();

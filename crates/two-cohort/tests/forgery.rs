@@ -24,10 +24,10 @@ use rand_core::SeedableRng;
 use two_cohort::{
     audit, audit_address,
     ceremony::{
-        draw_salt, seat_endorsement_message, ComponentClaim, ComponentCommitment, ComponentReveal,
-        Parties, SealedComposition, SeatRoster, SignedCommitment,
+        draw_salt, endorse_seat_unchecked, ComponentClaim, ComponentCommitment, ComponentReveal,
+        Parties, SealedComposition, SeatEndorsement, SeatRoster, SignedCommitment,
     },
-    identity::{IdentityKey, IdentityPublic, IdentitySignature},
+    identity::{IdentityKey, IdentityPublic},
     derive::subaddress_offset,
     production::{
         self, authorize_release, check_decided_structure, deposit_spend_key, ReleaseRefused,
@@ -76,26 +76,44 @@ fn dealer_owner_seat_keys(tag: u8) -> Vec<IdentityKey> {
         .collect()
 }
 
-/// Each seat's endorsement, signed with `keys[k]` for roster position `k`.
+/// Each seat's endorsement, made with `keys[k]` for roster position `k` and the
+/// share the DEALER holds for that seat.
 ///
-/// It signs the endorsement MESSAGE directly rather than going through
-/// `endorse_seat`, because an attacker does not use the checked entry point:
-/// `endorse_seat` refuses to sign a seat the claim attributes to somebody else
-/// (`SeatKeyNotOwn`), which is the honest holder's protection and not a
-/// containment boundary. Whoever holds a private key can sign these bytes, so a
+/// It goes through `endorse_seat_unchecked` rather than `endorse_seat`, because
+/// an attacker does not use the checked entry point: `endorse_seat` refuses to
+/// endorse a seat the claim attributes to somebody else (`SeatKeyNotOwn`), which
+/// is the honest holder's protection and not a containment boundary. Whoever
+/// holds both secrets can produce the proof without calling any of this, so a
 /// test that could not do the same would be testing the wrong thing.
+///
+/// The dealer supplies the SHARES from its own dealing, so every endorsement
+/// here is mathematically valid under the key that made it. That is what keeps
+/// variant B below a statement about WHOSE key it is rather than about whether a
+/// proof was well-formed: the dealer holds every share, and since the
+/// endorsement became a linked proof, holding every share is exactly half of
+/// what it needs.
 fn endorsements_by(
     ceremony: &CeremonyId,
     claim: &ComponentClaim,
     keys: &[IdentityKey],
-) -> BTreeMap<u64, IdentitySignature> {
+    dealt: &Cohort,
+) -> BTreeMap<u64, SeatEndorsement> {
     claim
         .roster()
         .iter()
         .enumerate()
         .map(|(k, &id)| {
-            let msg = seat_endorsement_message(ceremony, claim, id).expect("id is on the roster");
-            (id, keys[k].sign(&msg))
+            (
+                id,
+                endorse_seat_unchecked(
+                    ceremony,
+                    claim,
+                    id,
+                    &keys[k],
+                    &dealt.share(id).expect("the dealer dealt to this seat"),
+                )
+                .expect("the dealer holds this share; whose key it is, is the audit's question"),
+            )
         })
         .collect()
 }
@@ -438,7 +456,7 @@ fn a_threshold_overstated_up_to_the_decided_one_is_refused_by_the_audit() {
             )
         })
         .collect();
-    let endorsements = endorsements_by(&ceremony, &claim, &seat_keys);
+    let endorsements = endorsements_by(&ceremony, &claim, &seat_keys, &dealt);
     let named: Vec<(u64, IdentityPublic)> = ids
         .iter()
         .zip(&seat_keys)
@@ -524,33 +542,46 @@ fn the_constructors_that_are_not_the_ceremony_are_refused_at_the_decided_shape()
 ///     different key from the party it believes holds that seat;
 ///   * **the real seat-holders' keys**, which are public and so free to copy --
 ///     refused as [`CeremonyError::SeatEndorsementInvalid`], because the dealer
-///     cannot sign as them.
+///     cannot endorse as them.
 ///
 /// **An earlier version of this doc said those were the only two options and
-/// that there was "no third". That is FALSE and an adversarial review found it.**
-/// There is a third mounting and it PASSES: write the real seat-holders' keys,
-/// and obtain from each of those parties a genuine signature over
-/// `seat_endorsement_message`, which is public bytes revealing no secret and
-/// costing the signer nothing -- while the dealer keeps every share and makes
-/// every proof of possession itself. Nothing in the artifact binds the party
-/// that signed to the party that holds a share.
-/// `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_and_collects_signatures_still_passes`
-/// performs it. What the two variants below establish is that a dealer which
-/// obtains NO such signature is refused, at a named step, either way it tries.
+/// that there was "no third". That was FALSE and an adversarial review found
+/// it.** There WAS a third mounting and it passed: write the real seat-holders'
+/// keys, and obtain from each of those parties a genuine signature over public
+/// bytes that revealed no secret and cost the signer nothing -- while the dealer
+/// kept every share and made every proof of possession itself. Nothing in the
+/// artifact bound the party that signed to a share.
+///
+/// That third mounting is now refused too, because a seat endorsement became a
+/// proof of knowledge of the share as well as of the identity key. The two tests
+/// that performed it are inverted:
+/// `tests/seat_identity.rs::a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`
+/// and
+/// `tests/seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_substituted_dealing`.
+/// Note what that does and does not do to THIS test's variants: nothing. The
+/// dealer here holds every share, so it makes well-formed endorsements under its
+/// own keys either way, and the two refusals below are still about WHOSE keys
+/// they are. What did change is that variant B's dealer can no longer buy its
+/// way past them with signatures collected for free.
+///
+/// The residual that remains, and is not this test's: a dealer that dealt REAL
+/// shares to real parties and kept copies --
+/// `tests/seat_identity.rs::a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`.
 ///
 /// Mixed vectors exist too -- `[real, real, dealer]` clears two comparisons
 /// before failing on the third -- and are the same two refusals seat by seat.
 ///
 /// **The qualifications from the original exhibit still hold**, and one is
 /// added. The dealt seats' proofs are made with `Pop::prove_unchecked` rather
-/// than `CohortShare::prove`, because a dealer holds a `Cohort` and not a
-/// `CohortShare`; gating the raw prover does not close this and never did. This
-/// test runs in one process holding every key, so "the real seat-holders" is a
-/// MODELLED role. And what is established below is that the bar moved from two
-/// keys to four -- NOT that four keys are four organisations. A dealer that
-/// persuaded three real parties to hand over their seat keys, or that dealt
-/// shares to three real parties while keeping copies, produces an artifact that
-/// still audits. See the module docs of `two_cohort::ceremony`.
+/// than `CohortShare::prove`, and the endorsements with `endorse_seat_unchecked`
+/// rather than `endorse_seat`, because a dealer holds a `Cohort` and not a
+/// `CohortShare`; gating either raw entry point does not close this and never
+/// did. This test runs in one process holding every key, so "the real
+/// seat-holders" is a MODELLED role. And what is established below is that the
+/// bar moved from two keys to four -- NOT that four keys are four organisations.
+/// A dealer that persuaded three real parties to hand over their seat keys, or
+/// that dealt shares to three real parties while keeping copies, produces an
+/// artifact that still audits. See the module docs of `two_cohort::ceremony`.
 #[test]
 fn a_dealt_owner_cohort_is_refused_at_the_seat_attribution() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x12C);
@@ -582,7 +613,7 @@ fn a_dealt_owner_cohort_is_refused_at_the_seat_attribution() {
         &dealt,
         &verification,
         own_keys.iter().map(|k| k.public()).collect(),
-        |c, claim| endorsements_by(c, claim, &own_keys),
+        |c, claim| endorsements_by(c, claim, &own_keys, &dealt),
     );
 
     // THE HARM IS STILL THERE, and it is stated before the refusal so that the
@@ -634,8 +665,10 @@ fn a_dealt_owner_cohort_is_refused_at_the_seat_attribution() {
         ids.iter()
             .map(|&id| honest_seats.key_of(id).expect("decided seat"))
             .collect(),
-        // Signed with the keys the dealer actually has. It has no others.
-        |c, claim| endorsements_by(c, claim, &own_keys),
+        // Made with the keys the dealer actually has. It has no others -- and
+        // with the shares it does have, which is why the proof is well-formed and
+        // fails only under the funder's key.
+        |c, claim| endorsements_by(c, claim, &own_keys, &dealt),
     );
     assert_eq!(
         b.artifact.owners().seat_keys(),
@@ -687,7 +720,7 @@ fn mount(
     dealt: &Cohort,
     verification: &[RistrettoPoint],
     seat_keys: Vec<IdentityPublic>,
-    endorse: impl Fn(&CeremonyId, &ComponentClaim) -> BTreeMap<u64, IdentitySignature>,
+    endorse: impl Fn(&CeremonyId, &ComponentClaim) -> BTreeMap<u64, SeatEndorsement>,
 ) -> Mounted {
     let claim = ComponentClaim::from_parts(
         Owners::NAME,

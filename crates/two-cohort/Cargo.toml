@@ -15,6 +15,17 @@ mc-crypto-hashes = { workspace = true }
 # default-features off at the workspace level it is not otherwise enabled.
 curve25519-dalek = { workspace = true, features = ["digest", "zeroize"] }
 
+# For `hazmat::ExpandedSecretKey`, which is the ONLY thing this dependency is
+# here for: a seat's linked endorsement proves knowledge of the scalar `d` with
+# `Id = d*B`, and RFC 8032 defines that scalar as the clamped first half of
+# SHA-512 over the 32-byte secret key. Deriving it here by hand would be a
+# second, unreviewed implementation of the expansion the signing key type
+# already uses; a divergence would not be caught by any signature check, only by
+# proofs that mysteriously do not verify. `mc-crypto-keys` builds on this exact
+# crate and version, so `IdentityPublic` and the point `d*B` computed here are
+# the same key by construction rather than by assumption.
+ed25519-dalek = { version = "2.1.1", default-features = false, features = ["hazmat", "zeroize"] }
+
 # Serai's PedPoP: Pedersen DKG with per-dealer VSS commitments and a Schnorr
 # proof-of-possession over a transcript. Vendored at rev 4b89cf02 and used
 # rather than reimplemented -- a hand-rolled DKG is exactly the kind of code

@@ -6,9 +6,12 @@ review. Four of six components can start now. Two are behind the architecture ga
 identity key per seat, sealed by the commitment and welded into every proof transcript,
 `Parties` carries a per-seat roster, and the release gate compares both rosters. The artifact
 can now distinguish three operator organisations from one organisation holding three seats
-*by key*. The gate stays shut on a narrower and newly-named finding: nothing binds the party
-that **signs** for a seat to the party that **holds a share** behind it, and unlike the other
-residuals that one is buildable. One recommendation is out for review and is marked as such.
+*by key*. **The seat endorsement now also binds a share**: it is an AND-composed proof of
+knowledge of the seat's identity secret and of the share the claim publishes for it, so the
+last buildable seat-level residual is closed and two passing forgeries are now named refusals.
+What keeps the gate shut is the *unbuildable* pair — that four keys are four entities, and that
+no dealer kept copies — plus the architecture question in §2a. One recommendation is out for
+review and is marked as such.
 
 ---
 
@@ -36,13 +39,35 @@ verify Ethereum. So the return leg is cryptographically verified and the deposit
 them must be compromised before funds can move.**
 
 *Seats*, and the word is load-bearing. `T = 3` is a statement about coalitions of
-seats. Reading it as three *entities* needs three premises no artifact carries:
-that the four seats are four independent principals; that nobody kept a copy of a
-seat's share; and that the party which signed for a seat holds a share behind it.
+seats. Reading it as three *entities* needs three premises. One of the three is
+now enforced by the artifact; the other two are not, and no artifact can carry
+them:
+
+1. **the four seats are four independent principals** — *unbuildable.* Four keys
+   are four keys.
+2. **nobody kept a copy of a seat's share** — *unbuildable.* A dealer that dealt
+   to four real parties and kept copies produces an identical artifact.
+3. **the party that endorsed a seat used a share behind it** — **closed in
+   code.** A seat endorsement is no longer a signature over the claim; it is an
+   AND-composed proof of knowledge of the seat's identity secret *and* of the
+   share the claim publishes for that seat, under one challenge. Neither secret
+   alone produces a verifying endorsement. Two tests that performed the forgery,
+   and passed, are now refusals with named errors.
+
+   Stated exactly, in the form adversarial review asked for: an accepted
+   endorsement is an *argument of knowledge* for `Id = d·B ∧ V_i = s·G` under the
+   discrete-log and random-oracle assumptions, where `Id` is the key the
+   **checker** supplied for that seat. Read narrowly: not that one actor held
+   both secrets — two parties can run the protocol between them, though not with
+   this crate's nonce derivation, which absorbs both — not that the endorser is
+   the share's only holder, which is premise 2, not that the two witnesses are
+   distinct, and not present possession.
+
 `proofs/tla/AttributionCoverage.tla` runs each as a switch and each one alone
 drops the minimum coalition below three, with the artifact unchanged and every
-check passing. `crates/two-cohort/src/production.rs` states the same three at the
-top of the module.
+check passing. Premise 3's `TRUE` is now the baseline and its `FALSE` row prices
+what the fix bought. `crates/two-cohort/src/production.rs` states the same three
+at the top of the module.
 
 Machine-checked in `proofs/tla/AccessStructure.tla`, which proves
 `T = max(k, g, k+g−r)` is both a lower bound and achievable, where `r` is the
@@ -173,29 +198,66 @@ three operator seats. It did **not** turn four keys into four entities, and
 executed rather than asserted: the slot count is clean in four separate
 configurations where the security guarantee is being violated.
 
-**Not closed, and this is what keeps the gate shut now.** *Nothing binds the
-party that **signs** for a seat to the party that **holds a share** behind it.*
-`ceremony::endorse_seat` is a public function taking a claim and an identity key;
-it checks only that the claim names that key for that seat, and consults no
-share. `dkg::CohortShare::endorse` is the checked counterpart and refuses — but a
-seat-holder whose long-term key lives away from its share, which is the ordinary
-arrangement for a long-term key, has only the unchecked one available, and the
-artifact records which was used nowhere. So three parties that ran a real DKG and
-hold real shares can endorse a **substituted** dealing, and the artifact audits,
-passes `authorize_release`, reaches `deposit_spend_key`, and is then opened by
-**two** principals against a decided threshold of **three**. Performed end to end
-in `crates/two-cohort/tests/seat_forgery.rs::a_seat_holder_with_a_real_share_endorses_a_substituted_dealing_and_it_audits`.
+**~~Not closed.~~ CLOSED.** *Nothing bound the party that **signs** for a seat to
+the party that **holds a share** behind it.* `ceremony::endorse_seat` was a public
+function taking a claim and an identity key; it checked only that the claim named
+that key for that seat, and consulted no share — so three parties that ran a real
+DKG and held real shares could endorse a **substituted** dealing, and the artifact
+audited, passed `authorize_release`, reached `deposit_spend_key`, and was then
+opened by **two** principals against a decided threshold of **three**.
+
+It now takes the seat's **share** as well, and produces an AND-composed proof of
+knowledge of the identity secret `d` (with `Id = d·B`, Ed25519) and of the share
+`s` (with `V = s·G`, Ristretto) under one challenge over the same transcript the
+claim was already bound to. Two groups, two commitments, two responses, one
+challenge — sound because both groups have the same prime order. Neither secret
+alone verifies, so a share-less party cannot endorse and a share-holding dealer
+cannot endorse without the named party's key.
+
+Two encodings, but **not two bases**: `RISTRETTO_BASEPOINT_POINT`'s representative
+*is* `ED25519_BASEPOINT_POINT`. What prevents a `d + s` collapse is that there are
+two responses checked by two separate equations — a fixed equal-weight sum of them
+would be satisfied by `d + s` alone. Unpredictable random-coefficient batching
+would still be sound; a fixed collapse would not.
+
+Closing it opened an admissibility hole twice, and both are recorded rather than
+smoothed over. The signature this replaced went through `verify_strict`, which
+refuses a small-order signer; the sigma proof did not, and a seat key outside the
+prime-order subgroup admits a verifying identity half with **no secret behind it**
+(grind ~8 challenges). The first fix, a subgroup check, then admitted the identity
+element, whose `d = 0` is public and needs no grinding at all. Both are refused by
+`ComponentClaim::check_shape` as `CeremonyError::SeatKeyNotUsable`, and
+`crates/two-cohort/tests/seat_key_torsion.rs` performs both forgeries — asserting
+the forged equation is satisfied before asserting the refusal, and building
+complete artifacts so that removing the guard makes the audit return `Ok`. Both former exhibits are now
+refusals with named errors:
+`crates/two-cohort/tests/seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_substituted_dealing`
+and
+`crates/two-cohort/tests/seat_identity.rs::a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`.
+
+**What it does not do**, stated here because §2a's earlier versions overclaimed
+three times: it does not establish that ONE actor held both secrets (two parties
+can run the sigma protocol between them — though not with this crate's nonce
+derivation, which absorbs both secrets, so a real two-holder deployment needs a
+distributed Schnorr protocol rather than this KDF), it does not establish that the
+two witnesses are distinct, and it does not establish exclusive
+possession — a dealer that dealt REAL shares to the named parties and kept copies
+still passes, by name, in
+`crates/two-cohort/tests/seat_identity.rs::a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`.
+The cost paid for it: there are no longer any bytes a seat can *sign* to endorse,
+so an HSM holding a long-term key must answer a Schnorr challenge over `B`.
 
 **Is it buildable here?** The split is different from last round's, and sharper:
 
-* **Buildable, and NOT built.** Binding the endorsement to possession of the
-  share: endorse over a value derived from `s_i` rather than over public bytes,
-  or make `endorse_seat` non-public and route holders through
-  `CohortShare::endorse`, recording which entry point produced each signature.
-  The second breaks `seat_endorsement_message`'s stated purpose — HSM-side
-  signing by independent implementations — so the design question is real, but it
-  is a design question and not a fact about the world. This is the current
-  critical path.
+* **~~Buildable, and NOT built.~~ BUILT.** Binding the endorsement to possession
+  of the share. The route taken was the first of the two listed here — prove
+  knowledge of `s_i` rather than sign public bytes — AND-composed with a proof of
+  knowledge of the identity secret so that neither half is separable. The second
+  route (make `endorse_seat` non-public, record which entry point signed) was not
+  taken: it would have left the artifact recording a claim about which code ran,
+  which no funder can check. `seat_endorsement_message` is gone and
+  `seat_endorsement_challenge` replaces it, so independent implementations and
+  HSM-side signers are still served — by a challenge rather than a message.
 * **Not buildable, by anyone, in any artifact.** That four keys are four
   entities: distinct authenticated keys do not prove one party does not hold
   several. And that no dealer kept copies of shares it handed to four real
@@ -332,12 +394,12 @@ preamble; a domain-typed per-seat roster in `Parties`; seat arms in `audit` and 
 now over four attribution slots rather than two, above the compromise threshold of three. See
 §2a for what that does and does not buy — the "does not" half is where the gate now sits.
 
-**New critical path — bind a seat endorsement to possession of that seat's share.** Today
-`ceremony::endorse_seat` signs public bytes and consults no share, so a real share-holder can
-endorse a substituted dealing (§2a). Unlike the other residuals this is buildable: endorse over
-a value derived from `s_i`, or route holders through the checked `CohortShare::endorse` and
-record which entry point signed. Until it lands, four collected signatures do not mean four
-share-holders.
+**~~New critical path — bind a seat endorsement to possession of that seat's share.~~ DONE.**
+`ceremony::endorse_seat` takes the identity key AND the share and produces one AND-composed
+proof of knowledge of both, so four collected endorsements now mean four acts that used a share.
+They do NOT mean four share-holders in the exclusive sense: a dealer that dealt real shares and
+kept copies still passes, which is not buildable away and is now the only seat-level residual
+left. See §2a.
 
 **Also gated:** anything that funds a composite address, pending §2 and §2a.
 
@@ -375,11 +437,12 @@ That second position still stands, and the reason has moved again. It is no long
 no two-cohort construction" — there is one, and it is tested. It is no longer "the artifact
 attributes a cohort, not a seat" either: per-seat attribution landed this round, and the
 forgery that argument rested on is now refused by name. It is the narrower gap in §2a — the
-artifact attributes a seat to a KEY, and nothing ties that key's signature to possession of
-the seat's share, so four collected signatures are not four share-holders. Review supplied
-that finding, and this round's review confirmed the fix for it does not yet exist while
-refuting four further claims written around it: that a lying view service "cannot spend"; that
-the release gate made a funding path unreachable; that the declared threshold was already a
-minimum coalition size; and that the model's own oracle established what it said it did. Those
-are fixed in the code, in the prose and in the model; the gap itself is not, and unlike the two
-residuals beside it, it is buildable.
+artifact attributed a seat to a KEY, and nothing tied that key's signature to possession of
+the seat's share, so four collected signatures were not four share-holders. Review supplied
+that finding while refuting four further claims written around it: that a lying view service
+"cannot spend"; that the release gate made a funding path unreachable; that the declared
+threshold was already a minimum coalition size; and that the model's own oracle established
+what it said it did. Those were fixed in the code, in the prose and in the model. **The gap
+itself is now closed too** — the endorsement is a linked proof of knowledge of both secrets,
+and the two exhibits that performed it are inverted. What remains beside it is the pair that is
+not buildable by anyone.

@@ -24,6 +24,10 @@
 //!              what it reveals. It must then prove possession of a discrete
 //!              log it does not have.
 //!              -> CeremonyError::PopFailed { cohort: "gates", participant }
+//!              ...and it cannot endorse the seat either, since a seat
+//!              endorsement became a proof of knowledge of the share as well
+//!              as of the identity key.
+//!              -> CeremonyError::SeatShareNotOwn { cohort, participant }
 //!
 //!   ATTEMPT 3  the attacker publishes a component it CAN prove. Then the
 //!              composition succeeds, and is worthless to it: the root is not
@@ -42,6 +46,13 @@
 //! opened. It buys the attacker only a choice among roots it can prove -- never
 //! a chosen discrete log -- but the ordering was claimed to be enforced by the
 //! type, and it is not.
+//!
+//! The audit reports attempt 2 as `PopFailed` and not as the endorsement
+//! failure, because `check_side` runs the proofs of possession first --
+//! deliberately, and for the reason given there. Both refuse it, and
+//! `the_attacker_cannot_even_endorse_the_rogue_component` asserts the second one
+//! directly rather than leaving it to be inferred from an error that never
+//! mentions it.
 //!
 //! Attempt 2 is why commit-then-reveal alone is not enough, and attempt 1 is
 //! why a proof of possession alone is not enough -- a cohort free to seal after
@@ -71,10 +82,10 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use two_cohort::{
     audit,
-    ceremony::{endorse_seat, prove_possession, SealedComposition, SeatRoster},
+    ceremony::{endorse_seat, prove_possession, SealedComposition, SeatEndorsement, SeatRoster},
     identity::IdentityKey,
     CeremonyError, CeremonyId, CohortSpec, CompositionArtifact, ComponentClaim, ComponentReveal,
-    ControlDomain, Gates, IdentitySignature, Owners, Parties, Pop,
+    ControlDomain, Gates, Owners, Parties, Pop,
 };
 
 fn owners_spec() -> CohortSpec<Owners> {
@@ -167,14 +178,27 @@ impl Attacker {
         )
     }
 
-    /// The attacker's endorsement of its own seat. It really does hold the key,
-    /// so this always succeeds -- which is the point: a seat signature is not a
-    /// proof of possession, and the attempts below are refused at the proof.
-    fn endorsement(&self, ceremony: &CeremonyId, claim: &ComponentClaim) -> BTreeMap<u64, IdentitySignature> {
+    /// The attacker's endorsement of its own seat, for a claim whose
+    /// verification share it can OPEN with `share`.
+    ///
+    /// It holds its own seat key outright, so before the endorsement became a
+    /// linked proof this always succeeded and the attempts below were refused
+    /// purely at the proof of possession. It no longer always succeeds: the
+    /// endorsement now proves knowledge of the share as well, so the attacker
+    /// can only produce one for a component it can open -- which is attempt 3,
+    /// the one that gains it nothing. The rogue attempts use
+    /// [`Attacker::forged_endorsement`], and
+    /// [`the_attacker_cannot_even_endorse_the_rogue_component`] asserts why.
+    fn endorsement(
+        &self,
+        ceremony: &CeremonyId,
+        claim: &ComponentClaim,
+        share: &Scalar,
+    ) -> BTreeMap<u64, SeatEndorsement> {
         BTreeMap::from([(
             Gates::nth(0),
-            endorse_seat(ceremony, claim, Gates::nth(0), &self.seat)
-                .expect("the attacker holds its own seat key"),
+            endorse_seat(ceremony, claim, Gates::nth(0), &self.seat, share)
+                .expect("the attacker holds its own seat key and this share"),
         )])
     }
 
@@ -184,6 +208,28 @@ impl Attacker {
     fn forged_pop(&self) -> Pop {
         let mut rng = ChaCha20Rng::seed_from_u64(0xF00);
         Pop::from_parts(Scalar::random(&mut rng) * G, Scalar::random(&mut rng))
+    }
+
+    /// A seat endorsement fabricated the same way and for the same reason: the
+    /// attacker cannot open the rogue verification share, so it cannot make a
+    /// real one, and `SeatEndorsement::from_parts` is what it would send.
+    ///
+    /// The artifacts below are refused at [`CeremonyError::PopFailed`] rather
+    /// than at this, because `check_side` runs the proofs of possession first.
+    /// Both fail. That ordering is deliberate and documented there; what matters
+    /// here is that nothing in these attempts turns on the endorsement being
+    /// accepted.
+    fn forged_endorsement(&self) -> BTreeMap<u64, SeatEndorsement> {
+        let mut rng = ChaCha20Rng::seed_from_u64(0xF01);
+        BTreeMap::from([(
+            Gates::nth(0),
+            SeatEndorsement::from_parts(
+                [0x5C; 32],
+                Scalar::random(&mut rng) * G,
+                Scalar::random(&mut rng),
+                Scalar::random(&mut rng),
+            ),
+        )])
     }
 }
 
@@ -256,7 +302,7 @@ fn the_attacker_cannot_substitute_the_rogue_component_at_reveal_time() {
     let substituted = ComponentReveal::from_parts(
         rogue.clone(),
         BTreeMap::new(),
-        attacker.endorsement(&h.ceremony, &rogue),
+        attacker.forged_endorsement(),
         *h.gate_reveal.salt(),
     );
 
@@ -310,7 +356,7 @@ fn the_refusal_is_independent_of_the_honest_cohort() {
                     ComponentReveal::from_parts(
                         rogue.clone(),
                         BTreeMap::new(),
-                        attacker.endorsement(&h.ceremony, &rogue),
+                        attacker.forged_endorsement(),
                         *h.gate_reveal.salt(),
                     ),
                     // Each honest run has its own owner roster -- `b` is 4-of-5
@@ -373,7 +419,7 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
     let forged = ComponentReveal::from_parts(
         rogue.clone(),
         BTreeMap::from([(Gates::nth(0), attacker.forged_pop())]),
-        attacker.endorsement(&ceremony, &rogue),
+        attacker.forged_endorsement(),
         [0x99; 32],
     );
     // The commitment DOES bind this reveal -- asserted, so the rejection below
@@ -399,6 +445,57 @@ fn the_attacker_cannot_prove_possession_of_the_rogue_component() {
     assert_eq!(artifact.declared_root(), attacker.t * G);
 }
 
+/// **The attacker cannot even ENDORSE the rogue seat, since the endorsement
+/// began proving knowledge of the share.**
+///
+/// A second, independent refusal of the same attempt, and it is asserted here
+/// rather than left implicit because the audit above reports `PopFailed` and a
+/// reader could conclude the endorsement was accepted. It was not: the attempts
+/// above pass a FABRICATED endorsement, and this is why they have to.
+///
+/// The attacker holds its own seat identity key -- the funder collected that key
+/// from it -- so before the endorsement was linked to the share, `endorse_seat`
+/// handed it a valid one for any claim it liked. What it does not hold is a
+/// scalar opening `V = t*G - B_owner`, and there is nothing else it could
+/// substitute: the only scalar in its possession is `t`.
+///
+/// The CONTROL is the same call over the component it CAN open, which is
+/// attempt 3's claim -- one input, the verification share, changed.
+#[test]
+fn the_attacker_cannot_even_endorse_the_rogue_component() {
+    let (ceremony, owners) = fresh_owners(0xA11CE);
+    let attacker = Attacker::new(0xBADCA7);
+    let rogue = attacker.rogue_claim(&owners.claim.component());
+
+    assert_eq!(
+        endorse_seat(&ceremony, &rogue, Gates::nth(0), &attacker.seat, &attacker.t)
+            .expect_err("`t` does not open the rogue verification share"),
+        CeremonyError::SeatShareNotOwn {
+            cohort: "gates",
+            participant: Gates::nth(0),
+        },
+    );
+
+    // CONTROL: the same key, the same scalar, over a claim whose verification
+    // share that scalar opens.
+    let openable = ComponentClaim::from_parts(
+        "gates",
+        1,
+        vec![Gates::nth(0)],
+        attacker.t * G,
+        vec![attacker.t * G],
+        vec![attacker.seat.public()],
+    );
+    endorse_seat(
+        &ceremony,
+        &openable,
+        Gates::nth(0),
+        &attacker.seat,
+        &attacker.t,
+    )
+    .expect("control: a seat that holds its own share endorses it");
+}
+
 /// Omitting the proof entirely does not get past it either: a component with no
 /// proof behind it is refused by name.
 #[test]
@@ -422,7 +519,7 @@ fn a_rogue_component_with_no_proof_at_all_is_refused() {
                 ComponentReveal::from_parts(
                     rogue.clone(),
                     BTreeMap::new(),
-                    attacker.endorsement(&ceremony, &rogue),
+                    attacker.forged_endorsement(),
                     salt,
                 ),
             ),
@@ -481,7 +578,7 @@ fn a_component_the_attacker_can_prove_does_not_capture_the_root() {
             ComponentReveal::from_parts(
                 honest_shape.clone(),
                 BTreeMap::from([(Gates::nth(0), pop)]),
-                attacker.endorsement(&ceremony, &honest_shape),
+                attacker.endorsement(&ceremony, &honest_shape, &attacker.t),
                 salt,
             ),
         ),
