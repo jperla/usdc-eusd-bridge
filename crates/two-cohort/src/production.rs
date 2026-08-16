@@ -226,9 +226,15 @@
 //! component sum. "Every published verification share carries a proof" is still
 //! not "every seat answered a proof" -- a proof of possession is reproducible by
 //! anyone holding the share, so it says a share exists and never who holds it.
-//! What connects seat `i` to a party is the seat's own identity signature over
-//! `V_i`, checked under the key the funder supplied, which is a different
-//! statement standing beside the proof rather than a strengthening of it. And
+//! What connects seat `i` to a party is the seat's own `SeatEndorsement`,
+//! checked under the key the funder supplied. **This sentence is stale in the
+//! source it was written against and review caught it**: it said "the seat's own
+//! identity SIGNATURE over `V_i` ... a different statement standing BESIDE the
+//! proof". That describes the version that was replaced. An endorsement is now
+//! one linked argument of knowledge of the identity scalar AND the share, under
+//! a single challenge, which is exactly what "beside" failed to give -- a
+//! signature beside a proof was answerable by a dealer holding every share, and
+//! that is the forgery the change closed. And
 //! "endorsed under the identity key I supplied" is a statement about a KEY, not
 //! about an organisation -- at the seat grain as much as at the cohort grain.
 //!

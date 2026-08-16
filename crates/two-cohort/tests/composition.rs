@@ -1006,8 +1006,14 @@ fn a_real_two_of_four_dealing_satisfies_every_three_subset_test_as_well() {
     let ceremony = CeremonyId::draw("degree of a real dealing", &mut rng);
     let spec = CohortSpec::<Gates>::sequential(2, 4);
     let shares =
-        two_cohort::dkg::run_dkg::<Gates, _>(&ceremony, &spec, &common::seats_for::<Gates>(&spec), &mut rng)
-            .expect("honest");
+        two_cohort::dkg::run_dkg::<Gates, _>(
+            &ceremony,
+            &spec,
+            &common::seats_for::<Gates>(&spec),
+            &common::seat_identities_for::<Gates>(&spec),
+            &mut rng,
+        )
+        .expect("honest");
     let key = shares[0].key();
     let v: Vec<RistrettoPoint> = key.verification_shares().into_iter().map(|(_, p)| p).collect();
 

@@ -195,8 +195,14 @@ fn a_seat_holder_with_a_real_share_cannot_endorse_a_substituted_dealing() {
         ids.iter().map(|&id| (id, seat_key_of::<Owners>(id).public())),
     )
     .expect("the decided owner seats");
-    let real_shares = run_dkg::<Owners, _>(&ceremony, &owners_spec(), &real_seats, &mut rng)
-        .expect("an honest owner DKG");
+    let real_shares = run_dkg::<Owners, _>(
+        &ceremony,
+        &owners_spec(),
+        &real_seats,
+        &common::seat_identities_over::<Owners>(&ids),
+        &mut rng,
+    )
+    .expect("an honest owner DKG");
     let real_claim = ComponentClaim::of(real_shares[0].key());
 
     // ---- 2. the operator organisation's substituted dealing ----

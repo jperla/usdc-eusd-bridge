@@ -101,11 +101,14 @@ subsets is the correctness condition for the scheme, not bookkeeping.
 | `attribution.rs::the_residual_is_a_party_that_holds_both_organisations_identity_keys` | the exact residual of the attribution check, performed rather than described |
 | `attribution.rs::one_organisation_named_for_both_cohorts_is_refused` | `PartiesNotDistinct`; isolated by auditing **one** artifact under two `Parties` values, so only the funder's input differs |
 | `attribution.rs::a_holders_proof_is_bound_to_the_counterparty_it_dealt_with` | the two signer keys are inside the pop transcript, not layered beside it |
-| **`forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`** | **the inversion**: a dealt owner cohort, endorsed with the organisation's own real key, is now refused at `audit_address` — mounted both ways a dealer WITHOUT seat signatures can (dealer names itself → `SeatUnexpected`; dealer copies the real seat-holders' public keys → `SeatEndorsementInvalid`), with an honest ceremony at the same shape still publishing. A third mounting — collecting genuine signatures — is not refused; see below |
-| `seat_identity.rs` (23 tests) | one identity key per seat: sealed by the commitment, welded into every pop transcript, checked under the key the *funder* supplied, and refused when two seats share a key — plus `a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement` (was a passing forgery, now a refusal), `each_half_of_the_linked_endorsement_is_checked_on_its_own` (the **only** test isolating either verification equation), and the two residuals, performed |
+| **`forgery.rs::a_dealt_owner_cohort_is_refused_at_the_seat_attribution`** | **the inversion**: a dealt owner cohort, endorsed with the organisation's own real key, is now refused at `audit_address` — mounted both ways a dealer WITHOUT seat endorsements can (dealer names itself → `SeatUnexpected`; dealer copies the real seat-holders' public keys → `SeatEndorsementInvalid`), with an honest ceremony at the same shape still publishing. A third mounting — collecting genuine endorsements — is not refused; see below. (Endorsements, not signatures: review flagged this row still calling them that, and the distinction is the point of the round that replaced them) |
+| `seat_identity.rs` (23 tests) | one identity key per seat: sealed by the commitment, welded into every pop transcript, checked under the key the *funder* supplied, and refused when two seats share a key. Each seat supplies a **linked argument of knowledge** requiring both its identity witness and its share witness — not a signature; collecting ordinary signatures no longer clears the check — plus `a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement` (was a passing forgery, now a refusal), `each_half_of_the_linked_endorsement_is_checked_on_its_own` (the **only** test isolating either verification equation), and the two residuals, performed |
 | **`seat_forgery.rs` (3 tests)** | **the residual, inverted**: three parties that ran a real DKG and hold real shares are asked to endorse a *substituted* dealing and refuse at `SeatShareNotOwn`; the dealer's own assembly is refused at `SeatEndorsementInvalid`; an honest ceremony at the same shape still reaches its published address — plus the two transposition cases (seat keys within a roster; the deployment's roster against the audit's) that keep the key multiset identical |
 | **`seat_challenge_coverage.rs` (2 tests)** | **the guard the whole rework rests on**: each half's commitment must be in the challenge before either response exists. One test forges from a share-holder's position, one from an identity-key holder's, by solving for the commitment after learning the challenge. Each fails under the deletion of its own `h.update` and only its own; before them, deleting either left all 326 tests green |
 | **`seat_key_torsion.rs` (6 tests)** | **a seat key must be a key**: replacing the signature with a sigma proof dropped `verify_strict`'s small-order refusal, and a dealer holding every share forged three identity halves over values with no secret behind them and the artifact audited. Now `SeatKeyNotUsable`. Each test asserts the forged equation is *satisfied* before asserting the refusal, so a green test cannot mean the forgery was malformed |
+| **`dkg.rs` (19 attribution tests)** | **who authorized round one**: PedPoP's proof of knowledge says *somebody* knew each constant term, never *who*, so one party could generate every contribution, label them `1..n` and run a cohort's whole key generation alone. A `Contribution` now carries the seat's signature over `(ceremony, cohort, roster digest, roster id, commitment bytes)`, the roster digest is in PedPoP's context too, and `deal` refuses a map whose entry for `i` is not attested by the key the seat roster names for seat `i`. Every field has a test that dies without it — ceremony id (`commitments_from_another_ceremony…`), roster id (`…relabelled_between_two_seats_that_share_a_key…`), commitment bytes (`…does_not_carry_to_another_contribution_by_the_same_seat`), cohort name (`an_attestation_built_for_the_other_cohort…`, and its scope is the public signing path only), and the roster digest's three components one test each (`…transplant_into_a_run_with_a_different_membership`, `…that_reseats_one_of_its_peers`, `…across_a_change_of_threshold`) — each with a control that passes. Read the header of that file for what these tests do **not** isolate |
+| **`dkg.rs` residuals** | `a_party_that_holds_every_seat_key_still_runs_the_whole_dkg_alone`; `a_process_holding_no_real_seat_key_still_runs_a_whole_cohort_under_its_own_roster` (the caller supplies the seat roster too); `a_seat_key_that_signs_bytes_it_did_not_generate_hands_its_half_over` (an accepted attestation is AUTHORIZATION, not generation). All three assert that something **succeeds** |
+| `ceremony.rs::every_domain_separator_is_prefix_free` + `the_tag_list_is_every_tag_in_this_file` + `an_attestation_does_not_verify_as_a_commitment_endorsement` + `the_two_signed_payloads_cannot_be_made_equal` | the two byte strings an identity key signs in this crate cannot be read as each other, and the tag list the first test runs over is checked against the source rather than maintained by hand. The equal-tail "worst case" the fourth entry used to build is gone: the roster digest makes the two layouts un-equalisable, so they are now separated twice over. Review also noted the old worst case was **synthetic** — a real PedPoP round-one message is ≥128 bytes and the construction needed 16 — so it never was two reachable protocol values |
 | `forgery.rs` (8 further tests) | endorsement lifted from another ceremony, transposed commitments, transposed reveals, transposed funder keys, an overstated threshold, and a simulated root — each refused by a named error |
 | `release_gate.rs::a_simulated_root_reaches_the_funding_path_today` | the gap the gate closes, performed: a simulated root is published at the decided shape and then spent |
 | `release_gate.rs::the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_name` | a ceremony run by a different pair of organisations differs in nothing else, and is refused on the endorser arm alone |
@@ -213,8 +216,12 @@ and `check_consistency` now enumerates every size below `t`.
   owner organisation's plus one from each of the three operator seats. The gate
   organisation's signature and the gate seat's endorsement are the honest gate's
   own and are not the forger's to collect. A forgery that fabricates *both*
-  cohorts collects **six**, every identity signature the artifact carries. This
-  paragraph said "five", which is neither.
+  cohorts collects **six**: two organisation signatures and four seat
+  endorsements. This paragraph said "five", which is neither, and then said "six,
+  every identity signature the artifact carries", which review flagged — only two
+  of the six are signatures. The other four are linked Schnorr arguments of
+  knowledge of a seat's identity scalar **and** its share, which is the whole
+  point of the round that replaced them.
 
   It does **not** establish that four keys are four entities, and it does not
   stop a dealer that dealt REAL shares to four real parties while keeping copies.
@@ -310,9 +317,12 @@ and `check_consistency` now enumerates every size below `t`.
     artifact whose every endorsement is genuine and it audits —
     `tests/seat_identity.rs::a_dealer_that_dealt_real_shares_and_kept_copies_still_passes`
     performs it, and it is named so that a reader who has just seen two forgeries
-    inverted does not assume this one went with them. The remedy for it is the
-    DKG, where no dealer ever holds a share, and whether a cohort ran one is not
-    visible in the published bytes;
+    inverted does not assume this one went with them. The remedy for it is a DKG
+    **genuinely executed by separate, non-colluding participants**, in which no
+    one party ever holds every share. `run_dkg` is not that — it is a single-host
+    simulation and it holds every share by construction, which review asked to be
+    said here rather than left to the reader. And whether a cohort ran a real
+    distributed key generation at all is not visible in the published bytes;
   * not that four keys are four entities, which no artifact can carry;
   * not that the two witnesses are independent or distinct. A statement
     deliberately built with `s = d` is opened by one scalar. That is not a
@@ -405,6 +415,29 @@ became a library.
   `Cohort::deal` and `CompositeSpend::simulate` remain for the tests that need
   a dealing to compare against; a production `CompositeSpend` comes from
   `CompositeSpend::from_ceremony` and reports `Provenance::Ceremony`.
+
+  Round one is bound to the seats and to the run as well: a `dkg::Contribution`
+  carries a signature by that seat's long-term identity key over the ceremony,
+  the cohort, a digest of the roster (threshold, ids, seat keys), the roster id
+  and the commitment bytes, and `Committing::deal` refuses a contribution filed
+  under a seat that seat did not attest.
+
+  This paragraph used to continue: *"So fabricating a cohort's key generation
+  needs every one of that cohort's identity private keys, not merely every
+  share — `run_dkg` takes them as an argument, which is that bar written into a
+  type."* Review falsified it. `run_dkg` requires a matching private key for
+  every entry in the **caller-supplied** seat roster; it does not authenticate
+  that roster as the deployment's. A process holding no real seat key runs both
+  decided cohorts under a roster of its own, and
+  `dkg.rs::a_process_holding_no_real_seat_key_still_runs_a_whole_cohort_under_its_own_roster`
+  performs it. The true claim is about **labelling**, and what refuses an
+  invented roster is the seat endorsement downstream.
+
+  An accepted attestation establishes **authorization** — the roster's key for
+  that seat signed those exact bytes — not **generation**. It does **not** reach
+  the artifact (a funder never sees a `Contribution`), it does **not** make `n` keys
+  `n` parties, and it is **not** an authenticated broadcast channel:
+  equivocation became attributable, not detectable.
 
   What is still open is stated exactly in `src/ceremony.rs` under *"What a
   funder can check, and what it still cannot"*, and summarised under **What a

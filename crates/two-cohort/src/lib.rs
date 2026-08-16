@@ -195,10 +195,45 @@
 //!   publish `D = d*G` of its own and open anything paid there with
 //!   `Hs(a*R) + d`. A funder holding the view key closes it with
 //!   [`ceremony::audit_address`], which is why that key is not optional.
-//! * **Both DKGs assume an authenticated broadcast channel.** PedPoP requires
-//!   one and this crate does not supply one. A participant that sends two
-//!   different commitment messages to two different peers is faulty and
-//!   invisible here.
+//!
+//!   **Inside the DKG, the per-seat grain now reaches round one.** A
+//!   [`dkg::Contribution`] carries a signature by that seat's long-term identity
+//!   key over the ceremony, the cohort, the ROSTER (threshold, ids, seat keys),
+//!   the roster id and the commitment bytes, and [`dkg::Committing::deal`]
+//!   refuses a map whose entry for id `i` is not attested by the key the
+//!   [`SeatRoster`] names for seat `i`. Before that, PedPoP's proof of knowledge
+//!   said only that SOMEBODY knew each constant term, so one party could
+//!   generate every contribution, label them `1..n` and run a cohort's whole key
+//!   generation alone.
+//!
+//!   **Four limits, and the first two were stated too strongly here before
+//!   review.** (1) An accepted attestation establishes AUTHORIZATION -- the
+//!   roster's key for that seat signed those exact bytes -- not GENERATION. The
+//!   verifier holds two unlinked witnesses and nothing ties them to one party;
+//!   `dkg_contribution_payload` and `identity::IdentityKey::sign` are both
+//!   public, and their composition attests bytes the caller supplies.
+//!   (2) What a party running a cohort alone must hold is not "that cohort's
+//!   identity private keys" flatly: [`dkg::run_dkg`]'s caller supplies the seat
+//!   roster as well as the keys, so a process with no real seat key runs both
+//!   decided cohorts under a roster of its own. The true statement is about
+//!   LABELLING -- it cannot produce a dealing whose seat roster names
+//!   seat-holders it does not hold the keys of -- and what refuses the invented
+//!   roster is the seat endorsement, downstream. (3) None of this reaches the
+//!   ARTIFACT: a funder never sees a `Contribution` and [`audit`] cannot check
+//!   one, so the set of secrets an accepted artifact requires is unchanged.
+//!   (4) `n` keys are still not `n` parties. `tests/dkg.rs` performs (2) and (4);
+//!   `tests/seat_identity.rs` carries (4) all the way to an accepted `audit`.
+//! * **Both DKGs assume an authenticated broadcast channel, and the round-one
+//!   attestation is not one.** PedPoP requires an authenticated channel and
+//!   this crate does not supply one. What [`dkg::Contribution`] adds is ORIGIN
+//!   authentication of each round-one message -- it is signed by the seat's
+//!   long-term identity key, and [`dkg::Committing::deal`] refuses a
+//!   contribution filed under a seat that seat did not attest -- which is a
+//!   piece of it and not the whole. A participant that sends two DIFFERENT,
+//!   correctly attested contributions to two different peers is faulty and
+//!   still invisible: each peer sees only what it was handed. Equivocation
+//!   became attributable, not detectable. Round two's share messages carry no
+//!   attestation of this kind at all.
 //! * **No mask-row split.** MLSAG row 1 (the commitment mask) is not split
 //!   across cohorts. Only the spend row and the key image are two-cohort here.
 //! * **No transaction-level acceptance.** The tests drive

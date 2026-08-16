@@ -76,6 +76,27 @@ pub fn seat_keys_over<C: ControlDomain>(ids: &[u64]) -> Vec<IdentityPublic> {
     ids.iter().map(|&id| seat_key_of::<C>(id).public()).collect()
 }
 
+/// Every seat's PRIVATE identity key, which is what [`run_dkg`] needs in order
+/// to drive every participant of a cohort from one process.
+///
+/// That this file can build it is the residual, not a convenience: a single
+/// process holding every seat's long-term key can run the whole DKG, and
+/// `tests/dkg.rs::a_party_that_holds_every_seat_key_still_runs_the_whole_dkg_alone`
+/// performs exactly that. The harness needs it because the harness IS that
+/// process.
+pub fn seat_identities_over<C: ControlDomain>(
+    ids: &[u64],
+) -> std::collections::HashMap<u64, IdentityKey> {
+    ids.iter().map(|&id| (id, seat_key_of::<C>(id))).collect()
+}
+
+/// [`seat_identities_over`] at a spec's shape.
+pub fn seat_identities_for<C: ControlDomain>(
+    spec: &CohortSpec<C>,
+) -> std::collections::HashMap<u64, IdentityKey> {
+    seat_identities_over::<C>(spec.ids())
+}
+
 /// Everyone a funder auditing an artifact of THIS shape holds a key for: the
 /// two organisations and every seat.
 pub fn parties_for(owners: &CohortSpec<Owners>, gates: &CohortSpec<Gates>) -> Parties {
@@ -246,8 +267,14 @@ impl<C: ControlDomain> CohortSide<C> {
     /// Run this cohort's DKG, seal its component, and sign the seal as its
     /// organisation.
     pub fn generate(ceremony: &CeremonyId, spec: &CohortSpec<C>, rng: &mut ChaCha20Rng) -> Self {
-        let shares =
-            run_dkg::<C, _>(ceremony, spec, &seats_for::<C>(spec), rng).expect("honest dkg");
+        let shares = run_dkg::<C, _>(
+            ceremony,
+            spec,
+            &seats_for::<C>(spec),
+            &seat_identities_for::<C>(spec),
+            rng,
+        )
+        .expect("honest dkg");
         let claim = ComponentClaim::of(shares[0].key());
         let salt = draw_salt(rng);
         let commitment = seal_and_sign::<C>(ceremony, &claim, &salt);

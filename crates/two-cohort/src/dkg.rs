@@ -28,6 +28,31 @@
 //!   * carries the crate's [`ControlDomain`] rules through it, so an owner
 //!     roster cannot be dealt as a gate cohort and an id outside a domain's
 //!     band is rejected before any key exists;
+//!   * **binds each round-one contribution to the seat that AUTHORIZED it, and
+//!     to the RUN it was authorized for.** Not "produced by", which is what this
+//!     line used to say and is more than a signature can carry: what is checked
+//!     is that the roster's key for that seat signed those exact bytes. PedPoP
+//!     separately proves that SOMEBODY knew the constant term. The two witnesses
+//!     are not linked, and the gap between them is the residual named in
+//!     [`Contribution`]. PedPoP's proof of knowledge says its
+//!     sender knew the secret behind its own commitment; it says nothing about
+//!     who the sender is, and the round-one messages arrive as a map whose keys
+//!     are an assertion by whoever assembled it. So a [`Contribution`] carries a
+//!     signature by that seat's long-term identity key over the ceremony, the
+//!     cohort, the ROSTER (threshold, ids, seat keys), the roster id and the
+//!     commitment bytes, and [`Committing::deal`] refuses a map whose entry for
+//!     id `i` is not attested by the key the [`SeatRoster`] names for seat `i`.
+//!     See [`Contribution`] for why a signature is the right primitive here when
+//!     it was the wrong one at the seat endorsement, and for the residual it
+//!     leaves. **Note where that guard is and is not load-bearing:** it is a
+//!     check an honest participant makes about a message a PEER handed it, so at
+//!     a cohort of one -- which is
+//!     [`GATE_COUNT`](crate::production::GATE_COUNT) -- there is nothing for it
+//!     to check and it checks nothing but the caller's own consistency. What
+//!     keeps a party without the seat's key out of a cohort of one is
+//!     [`Committing::begin`]'s [`DkgError::IdentityNotOwn`] refusal. Review
+//!     found the docs crediting the wrong refusal; see
+//!     [`Committing::check_attribution`];
 //!   * translates PedPoP's participant indices back into the crate's
 //!     operational ids, so that every error names the operator an human has to
 //!     go and talk to rather than an index into a `HashMap`;
@@ -60,10 +85,45 @@
 //!   built from a [`Cohort`](crate::Cohort), which is a statement about this
 //!   code. It is not a statement a third party can check from published bytes.
 //!   See [`ceremony`](crate::ceremony)'s limits.
-//! * **It assumes an authenticated broadcast channel.** PedPoP says so
-//!   explicitly, and nothing here supplies one. A participant that sends two
-//!   different commitment messages to two different peers is faulty, and this
-//!   module cannot see it: the messages are values handed to it by a caller.
+//! * **The seat attestations do not make the DKG's own transcript auditable
+//!   either, and they are not in the artifact.** They are consumed inside the
+//!   protocol, by peers, at the moment they matter. A funder auditing a
+//!   [`CompositionArtifact`](crate::CompositionArtifact) never sees a
+//!   [`Contribution`] and cannot check one. **The set of secrets needed to
+//!   produce an artifact that [`audit`](crate::ceremony::audit) accepts is
+//!   exactly what it was before this change**: the seat endorsements already
+//!   demanded, per cohort, every seat's identity private key AND a share behind
+//!   the verification share the claim publishes for it. So the marginal price of
+//!   an artifact-level forgery is ZERO, and any sentence saying this "raises the
+//!   price" is about the honest path, not the audit. Review found three places
+//!   saying otherwise; they are corrected.
+//! * **It does not make `n` keys `n` parties.** A party holding all `n` identity
+//!   keys of a cohort still runs every participant itself. Two tests perform the
+//!   two halves and neither performs both:
+//!   `tests/dkg.rs::a_party_that_holds_every_seat_key_still_runs_the_whole_dkg_alone`
+//!   stops at a real DKG output and a reconstructed component, and
+//!   `tests/seat_identity.rs::the_residual_is_a_party_that_holds_every_seat_key`
+//!   is the one that carries it all the way to an accepted
+//!   [`audit`](crate::ceremony::audit). An earlier version of this note credited
+//!   the first with the second's assertion; the claim was true and the citation
+//!   was not.
+//! * **What a party running a cohort alone must now hold, stated narrowly.** Not
+//!   "every seat's identity key" full stop -- [`run_dkg`]'s caller supplies the
+//!   seat roster as well as the keys, so a party with no real seat key at all can
+//!   run both decided cohorts under a seat roster of its own invention.
+//!   `tests/dkg.rs::a_process_holding_no_real_seat_key_still_runs_a_whole_cohort_under_its_own_roster`
+//!   performs that. The true statement is about LABELLING: a party cannot produce
+//!   a dealing whose seat roster names seat-holders it does not hold the keys
+//!   for -- and what refuses the invented roster afterwards is the seat
+//!   endorsement, not anything in this module.
+//! * **It assumes an authenticated broadcast channel, and the attestation is
+//!   not one.** PedPoP requires an authenticated channel and nothing here
+//!   supplies one. What the attestation adds is ORIGIN authentication of each
+//!   round-one message, which is a piece of it -- but a participant that sends
+//!   two DIFFERENT, correctly attested contributions to two different peers is
+//!   faulty and still invisible here, because each peer sees only what it was
+//!   handed. Equivocation became attributable, not detectable. Round two's
+//!   share messages carry no attestation of this kind at all.
 //! * **Blame is reported, not adjudicated.** PedPoP's `BlameMachine` can decide
 //!   whether a rejected share is the sender's fault or the accuser's. This
 //!   wrapper reports the accusation with the dealer named and aborts;
@@ -90,13 +150,13 @@ use zeroize::Zeroizing;
 
 use crate::{
     ceremony::{
-        endorse_seat, CeremonyError, CeremonyId, ComponentClaim, Pop, SealedComposition,
-        SeatEndorsement, SeatRoster, MAX_AUDITED_ROSTER,
+        dkg_contribution_payload, dkg_roster_digest, endorse_seat, CeremonyError, CeremonyId,
+        ComponentClaim, Pop, SealedComposition, SeatEndorsement, SeatRoster, MAX_AUDITED_ROSTER,
     },
     cohort::{Cohort, ParticipantTerm},
     composite::CohortSpec,
     control::{ControlDomain, NAMESPACE_SPAN},
-    identity::IdentityKey,
+    identity::{IdentityKey, IdentityPublic, IdentitySignature},
 };
 
 /// PedPoP's `EncryptionKeyMessage<Ristretto, Commitments<Ristretto>>`.
@@ -188,6 +248,116 @@ pub enum DkgError {
     /// term as a function of everyone else's and steer the cohort key.
     #[error("cohort `{cohort}`: participant {dealer}'s commitments carry an invalid proof of knowledge")]
     BadCommitments { cohort: &'static str, dealer: u64 },
+
+    /// **A round-one contribution filed under `dealer` that `dealer`'s seat did
+    /// not attest.** THE identity failure of key generation.
+    ///
+    /// PedPoP's proof of knowledge says whoever produced a contribution knew the
+    /// secret behind it. It does not say WHO, and until this error existed
+    /// nothing else did either: the map handed to [`Committing::deal`] was keyed
+    /// by roster id, and those keys were an assertion by whoever assembled the
+    /// map. One party could generate all `n` contributions, label them, and run
+    /// the whole DKG alone.
+    ///
+    /// So a contribution now carries [`Contribution::attestation`], a signature
+    /// by the seat's long-term identity key over
+    /// [`dkg_contribution_payload`](crate::ceremony::dkg_contribution_payload),
+    /// and this is what a map whose entry for `dealer` does not carry one gets.
+    /// `key` is the identity the SEAT ROSTER names for that seat -- the key the
+    /// signature was checked under, not one the message supplied.
+    #[error("cohort `{cohort}`: the round-one contribution filed under participant {dealer} is not attested by {key}, the identity key this cohort's seat roster names for that seat")]
+    ContributionNotAttributable {
+        cohort: &'static str,
+        dealer: u64,
+        key: IdentityPublic,
+    },
+
+    /// **The map handed to [`Committing::deal`] carries an entry for the local
+    /// participant that is not the contribution the local participant made.**
+    ///
+    /// Distinct from [`DkgError::ContributionNotAttributable`] because the
+    /// question is different, and so is the evidence. For a PEER, all this
+    /// participant can ask is whether the seat's key signed it. For ITSELF it can
+    /// ask something strictly stronger -- is this the contribution `begin`
+    /// produced for me? -- and
+    /// it answers by comparing bytes, so no signature has to be trusted and no
+    /// key has to be consulted.
+    ///
+    /// **What it is and is not.** It is a tripwire on the CHANNEL: a coordinator
+    /// or a relay that rewrote this participant's own round-one message in the
+    /// copy it handed back is telling this participant that its peers are
+    /// probably seeing something it did not send. That is the only local signal
+    /// this crate can offer against equivocation, and it is a weak one -- it
+    /// catches the case where the rewrite is reflected back, not the case where
+    /// it is only sent onward. See [`Committing::check_attribution`].
+    ///
+    /// **And it compares against what `begin` PRODUCED, not against what this
+    /// participant broadcast**, which review asked to be separated. The two are
+    /// the same only if the caller broadcast the value `begin` returned,
+    /// unchanged. Nothing here can check that, because the broadcast happens
+    /// outside this crate entirely.
+    ///
+    /// It is also what makes the attribution loop non-vacuous at `n == 1`, where
+    /// there are no peers at all -- and it is a consistency check there, NOT a
+    /// security property. Read [`Committing::check_attribution`] on that before
+    /// treating it as one.
+    #[error("cohort `{cohort}`: the round-one map carries an entry for participant {id} that is not the contribution {id} produced")]
+    OwnContributionAltered { cohort: &'static str, id: u64 },
+
+    /// A seat roster naming something that is not a usable identity key.
+    ///
+    /// The DKG-time twin of
+    /// [`CeremonyError::SeatKeyNotUsable`](crate::CeremonyError::SeatKeyNotUsable),
+    /// and it is here for that error's reason: a value with no secret behind it,
+    /// or with a secret everybody has, that the attestation check cannot
+    /// distinguish from a real key. Ed25519 has cofactor 8, and
+    /// `Ed25519Public::verify` is `verify_strict` -- which refuses a SMALL-ORDER
+    /// signer, the identity element included, but accepts `d*B + T`. A party
+    /// holding `d` gets eight distinct 32-byte "keys" out of that one secret and
+    /// a verifying signature under each after a handful of tries, so a seat
+    /// named by one is a seat that party can attest for while the roster reads
+    /// as somebody else's. See
+    /// [`IdentityPublic::unusable_reason`](crate::identity::IdentityPublic::unusable_reason),
+    /// which is the predicate, and `tests/seat_key_torsion.rs`, which performs
+    /// the grind against the composition ceremony's twin of this check.
+    ///
+    /// Refused in [`Committing::begin`], over the WHOLE seat roster and before
+    /// any key material exists, for [`DkgError::RosterTooLarge`]'s reason: a
+    /// cohort whose seats cannot be attributed is a cohort whose address must
+    /// not be funded, and finding that out after key generation is finding it
+    /// out too late.
+    #[error("cohort `{cohort}`: seat {participant}'s identity key {key} is not a usable identity key -- {reason}")]
+    SeatKeyNotUsable {
+        cohort: &'static str,
+        participant: u64,
+        key: IdentityPublic,
+        reason: &'static str,
+    },
+
+    /// The identity key a participant began key generation with is not the one
+    /// the seat roster names for its seat.
+    ///
+    /// An honest participant that has been handed somebody else's seat roster,
+    /// or has been told it holds a seat it does not. Refused rather than
+    /// attested, because the attestation it would produce could never verify --
+    /// [`Committing::deal`] checks under the ROSTER's key -- so the alternative
+    /// is a ceremony that fails at everyone else's `deal` with this
+    /// participant's own mistake reported as their problem.
+    #[error("cohort `{cohort}`: participant {id} began key generation with identity {found}, but this cohort's seat roster names {expected} for that seat")]
+    IdentityNotOwn {
+        cohort: &'static str,
+        id: u64,
+        expected: IdentityPublic,
+        found: IdentityPublic,
+    },
+
+    /// [`run_dkg`] was given no identity key for one of the participants it is
+    /// simulating.
+    ///
+    /// Only the single-host driver can reach it: a deployment's participant
+    /// holds its own key and passes it to [`Committing::begin`] directly.
+    #[error("cohort `{cohort}`: no identity key was supplied for participant {id}")]
+    IdentityKeyMissing { cohort: &'static str, id: u64 },
 
     /// THE VSS CHECK. `dealer` sent `recipient` a secret share that does not
     /// evaluate its own published commitments at `recipient`'s point.
@@ -409,23 +579,207 @@ impl<C: ControlDomain> Roster<C> {
     }
 }
 
-/// Round-one wire message: one participant's VSS commitments, its proof of
-/// knowledge of their constant term, and its encryption key.
+/// **One participant's round-one material -- VSS commitments, a proof of
+/// knowledge of their constant term, an encryption key -- and its seat's
+/// attestation AUTHORIZING exactly those bytes.**
+///
+/// Not "attestation that it produced them", which is what this line said and
+/// review corrected twice: a signature says a key was applied to bytes. And not
+/// "wire message": there is no codec -- see *Wire shape* below, where both
+/// limits are set out.
+///
+/// # Why the attestation is here and not left to the channel
+///
+/// PedPoP's proof of knowledge proves the sender knew the secret behind ITS OWN
+/// commitment. It does not prove who the sender is, and the round-one messages
+/// reach [`Committing::deal`] as a `HashMap<u64, Contribution>` whose keys are
+/// an assertion by whoever assembled the map. Without something binding a
+/// contribution to a seat, one party generates all `n` contributions, labels
+/// them `1..n`, and runs the whole DKG by itself: every proof of knowledge is
+/// real, every share is consistent, and the resulting cohort audits.
+///
+/// So each contribution carries a signature by that seat's long-term identity
+/// key over [`dkg_contribution_payload`], and `deal` refuses a map whose entry
+/// for id `i` is not attested by the key this cohort's [`SeatRoster`] names for
+/// seat `i`.
+///
+/// # Why a SIGNATURE is enough here, when it was not enough at the seat
+/// endorsement
+///
+/// [`SeatEndorsement`] used to be a signature and had to stop being one, so the
+/// choice needs an answer rather than a precedent. In one sentence a
+/// non-cryptographer can check: **there, the party was asked to sign a
+/// statement about somebody else's published numbers, which cost it nothing to
+/// sign and which a dealer holding every share could therefore collect for
+/// free; here it signs bytes it generated itself a moment earlier, from its own
+/// randomness, inside the same function call.**
+///
+/// The longer form, and its limit:
+///
+///   * the endorsement's subject -- "`V_i` is my seat's verification share" --
+///     is public data. A party with no share at all could truthfully believe it
+///     and sign it, so the signature separated nobody from anybody, which is
+///     what `seat_identity.rs::a_dealer_that_keeps_the_shares_is_refused_at_the_seat_endorsement`
+///     used to perform as a PASSING forgery. The fix was to link the signature
+///     to a second witness the party could only have if it really held the
+///     seat: the share;
+///   * a round-one contribution has no second witness this crate can reach. The
+///     only secret in the room is the polynomial, and the proof of knowledge of
+///     its constant term is a finished Schnorr object with its own internal
+///     challenge, produced inside the vendored state machine -- the coefficient
+///     never leaves it, so there is nothing here to AND-compose with. (The same
+///     reason [`crate::identity`] gives for why a signature cannot be half of a
+///     linked proof.);
+///   * and it is not needed, because the question is narrower. The contribution
+///     already proves SOMEBODY knew its constant term; the attestation only has
+///     to answer WHO filed it. A party that holds no identity key cannot answer
+///     that at all, which is exactly the property being bought;
+///   * **but say what "who filed it" means, because the one-sentence version
+///     overstates it.** What an accepted attestation establishes is
+///     AUTHORIZATION: the roster's key for that seat signed those exact bytes.
+///     It does not establish GENERATION -- that the signer knew the polynomial.
+///     The verifier holds two unlinked witnesses, PedPoP's proof of knowledge of
+///     the constant term and an Ed25519 signature over the message, and nothing
+///     ties them to one party. The "inside the same function call" clause above
+///     is irrelevant to the authorization reading and load-bearing for the
+///     generation reading -- and it is a property of ONE CODE PATH, not of the
+///     type, so the generation reading rests on an operational signing policy
+///     this crate cannot check: *a seat signs a `dkg_contribution_payload` only
+///     for bytes its own trusted implementation produced in that invocation*.
+///     Review made this correction and it is the sharpest thing in the review;
+///   * **the residual, named rather than argued away, and this paragraph used to
+///     get it wrong.** A seat that will sign bytes it did not generate hands its
+///     half of the DKG over for nothing. Nothing in a signature can prevent
+///     that, and no linked proof is available to raise the price. What this
+///     paragraph used to say next was: *"What this crate does is offer no way to
+///     do it ... there is no entry point anywhere -- gated or not -- that attests
+///     bytes the caller supplies."* **That was false.**
+///     [`dkg_contribution_payload`](crate::ceremony::dkg_contribution_payload)
+///     is public and [`IdentityKey::sign`](crate::identity::IdentityKey::sign)
+///     is public; their composition IS that entry point, it must be, because an
+///     independent implementation and a key in an HSM both need it, and it is the
+///     route this crate's own rejection tests take. An argument was standing
+///     where a check would have been, which is precisely the failure the last
+///     round caught in `identity.rs`.
+///
+///     So it is now performed rather than argued:
+///     `tests/dkg.rs::a_seat_key_that_signs_bytes_it_did_not_generate_hands_its_half_over`
+///     takes an impostor's commitments, stamps them with the real seat key
+///     through the two public functions with no [`Committing`] involved, and
+///     watches the ATTRIBUTION LAYER accept them -- `deal` then refuses with
+///     `BadCommitments`, PedPoP's, one step later. It cannot watch a full
+///     acceptance and says so; see the test for why this crate cannot build
+///     that input. **The refusal that does not exist cannot be given a passing
+///     test, so the test performs what acceptance it can and is named as an
+///     admission** -- the shape
+///     `a_dealer_that_dealt_real_shares_and_kept_copies_still_passes` set.
+///
+///     The consequence for a deployment is the concrete one: a seat operating its
+///     key behind an HSM or a signing service will be asked to sign a
+///     `dkg_contribution_payload` it did not itself build, because that is the
+///     only shape the public API offers. Whether the thing being signed is this
+///     seat's own freshly generated contribution is a question only the caller of
+///     the HSM can answer, and this crate cannot check it.
+///
+/// # Wire shape
 ///
 /// Opaque: a caller routes it, it does not read it. Broadcast to every other
-/// participant over an authenticated channel; a participant that broadcasts two
-/// different ones is faulty and this crate cannot detect that.
+/// participant; a participant that broadcasts two DIFFERENT ones is faulty, and
+/// this crate still cannot detect that -- the attestation makes equivocation
+/// attributable to the equivocator, which is strictly less than detecting it.
+/// [`Committing::deal`] does now refuse a map that hands a participant back an
+/// altered copy of its OWN broadcast, which is the one local symptom of
+/// equivocation this crate can see; see [`DkgError::OwnContributionAltered`] for
+/// how small that is.
+///
+/// **It has no serialisation, and calling it a "wire message" is aspirational.**
+/// [`commitment_bytes`](Contribution::commitment_bytes) can be read out, but
+/// there is no way to build one from bytes: `commitments` is private,
+/// `PedPoPCommitments` is a private alias, and
+/// [`with_attestation`](Contribution::with_attestation) needs one to start from.
+/// Parsing PedPoP's own public type would not help -- there is no constructor
+/// taking it. [`ShareMessage`] has the same shape and the same gap at round two.
+/// So a `Contribution` cannot cross a process boundary today, and the only driver
+/// in this crate that consumes one is [`run_dkg`] -- the single-host case where,
+/// by this module's own admission, the attestation buys nothing. Two reviews
+/// raised this and both are right: **the guard is correct, and it is currently
+/// unexercisable in the setting where it would help; in `run_dkg` it is an
+/// internal consistency check over values and keys one process already holds.**
+/// The missing piece is a `read`/`write` pair for both round messages, over
+/// PedPoP's own `EncryptionKeyMessage::read`, and it is a deliberate separate
+/// change -- parsing untrusted round-one bytes is its own surface and it should
+/// not be smuggled in beside a transcript fix.
+///
+/// The same gap qualifies the HSM story told above and in
+/// [`dkg_contribution_payload`]'s docs. An external signer can rebuild the
+/// payload and return a signature over it, which is why that function is public
+/// -- but [`Committing::begin`] takes a `&IdentityKey` and signs internally, so
+/// there is no unsigned-begin path for a key this process does not hold. An HSM
+/// deployment is describable, not reachable, with today's API.
+///
+/// It does NOT carry its own roster id. The map key is the CLAIM being checked,
+/// and a message that also carried the id would either be redundant with the key
+/// or a second place for the two to disagree.
 #[derive(Clone)]
-pub struct CommitmentMessage(PedPoPCommitments);
+pub struct Contribution {
+    commitments: PedPoPCommitments,
+    attestation: IdentitySignature,
+}
 
-impl fmt::Debug for CommitmentMessage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CommitmentMessage").finish_non_exhaustive()
+impl Contribution {
+    /// The bytes the attestation covers: PedPoP's round-one message, in its own
+    /// canonical serialisation.
+    ///
+    /// Public so an independent implementation -- or a signer that lives in an
+    /// HSM -- can build [`dkg_contribution_payload`] over the same bytes this
+    /// crate checks against.
+    pub fn commitment_bytes(&self) -> Vec<u8> {
+        self.commitments.serialize()
+    }
+
+    /// The seat's signature over
+    /// [`dkg_contribution_payload`]`(ceremony, cohort, roster_digest, id, commitment_bytes)`.
+    ///
+    /// A CLAIM, in [`crate::SignedCommitment::signer`]'s sense: it is worth
+    /// something only once [`Committing::deal`] has checked it under the key the
+    /// SEAT ROSTER names for the seat it was filed under.
+    pub fn attestation(&self) -> &IdentitySignature {
+        &self.attestation
+    }
+
+    /// This contribution with a different attestation stapled to it.
+    ///
+    /// Public for [`Pop::from_parts`]'s reason: an attacker is not restricted to
+    /// this crate's provers, and the rejection tests must be able to present a
+    /// contribution whose attestation was made for something else. There is
+    /// deliberately no constructor taking raw commitment bytes -- PedPoP's
+    /// message type is not public here, so the only way to obtain a well-formed
+    /// one is still to run [`Committing::begin`].
+    pub fn with_attestation(&self, attestation: IdentitySignature) -> Contribution {
+        Contribution {
+            commitments: self.commitments.clone(),
+            attestation,
+        }
     }
 }
 
-/// Round-two wire message: one participant's secret share for one other
-/// participant, encrypted to that participant's round-one key.
+impl fmt::Debug for Contribution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Contribution")
+            .field("attestation", &self.attestation)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Round two: one participant's secret share for one other participant,
+/// encrypted to that participant's round-one key.
+///
+/// **Not a wire message either**, for [`Contribution`]'s reason: the tuple field
+/// is private, `PedPoPShare` is a private alias, and there is no codec and no
+/// constructor. It moves between participants as a Rust value inside one
+/// process, and nothing else can move it. It also carries no attestation of any
+/// kind -- round two's origin authentication is left entirely to the channel
+/// PedPoP assumes and this crate does not supply.
 ///
 /// Redacted `Debug` for the obvious reason.
 #[derive(Clone)]
@@ -447,7 +801,40 @@ pub struct Committing<C: ControlDomain> {
     /// what makes [`ComponentClaim::of`] able to state the seat identities
     /// without a coordinator supplying them -- and therefore what lets an honest
     /// holder refuse a claim that re-attributes a seat.
+    ///
+    /// It is also what [`Committing::deal`] checks every incoming contribution's
+    /// attestation against, which is the round where "who holds each seat" stops
+    /// being a label and starts being a refusal.
     seats: SeatRoster<C>,
+    /// The ceremony this run belongs to.
+    ///
+    /// Carried because [`Committing::deal`] has to REBUILD every contribution's
+    /// attestation transcript, and the ceremony id is in it. Taking it as a
+    /// `deal` argument instead would let a caller check the attestations under a
+    /// ceremony that is not the one the local participant committed under, which
+    /// is precisely the transplant the field is there to refuse.
+    ///
+    /// **No test can make this matter and none is constructible**, which is the
+    /// standard this crate holds itself to and so is written here: `Committing`
+    /// has one constructor, it takes the ceremony, and there is no API through
+    /// which a different one could reach `deal`. It is correct by construction
+    /// rather than by check. The same is true of [`Committing::roster_digest`]
+    /// below and for the same reason.
+    ceremony: CeremonyId,
+    /// [`dkg_roster_digest`] over this run: threshold, ids, seat keys.
+    ///
+    /// Computed once in [`Committing::begin`] and carried, rather than recomputed
+    /// in `deal`, so that the bytes PedPoP's context was derived from and the
+    /// bytes the attestations are checked against are the same bytes by
+    /// construction and not by two agreeing computations.
+    roster_digest: [u8; 32],
+    /// The contribution [`Committing::begin`] produced for this participant.
+    ///
+    /// Kept so `deal` can answer a question about the local participant's own
+    /// entry that no signature check could -- see
+    /// [`Committing::check_attribution`] and
+    /// [`DkgError::OwnContributionAltered`].
+    own: Contribution,
     me: u64,
     machine: SecretShareMachine<Ristretto>,
 }
@@ -468,27 +855,73 @@ impl<C: ControlDomain> Committing<C> {
     /// name, so this run's commitments do not verify under a DIFFERENT
     /// [`CeremonyId`] or in the other cohort.
     ///
-    /// Not stronger than that. The context is exactly `(CeremonyId, cohort)`,
-    /// and nothing enforces that a `CeremonyId` is used for one run -- see this
-    /// module's opening note. Two runs of this cohort under the same id share a
-    /// context, so "cannot be induced to reuse this run's commitments in a
-    /// different composition", which an earlier version of this comment claimed,
-    /// is false for the same-id case. The rule that binds a HOLDER to one
-    /// composition is [`prove_possession`](crate::ceremony::prove_possession)'s,
-    /// enforced per share.
+    /// Not stronger than that, and the boundary moved this round. The context is
+    /// `(CeremonyId, cohort, roster digest)`, so two runs of this cohort under
+    /// the same id no longer share a context if they differ in threshold, ids or
+    /// seat keys -- which is what the roster digest was added for, and
+    /// `a_contribution_does_not_transplant_into_a_run_with_a_different_membership`
+    /// and its two siblings perform.
+    ///
+    /// **What is still open is the SAME roster run twice under one id.** Nothing
+    /// enforces that a `CeremonyId` is used for one run -- see this module's
+    /// opening note -- and two runs identical in every input this crate hashes
+    /// are, to every check here, one run. "Cannot be induced to reuse this run's
+    /// commitments in a different composition", which an earlier version of this
+    /// comment claimed, is false for that case and remains false. The rule that
+    /// binds a HOLDER to one composition is
+    /// [`prove_possession`](crate::ceremony::prove_possession)'s, enforced per
+    /// share. Drawing a fresh nonce per run -- [`CeremonyId::draw`] -- is the
+    /// operational answer, and it is operational because no algebra here can
+    /// make it otherwise.
+    ///
     /// `seats` names the party holding each roster id. It is required, not
     /// optional: a cohort that cannot say who its seats belong to cannot produce
     /// an artifact a funder can attribute, and the point of taking it HERE
     /// rather than at claim-assembly time is that the answer is then fixed by
     /// the participants' own key generation instead of by whoever assembles the
     /// claim afterwards.
+    ///
+    /// `identity` is THIS participant's long-term key, and it is used for one
+    /// thing: to attest the contribution this call generates, so that every
+    /// other participant's [`deal`](Committing::deal) can refuse a contribution
+    /// filed under this seat that this seat's key did not attest. (Did not
+    /// ATTEST, not did not MAKE: see [`Contribution`] on the distance between
+    /// those, which is a residual and not a quibble.) See [`Contribution`]
+    /// for why a signature is the right primitive here and what it does not
+    /// reach.
+    ///
+    /// Three refusals before any key material exists, and they answer different
+    /// mistakes:
+    ///
+    ///   * the seat roster must name exactly this cohort's participants --
+    ///     [`DkgError::SeatRosterMismatch`];
+    ///   * every key it names must BE a key -- [`DkgError::SeatKeyNotUsable`].
+    ///     Over the whole roster and not just this seat, because the keys this
+    ///     participant will have to verify attestations under are the OTHER
+    ///     seats'. It is checked once, here, rather than again in `deal`: a
+    ///     `Committing` cannot be built any other way, so a second check there
+    ///     could not fail, and a check that cannot fail is a second place for the
+    ///     rule to drift from;
+    ///   * `identity` must be the key the roster names for `me` --
+    ///     [`DkgError::IdentityNotOwn`]. A participant that attested with some
+    ///     other key would produce a contribution nobody could verify, and would
+    ///     learn about it as everyone else's ceremony failing.
+    ///
+    /// **Measured, one test per refusal and nothing else in the crate:** the
+    /// usable-key loop is killed by
+    /// `tests/dkg.rs::a_seat_roster_naming_an_unusable_identity_key_is_refused`,
+    /// the own-key check by
+    /// `tests/dkg.rs::a_participant_that_begins_with_the_wrong_identity_key_is_refused`.
+    /// The seat-roster comparison predates this change and is killed by
+    /// `tests/seat_identity.rs::the_dkg_refuses_a_seat_roster_that_is_not_its_participant_roster`.
     pub fn begin<R: RngCore + CryptoRng>(
         ceremony: &CeremonyId,
         spec: &CohortSpec<C>,
         seats: &SeatRoster<C>,
         me: u64,
+        identity: &IdentityKey,
         rng: &mut R,
-    ) -> Result<(Committing<C>, CommitmentMessage), DkgError> {
+    ) -> Result<(Committing<C>, Contribution), DkgError> {
         let roster = Roster::new(spec)?;
         if seats.ids() != roster.ids() {
             return Err(DkgError::SeatRosterMismatch {
@@ -497,18 +930,97 @@ impl<C: ControlDomain> Committing<C> {
                 seats: seats.ids(),
             });
         }
+        for (id, key) in seats.iter() {
+            if let Some(reason) = key.unusable_reason() {
+                return Err(DkgError::SeatKeyNotUsable {
+                    cohort: C::NAME,
+                    participant: id,
+                    key,
+                    reason,
+                });
+            }
+        }
+        // `params` before the identity comparison, and that ordering is the
+        // reason there is only ONE place in this function that can say
+        // "not on this roster": it resolves `me` to a PedPoP index and returns
+        // `DkgError::NotOnRoster` if it cannot. The seat lookup below is then an
+        // `expect` rather than a second arm reporting the same thing -- the ids
+        // agree by the check at the top of this function, and `me` is one of
+        // them by this line.
         let params = roster.params(me)?;
+        let mine = seats
+            .key_of(me)
+            .expect("the seat roster names exactly this roster, and `params` put `me` on it");
+        if mine != identity.public() {
+            return Err(DkgError::IdentityNotOwn {
+                cohort: C::NAME,
+                id: me,
+                expected: mine,
+                found: identity.public(),
+            });
+        }
+        // WHO is running this: threshold, ids, and the key each id is held by.
+        // It goes into PedPoP's context AND into every attestation, so a
+        // contribution to this run is refused by both layers in any other DECLARED
+        // CONTEXT. Not in any other RUN: two executions that reuse the ceremony
+        // id, the cohort and the roster are one context and nothing here separates
+        // them -- see `begin`'s scope note, and `dkg_roster_digest`, which was the
+        // fix for a defect review found.
+        //
+        // Built from `roster.ids()` rather than from `seats`, so the ORDER is
+        // the participant roster's canonical ascending order and not an
+        // iteration order that could drift; `Roster::new` requires strictly
+        // ascending ids and `SeatRoster` is a `BTreeMap`, so the two agree and
+        // there is no ordering a caller can choose. The `expect` is unreachable
+        // for the third time in this function and for the same reason -- the ids
+        // were compared above -- and it is written as an assertion rather than a
+        // refusal because a refusal here could not be falsified by any test.
+        let roster_digest = dkg_roster_digest(
+            roster.threshold(),
+            &roster
+                .ids()
+                .iter()
+                .map(|&id| {
+                    (
+                        id,
+                        seats
+                            .key_of(id)
+                            .expect("the seat roster names exactly this roster"),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
         let (machine, msg) =
-            KeyGenMachine::<Ristretto>::new(params, ceremony.dkg_context(C::NAME))
+            KeyGenMachine::<Ristretto>::new(params, ceremony.dkg_context(C::NAME, &roster_digest))
                 .generate_coefficients(rng);
+        // Signed over the bytes just produced, in the same call that produced
+        // them. Read that narrowly: it means this code path has no seam between
+        // generating a contribution and attesting it. It does NOT mean the crate
+        // has no such seam -- `dkg_contribution_payload` and `IdentityKey::sign`
+        // are both public and their composition is exactly one. See
+        // [`Contribution`]'s docs, where that residual is named and performed.
+        let attestation = identity.sign(&dkg_contribution_payload(
+            ceremony,
+            C::NAME,
+            &roster_digest,
+            me,
+            &msg.serialize(),
+        ));
+        let own = Contribution {
+            commitments: msg,
+            attestation,
+        };
         Ok((
             Committing {
                 roster,
                 seats: seats.clone(),
+                ceremony: *ceremony,
+                roster_digest,
+                own: own.clone(),
                 me,
                 machine,
             },
-            CommitmentMessage(msg),
+            own,
         ))
     }
 
@@ -520,8 +1032,47 @@ impl<C: ControlDomain> Committing<C> {
         self.me
     }
 
-    /// Verify every other participant's proof of knowledge, then produce this
-    /// participant's secret share for each of them.
+    /// **Check that every contribution was authorized by the seat it is filed
+    /// under**, verify every proof of knowledge, then produce this participant's
+    /// secret share for each peer.
+    ///
+    /// "Authorized by", not "came from": the check is that the roster's key for
+    /// that seat signed those exact bytes. See [`Contribution`] for the gap
+    /// between that and having generated them.
+    ///
+    /// # The order, which is the design
+    ///
+    ///   1. **attribution** -- [`Committing::check_attribution`]. WHICH ROSTER KEY
+    ///      authorized each half is a different question from what key material
+    ///      exists, and
+    ///      it is asked first for the reason
+    ///      [`ceremony`](crate::ceremony)'s `check_side` asks the organisation
+    ///      signature before anything else: a participant handed a map somebody
+    ///      fabricated should be told that, rather than told something about the
+    ///      contents of contributions that were never its peers';
+    ///   2. **routing** -- `by_index`, which refuses a contribution from
+    ///      somebody not on this roster;
+    ///   3. **key material** -- PedPoP, which verifies each proof of knowledge
+    ///      and produces the shares.
+    ///
+    /// Step 1 is the one this round did not have. Without it the map's keys were
+    /// an assertion by whoever assembled the map, so a single party could
+    /// generate every contribution, label them `1..n` and run the cohort's whole
+    /// DKG alone -- with real proofs of knowledge throughout, because it really
+    /// did know every constant term. See [`Contribution`].
+    ///
+    /// **Both orderings are tested**, which they were not when this paragraph
+    /// first claimed to be "the design":
+    ///
+    ///   * 1 before 3 -- `tests/dkg.rs::commitments_from_another_ceremony_are_refused_and_name_the_dealer`
+    ///     asserts `ContributionNotAttributable` where PedPoP would say
+    ///     `BadCommitments`, and swapping the two flips the error it gets;
+    ///   * 1 before 2 -- `tests/dkg.rs::a_map_that_is_both_unattributable_and_off_roster_reports_the_attribution`
+    ///     builds the only input that can tell them apart: an entry with a bad
+    ///     attestation AND an entry from somebody not on the roster. Review found
+    ///     this ordering had no test and that nothing in the suite constructed
+    ///     such a map; it was constructible, so it is now built rather than
+    ///     described.
     ///
     /// Returned keyed by RECIPIENT id: each message goes to exactly one peer,
     /// over an authenticated channel, and broadcasting one is handing that
@@ -529,16 +1080,17 @@ impl<C: ControlDomain> Committing<C> {
     pub fn deal<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,
-        commitments: &HashMap<u64, CommitmentMessage>,
+        contributions: &HashMap<u64, Contribution>,
     ) -> Result<(Dealing<C>, HashMap<u64, ShareMessage>), DkgError> {
-        let by_index = self.roster.by_index(1, self.me, commitments)?;
+        self.check_attribution(contributions)?;
+        let by_index = self.roster.by_index(1, self.me, contributions)?;
         let (machine, shares) = self
             .machine
             .generate_secret_shares(
                 rng,
                 by_index
                     .into_iter()
-                    .map(|(i, m)| (i, m.0))
+                    .map(|(i, m)| (i, m.commitments))
                     .collect::<HashMap<_, _>>(),
             )
             .map_err(|e| self.roster.map_pedpop(e, self.me))?;
@@ -557,6 +1109,156 @@ impl<C: ControlDomain> Committing<C> {
             },
             shares,
         ))
+    }
+
+    /// Every contribution this participant is about to consume was attested by
+    /// the seat it is filed under.
+    ///
+    /// The key each signature is checked under comes from `self.seats` -- the
+    /// roster this participant itself began under -- and NEVER from the message.
+    /// That direction is the whole point, and it is
+    /// [`SignedCommitment::check`](crate::SignedCommitment)'s: an artifact
+    /// checked against a key it supplied itself has established nothing.
+    ///
+    /// # The local participant's own entry
+    ///
+    /// It is not consumed -- PedPoP takes everyone else's -- and for one round it
+    /// was simply skipped. Review pointed out what that cost, and it cost two
+    /// things:
+    ///
+    ///   * **at `n == 1` this loop then verified NOTHING AT ALL**, ever, for any
+    ///     input. That is the shape [`crate::production`] decided for the gate
+    ///     cohort ([`GATE_COUNT`](crate::production::GATE_COUNT) is 1), so the
+    ///     guard was inert at half the deployment while the docs described it as
+    ///     covering it. A map carrying 64 zero bytes where the gate seat's
+    ///     signature belonged was accepted and the whole gate DKG completed;
+    ///   * a coordinator that rewrote this participant's own broadcast in the
+    ///     copy it handed back was invisible to it.
+    ///
+    /// So the own entry is now checked, IF PRESENT, by comparing it to the
+    /// contribution [`Committing::begin`] produced -- byte equality on the
+    /// commitments and on the attestation, no signature verified and no key
+    /// consulted, which is strictly stronger than what a peer can be asked. If
+    /// absent it is not required, because a participant that does not send itself
+    /// its own broadcast is not doing anything wrong and `by_index` skips it too.
+    ///
+    /// **Do not read the `n == 1` case as a security property.** At `n == 1` the
+    /// only entry is the caller's own and the caller made it: comparing it to
+    /// itself catches a corrupted or substituted map, not an impostor. **What
+    /// keeps a party that does not hold the gate seat's key out of the gate DKG
+    /// is [`Committing::begin`]'s [`DkgError::IdentityNotOwn`] refusal**, which
+    /// is checked against the seat roster the caller began under, and
+    /// `tests/dkg.rs::at_a_cohort_of_one_it_is_begin_that_refuses_a_party_without_the_seat_key`
+    /// performs exactly that. This loop is not what carries `n == 1`, and saying
+    /// it was is the mistake being corrected.
+    ///
+    /// # The missing-message arm
+    ///
+    /// A missing contribution is refused here as well as in `Roster::by_index`,
+    /// which runs next. That is a duplicated arm and not a duplicated rule --
+    /// same variant, same fields, nothing for the two to disagree about -- and
+    /// it is here because this loop needs the message before `by_index` has run.
+    ///
+    /// **This arm has a killing test, and the crate twice said it could not.**
+    /// The first version said nothing dies when it is deleted; that is true for
+    /// a map with ONE fault, because `by_index` runs a step later and produces a
+    /// byte-identical error. Review pointed out that a map with TWO faults tells
+    /// them apart: this loop walks the roster in ascending id order, so an ABSENT
+    /// earlier peer and a CORRUPTED later peer distinguish "refuse the absence"
+    /// from "skip it and carry on". Replacing the `?` below with a `continue` --
+    /// which is the only sensible mutation, since the lookup has to do something
+    /// -- changes the reported error from `MissingMessage` to
+    /// `ContributionNotAttributable`, and
+    /// `tests/dkg.rs::a_missing_earlier_peer_is_reported_before_a_later_peers_bad_attestation`
+    /// dies on it.
+    ///
+    /// `by_index`'s own arm is separately exercised at ROUND TWO, by
+    /// `tests/dkg.rs::a_missing_round_two_share_names_the_participant` -- an
+    /// earlier version of this sentence asserted that and no such test existed.
+    ///
+    /// **Measured, in an isolated copy, with the file restored and hash-checked
+    /// afterwards.** Deleting the signature refusal below fails exactly ten
+    /// tests, all in `tests/dkg.rs`, and nothing else in the crate:
+    /// `a_contribution_the_seat_did_not_attest_is_refused`,
+    /// `an_attestation_does_not_carry_to_another_contribution_by_the_same_seat`,
+    /// `a_contribution_relabelled_between_two_seats_that_share_a_key_is_refused`,
+    /// `commitments_from_another_ceremony_are_refused_and_name_the_dealer`,
+    /// `an_attestation_built_for_the_other_cohort_does_not_verify_here`,
+    /// `a_map_that_is_both_unattributable_and_off_roster_reports_the_attribution`,
+    /// `a_missing_earlier_peer_is_reported_before_a_later_peers_bad_attestation`
+    /// and the three transplant tests. Ten rather than the four this comment
+    /// once claimed, because six of them are new -- the count is written out so
+    /// that a future deletion that kills FEWER is visible as coverage lost.
+    ///
+    /// Deleting the own-entry comparison fails exactly three:
+    /// `the_gate_cohorts_attribution_check_is_not_vacuous`,
+    /// `a_rewritten_own_contribution_is_refused` and
+    /// `an_own_entry_with_the_right_signature_over_the_wrong_commitments_is_refused`.
+    /// **Each DISJUNCT is covered separately**, which review asked for after
+    /// pointing out that the first two tests survive if only the commitment
+    /// comparison goes: deleting the commitments disjunct alone fails the third
+    /// test and only that; deleting the attestation disjunct alone fails the
+    /// first and only that.
+    ///
+    /// Replacing the missing-peer `?` with a `continue` fails exactly one:
+    /// `a_missing_earlier_peer_is_reported_before_a_later_peers_bad_attestation`.
+    /// Swapping steps 1 and 2 of `deal` fails exactly one:
+    /// `a_map_that_is_both_unattributable_and_off_roster_reports_the_attribution`.
+    fn check_attribution(&self, contributions: &HashMap<u64, Contribution>) -> Result<(), DkgError> {
+        for &id in self.roster.ids() {
+            if id == self.me {
+                // Not required. Checked if supplied, and checked by comparison
+                // rather than by signature: this participant knows what it sent.
+                if let Some(mine) = contributions.get(&id) {
+                    if mine.commitment_bytes() != self.own.commitment_bytes()
+                        || mine.attestation != self.own.attestation
+                    {
+                        return Err(DkgError::OwnContributionAltered {
+                            cohort: C::NAME,
+                            id,
+                        });
+                    }
+                }
+                continue;
+            }
+            let contribution = contributions.get(&id).ok_or(DkgError::MissingMessage {
+                cohort: C::NAME,
+                round: 1,
+                from: id,
+            })?;
+            // `begin` checked that the seat roster names exactly this roster, so
+            // the lookup cannot miss; and it checked that every key it names is
+            // usable, so `verify` is being asked about a key that has a secret
+            // behind it and only one.
+            //
+            // NO TEST CAN MAKE THIS PANIC, and it is written as an `expect`
+            // rather than a refusal for that reason: a `Committing` has exactly
+            // one constructor, and it rejects a seat roster whose ids are not
+            // this roster's before it builds one. A refusal here would be an arm
+            // nothing could falsify -- which this crate treats as worse than an
+            // assertion that names its own cause.
+            let key = self
+                .seats
+                .key_of(id)
+                .expect("`begin` required the seat roster to name exactly this roster");
+            if !key.verify(
+                &dkg_contribution_payload(
+                    &self.ceremony,
+                    C::NAME,
+                    &self.roster_digest,
+                    id,
+                    &contribution.commitment_bytes(),
+                ),
+                &contribution.attestation,
+            ) {
+                return Err(DkgError::ContributionNotAttributable {
+                    cohort: C::NAME,
+                    dealer: id,
+                    key,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1074,21 +1776,61 @@ impl<C: ControlDomain> CohortShare<C> {
 /// DKG exists to avoid, and it is here for the same reason
 /// [`mlsag::sign`](crate::mlsag::sign) is: a single-host simulation and the
 /// tests need to drive the rounds without restating them. What it does NOT do
-/// is skip any of the PROTOCOL rounds -- every message is produced and consumed
-/// exactly as a networked deployment would produce and consume it, every proof
-/// of knowledge is verified, and every share is checked against its dealer's
-/// commitments. What it does collapse is the out-of-band step
-/// [`Confirming::confirm`] exists for: it confirms on every participant's
-/// behalf, which one process legitimately can and a deployment cannot. A
-/// deployment runs [`Committing::begin`], [`Committing::deal`],
-/// [`Dealing::finish`] and [`Confirming::confirm`] once per participant, on
-/// that participant's own machine.
+/// is skip any of the PROTOCOL rounds -- every message is produced and consumed,
+/// every proof of knowledge is verified, every contribution is checked against
+/// its seat's identity key, and every share is checked against its dealer's
+/// commitments.
+///
+/// **It is not, however, "exactly as a networked deployment would produce and
+/// consume it", which is what this said and review corrected.** The messages
+/// never leave the process: they move as Rust values, and neither
+/// [`Contribution`] nor [`ShareMessage`] has a serialisation to move them any
+/// other way. The rounds are simulated at the level of VALUES, not of bytes, so
+/// a deployment's encode/decode step -- and everything that can go wrong in it
+/// -- is exercised nowhere in this crate.
+///
+/// What it does collapse is the out-of-band step [`Confirming::confirm`] exists
+/// for: it confirms on every participant's behalf, which one process
+/// legitimately can and a deployment cannot. A deployment runs
+/// [`Committing::begin`], [`Committing::deal`], [`Dealing::finish`] and
+/// [`Confirming::confirm`] once per participant, on that participant's own
+/// machine.
+///
+/// **`identities` is every seat's PRIVATE identity key**, and requiring it is
+/// the honest statement of what this function is.
+///
+/// **What that signature does and does not say, corrected.** It used to say: "a
+/// single process can only run a cohort's whole DKG if it holds every one of
+/// that cohort's identity keys -- so this signature is the new bar written into
+/// a type." Review pointed out that the caller supplies `seats` AND `identities`,
+/// so the two can be made to agree with keys the caller minted this morning:
+/// `tests/dkg.rs::a_process_holding_no_real_seat_key_still_runs_a_whole_cohort_under_its_own_roster`
+/// runs both decided cohorts end to end that way. The narrower and true
+/// statement is:
+///
+/// > a process cannot produce a dealing whose SEAT ROSTER names seat-holders it
+/// > does not hold the private keys of.
+///
+/// That is a claim about labelling, and what enforces it downstream -- refusing
+/// a component whose claim names seats that did not endorse it -- is the seat
+/// endorsement in [`ceremony`](crate::ceremony), not anything here.
+///
+/// It is also exactly the residual: holding `n` keys is not being `n` parties,
+/// and `tests/dkg.rs::a_party_that_holds_every_seat_key_still_runs_the_whole_dkg_alone`
+/// performs that rather than describing it.
+///
+/// A roster member `identities` has no entry for is [`DkgError::IdentityKeyMissing`]
+/// rather than a participant quietly skipped or attested with the nearest key to
+/// hand. Measured: replacing that refusal fails
+/// `tests/dkg.rs::run_dkg_refuses_a_participant_it_holds_no_identity_key_for`,
+/// and nothing else.
 ///
 /// The returned shares are in roster order.
 pub fn run_dkg<C: ControlDomain, R: RngCore + CryptoRng>(
     ceremony: &CeremonyId,
     spec: &CohortSpec<C>,
     seats: &SeatRoster<C>,
+    identities: &HashMap<u64, IdentityKey>,
     rng: &mut R,
 ) -> Result<Vec<CohortShare<C>>, DkgError> {
     let roster = Roster::new(spec)?;
@@ -1096,7 +1838,10 @@ pub fn run_dkg<C: ControlDomain, R: RngCore + CryptoRng>(
     let mut committing = Vec::with_capacity(roster.n());
     let mut commitments = HashMap::with_capacity(roster.n());
     for &id in roster.ids() {
-        let (state, msg) = Committing::<C>::begin(ceremony, spec, seats, id, rng)?;
+        let identity = identities
+            .get(&id)
+            .ok_or(DkgError::IdentityKeyMissing { cohort: C::NAME, id })?;
+        let (state, msg) = Committing::<C>::begin(ceremony, spec, seats, id, identity, rng)?;
         committing.push(state);
         commitments.insert(id, msg);
     }

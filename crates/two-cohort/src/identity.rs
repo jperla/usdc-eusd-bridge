@@ -1,4 +1,9 @@
-//! Ed25519 ORGANISATION identity keys: who produced a piece of the protocol.
+//! Ed25519 long-term identity keys: which key ENDORSED a piece of the
+//! protocol.
+//!
+//! Endorsed, not produced. Review corrected this line: a signature establishes
+//! that a key was applied to exact bytes, and says nothing about who generated
+//! them. Every claim built on these keys inherits that ceiling.
 //!
 //! Nothing here is threshold material, and the separation is the whole point.
 //! A threshold transcript is reproducible by anyone holding enough shares, so
@@ -17,8 +22,14 @@
 //! would be a cycle. The primitive therefore moved DOWN to the crate both can
 //! reach, and `crates/ceremony`'s `identity` module re-exports these three
 //! types rather than declaring a second identity notion beside them. One key
-//! type, two uses: an organisation whose key signs a ceremony round message is
-//! the same organisation whose key signs a commitment.
+//! type, several uses: an organisation whose key signs a ceremony round message
+//! is the same organisation whose key signs a commitment, and a SEAT's key of
+//! this type both attests its round-one DKG contribution
+//! ([`dkg::Contribution`](crate::dkg::Contribution)) and answers half of the
+//! linked proof in a [`SeatEndorsement`](crate::ceremony::SeatEndorsement). This
+//! said "two uses" until review pointed out it had been three since the DKG
+//! attestation landed, and four counting the endorsement -- which is not a
+//! signature at all.
 //!
 //! # What a signature here does and does not say
 //!
@@ -86,15 +97,20 @@ impl IdentityPublic {
 
     /// `sig` is a signature by this key over `msg`.
     ///
-    /// Returns a plain `bool` rather than a typed error because the two callers
+    /// Returns a plain `bool` rather than a typed error because the callers
     /// report the failure in their own vocabularies -- a participant id in
     /// `crates/ceremony`'s abort evidence, a cohort name in
-    /// [`ceremony`](crate::ceremony)'s audit -- and a shared error type here
-    /// would force one of them to translate.
+    /// [`ceremony`](crate::ceremony)'s audit, a dealer id in
+    /// [`dkg`](crate::dkg)'s -- and a shared error type here would force them to
+    /// translate.
     ///
     /// **Domain separation is the caller's.** This verifies over whatever bytes
-    /// it is handed; every caller prefixes a tag naming the message type, so a
-    /// signature over one kind of message cannot be replayed as another.
+    /// it is handed. Every caller INSIDE this workspace prefixes a tag naming
+    /// the message type, so a signature over one kind of message cannot be
+    /// replayed as another -- but that is a property of those call sites, not of
+    /// this function, which is public and will happily verify untagged bytes for
+    /// anyone. Review asked for the distinction to be drawn; it is the same
+    /// distinction [`IdentityKey::sign`] draws.
     pub fn verify(&self, msg: &[u8], sig: &IdentitySignature) -> bool {
         self.0.verify(msg, &Ed25519Signature::new(sig.0)).is_ok()
     }
@@ -299,10 +315,22 @@ impl IdentityKey {
     /// **Domain separation is the caller's**, and it is not optional: this signs
     /// whatever bytes it is handed, so two message types that do not carry
     /// distinct tags are one message type as far as a verifier is concerned.
-    /// The tags in use are `bridge/ceremony/round{1,2}/v1` in `crates/ceremony`
-    /// and `two-cohort/composition/commit-signature/v1` in
-    /// [`ceremony`](crate::ceremony), and each of those payload builders puts
-    /// its tag first.
+    /// The tags in use are `bridge/ceremony/round{1,2}/v1` in `crates/ceremony`,
+    /// and in [`ceremony`](crate::ceremony) both
+    /// `two-cohort/composition/commit-signature/v1` and
+    /// `two-cohort/composition/dkg-contribution/v1` -- the second was omitted
+    /// from this list for a whole round after it was added, which review caught
+    /// and which is why `ceremony::tests::the_tag_list_is_every_tag_in_this_file`
+    /// now exists. Each of those payload builders puts its tag first, and
+    /// `ceremony::tests::every_domain_separator_is_prefix_free` asserts the set
+    /// is prefix-free.
+    ///
+    /// **This function is a signing oracle for its caller**, and that is not a
+    /// wart to be apologised for -- an independent implementation and an
+    /// external signer both need it. It does mean that "the seat signed these
+    /// bytes" never implies "the seat produced these bytes". See
+    /// [`dkg::Contribution`](crate::dkg::Contribution), where that residual is
+    /// named and performed.
     pub fn sign(&self, msg: &[u8]) -> IdentitySignature {
         IdentitySignature(self.pair.sign(msg).to_bytes())
     }

@@ -144,6 +144,26 @@ fn artifact_with_gate_endorsed_by(seed: u64, gate_org: &IdentityKey) -> Composit
 /// The second half of the test is the close: the same artifact, presented to a
 /// funder holding the two organisations' published identity keys, is refused by
 /// name.
+///
+/// **What "one process" costs the impostor now, corrected.** This used to say
+/// that since round one became seat-attested the impostor "must hold every
+/// SEAT's long-term identity private key as well as every share". Review found
+/// that wrong on both ends. It is wrong about the ARTIFACT: an accepted artifact
+/// already required, per cohort, every seat's identity private key AND a share
+/// behind the verification share the claim publishes -- that is what a
+/// `SeatEndorsement` is -- so the marginal price of an artifact-level forgery is
+/// ZERO. And it is wrong about the DKG: `run_dkg`'s caller supplies the seat
+/// ROSTER as well as the keys, so a process holding no real seat key runs both
+/// decided cohorts under a roster of its own invention --
+/// `tests/dkg.rs::a_process_holding_no_real_seat_key_still_runs_a_whole_cohort_under_its_own_roster`
+/// performs that.
+///
+/// What round-one attestation actually changed is who can produce a dealing
+/// whose claim NAMES the real seat-holders, and that is a fact about the honest
+/// path, not a new line in this audit. This fixture holds every seat key because
+/// it is impersonating the real seats, which is the residual
+/// `tests/dkg.rs::a_party_that_holds_every_seat_key_still_runs_the_whole_dkg_alone`
+/// performs.
 #[test]
 fn one_process_can_produce_an_artifact_that_passes_every_structural_check() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x501E);

@@ -1309,7 +1309,14 @@ fn the_dkg_refuses_a_seat_roster_that_is_not_its_participant_roster() {
     .expect("two owner ids");
 
     assert_eq!(
-        two_cohort::dkg::run_dkg::<Owners, _>(&ceremony, &spec, &two, &mut rng).unwrap_err(),
+        two_cohort::dkg::run_dkg::<Owners, _>(
+            &ceremony,
+            &spec,
+            &two,
+            &common::seat_identities_for::<Owners>(&spec),
+            &mut rng,
+        )
+        .unwrap_err(),
         two_cohort::DkgError::SeatRosterMismatch {
             cohort: Owners::NAME,
             roster: spec.ids().to_vec(),
@@ -1322,6 +1329,7 @@ fn the_dkg_refuses_a_seat_roster_that_is_not_its_participant_roster() {
         &ceremony,
         &spec,
         &common::seats_for::<Owners>(&spec),
+        &common::seat_identities_for::<Owners>(&spec),
         &mut rng,
     )
     .expect("control");
@@ -1908,6 +1916,24 @@ fn the_residual_is_a_party_that_holds_every_seat_key() {
     // One process runs both DKGs and holds all four seat keys. The seat keys
     // here are the fixture's own, so this really is the honest artifact -- which
     // is the finding: nothing distinguishes it from four parties.
+    //
+    // This comment used to say that since round one became seat-attested,
+    // holding all four keys "is what running both DKGs in one process REQUIRES",
+    // and that "a party without the keys cannot get this far at all". Review
+    // falsified both: `run_dkg`'s caller supplies the seat ROSTER as well as the
+    // keys, so a party holding NONE of the real seat keys runs both cohorts
+    // under a roster of its own and reaches a real DKG output --
+    // `tests/dkg.rs::a_process_holding_no_real_seat_key_still_runs_a_whole_cohort_under_its_own_roster`
+    // performs it. What stops that party is the seat ENDORSEMENTS below, checked
+    // under the keys the funder supplied, and not anything in the DKG.
+    //
+    // So round-one attestation raised no price that this test can see. The
+    // keys are needed here for the reason they always were: this artifact names
+    // the REAL seat-holders, and only their keys can endorse it. That is the
+    // residual, unchanged. `tests/dkg.rs::a_party_that_holds_every_seat_key_still_runs_the_whole_dkg_alone`
+    // performs the DKG half of the same admission -- and note that THIS test is
+    // the one carrying it to an accepted `audit`; the DKG-side one stops at the
+    // claim.
     let h = honest(0x5EB8);
     let audited = audit(&h.artifact, &h.parties).expect("it audits");
 

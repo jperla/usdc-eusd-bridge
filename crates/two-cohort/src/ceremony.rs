@@ -60,7 +60,7 @@
 //! not optional colour -- they are what makes the attribution per seat, and
 //! [`Parties`] carries six positions for the decided shape, not two.
 //!
-//! # The third defence: who produced this half
+//! # The third defence: who endorsed this half
 //!
 //! Proof of possession and non-adaptive ordering are both statements about KEY
 //! MATERIAL, and one process that runs both DKGs satisfies them completely: it
@@ -163,10 +163,16 @@
 //!     and for what it still does not say. The seat identities are inside
 //!     [`absorb_claim`], so they are sealed by the commitment and welded into
 //!     every COMPOSITION proof-of-possession challenge -- an honest seat's proof
-//!     does not transfer to a claim that re-attributes any seat. (Not PedPoP's
-//!     own round-one proof of knowledge, whose context is `(CeremonyId, cohort)`
-//!     and which the seat roster does not reach. See [`absorb_claim`] for which
-//!     of the three checks fires for which attacker.);
+//!     does not transfer to a claim that re-attributes any seat. (PedPoP's own
+//!     round-one proof of knowledge is a different transcript with a different
+//!     scope: its context is `(CeremonyId, cohort, roster digest)`, so the seat
+//!     KEYS do now reach it -- see [`dkg_roster_digest`] -- while the claim, the
+//!     verification shares and everything else in `absorb_claim` do not. What
+//!     also reaches round one is
+//!     [`dkg::Contribution`](crate::dkg::Contribution)'s attestation, a separate
+//!     signature beside PedPoP's message, consumed inside the protocol rather
+//!     than carried in the artifact. See [`absorb_claim`] for which of the three
+//!     checks fires for which attacker.);
 //!   * that each cohort's commitment was endorsed by the organisation the funder
 //!     named for it, under a signature over this ceremony, this cohort and this
 //!     digest -- so the artifact is a statement BY those two parties and not
@@ -283,9 +289,12 @@
 //!     authenticated archive would build on.
 //!   * **That the four named seats are four entities.** This is the residual
 //!     that replaced the old one, and it is smaller but not gone. A claim now
-//!     names a key per seat and each seat signs for itself, so a dealer that
-//!     runs no DKG must produce a signature from every named party rather than
-//!     one organisation signature. `tests/forgery.rs`'s dealt-owner attack is
+//!     names a key per seat and each seat ENDORSES for itself -- a linked
+//!     argument of knowledge of that seat's identity secret and of the share
+//!     the claim publishes for it, not a signature; review caught this line
+//!     still calling it one. So a dealer that runs no DKG must produce an
+//!     endorsement from every named party rather than one organisation
+//!     signature, and collecting ordinary signatures no longer clears it. `tests/forgery.rs`'s dealt-owner attack is
 //!     performed BOTH ways round -- the dealer naming itself at every seat
 //!     ([`CeremonyError::SeatUnexpected`]) and the dealer copying the real
 //!     seat-holders' public keys, which are public
@@ -411,6 +420,19 @@ const COMMIT_SIGNATURE_TAG: &[u8] = b"two-cohort/composition/commit-signature/v1
 const SEAT_ENDORSEMENT_TAG: &[u8] = b"two-cohort/composition/seat-endorsement/v2";
 /// Domain separator for the standalone claim digest a seat endorsement names.
 const CLAIM_DIGEST_TAG: &[u8] = b"two-cohort/composition/claim-digest/v1";
+/// Domain separator for a SEAT's attestation of its own round-one DKG
+/// contribution -- see [`dkg_contribution_payload`].
+///
+/// Distinct from [`COMMIT_SIGNATURE_TAG`], which is the OTHER thing an identity
+/// key signs in this crate. The two are the only byte strings an
+/// [`IdentityKey`] is ever asked to sign here, so they are the pair a
+/// cross-protocol confusion could actually be built out of, and
+/// `tests::an_attestation_does_not_verify_as_a_commitment_endorsement` asserts
+/// it cannot be.
+const DKG_CONTRIBUTION_TAG: &[u8] = b"two-cohort/composition/dkg-contribution/v1";
+/// Domain separator for the digest of WHO is running a cohort's key generation
+/// -- see [`dkg_roster_digest`].
+const DKG_ROSTER_TAG: &[u8] = b"two-cohort/composition/dkg-roster/v1";
 
 /// Largest roster [`audit`] will enumerate qualifying subsets of.
 ///
@@ -633,9 +655,14 @@ pub enum CeremonyError {
     /// funder named for this cohort.
     ///
     /// THE attribution failure. Without the identity signatures an artifact
-    /// carries no statement about WHO produced either half, so one process that
+    /// carries no statement about WHO ENDORSED either half, so one process that
     /// ran both DKGs produces an artifact indistinguishable from a two-party
-    /// one -- `tests/attribution.rs` exhibits exactly that. This is what a
+    /// one -- `tests/attribution.rs` exhibits exactly that. (Endorsed, not
+    /// produced: a signature says a key was applied to these bytes, and an
+    /// impostor need not HOLD the key so much as be able to obtain signatures
+    /// under it. Review asked for the distinction and it is the same one
+    /// [`dkg::Contribution`](crate::dkg::Contribution) draws at round one.)
+    /// This is what a
     /// funder holding the two organisations' published keys sees when the
     /// artifact was not produced by them.
     #[error("cohort `{cohort}`: the commitment is signed by identity {found}, but the audit was told the `{cohort}` organisation is {expected}")]
@@ -968,17 +995,28 @@ impl CeremonyId {
         &self.0
     }
 
-    /// The PedPoP transcript context for one cohort of this ceremony.
+    /// The PedPoP transcript context for one RUN of one cohort of this
+    /// ceremony.
     ///
     /// Per-cohort rather than shared so that a commitment message broadcast in
     /// the owners' DKG cannot be replayed into the gates' -- the proof of
     /// knowledge inside it is over this context.
-    pub(crate) fn dkg_context(&self, cohort: &str) -> [u8; 32] {
+    ///
+    /// **And per-ROSTER**, which it was not for one round. `roster` is
+    /// [`dkg_roster_digest`] over who is running this cohort: the threshold, the
+    /// ids, and the identity key each id is held by. Without it two runs sharing
+    /// a `CeremonyId` and a cohort but differing in membership shared a PedPoP
+    /// context, so a round-one message from one verified in the other for any
+    /// participant that kept its INDEX -- PedPoP binds the index, not the set.
+    /// Review found that; `dkg.rs::a_contribution_does_not_transplant_into_a_run_with_a_different_membership`
+    /// performs it in both layers, and this is the second of the two.
+    pub(crate) fn dkg_context(&self, cohort: &str, roster: &[u8; 32]) -> [u8; 32] {
         let mut h = Blake2b512::new();
         h.update(DKG_CONTEXT_TAG);
         h.update(self.0);
         h.update((cohort.len() as u64).to_le_bytes());
         h.update(cohort.as_bytes());
+        h.update(roster);
         truncate(h)
     }
 }
@@ -1014,10 +1052,20 @@ impl fmt::Display for CeremonyId {
 /// # What it does NOT say
 ///
 /// That the keys are held by different entities. `n` keys are `n` keys, exactly
-/// as two cohort keys are two keys -- see the module docs. What a seat roster
-/// changes is the BAR: an artifact must now carry a signature from every named
-/// seat, so a dealer that keeps every share must also hold every seat's private
-/// key rather than one organisation key.
+/// as two cohort keys are two keys -- see the module docs. Nor that they are `n`
+/// DISTINCT keys: [`SeatRoster::new`] deliberately permits one key at several
+/// seats, and the check that spans both cohorts lives in
+/// [`Parties::check_distinct`].
+///
+/// What a seat roster changes is the BAR: an artifact must carry a
+/// [`SeatEndorsement`] from every named seat, so a dealer that keeps every share
+/// must also hold every seat's private identity key rather than one organisation
+/// key. **Not "a signature from every named seat"**, which is what this said and
+/// review flagged as stale: an endorsement stopped being a signature in the
+/// round before this one. It is an AND-composed argument of knowledge of the
+/// seat's identity scalar and of the share behind the verification share the
+/// claim publishes, under one challenge -- which is strictly more than a
+/// signature and is the reason the change was made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeatRoster<C: ControlDomain> {
     /// Ascending by id, because [`BTreeMap`] is, and because the claim's
@@ -1544,7 +1592,11 @@ impl fmt::Debug for ComponentCommitment {
     }
 }
 
-/// A commitment plus the organisation that published it.
+/// A commitment plus the organisation that ENDORSED it.
+///
+/// Endorsed rather than published or produced: what the signature establishes
+/// is that this key was applied to these bytes, which is compatible with the
+/// material having been generated by somebody else entirely.
 ///
 /// # What this adds, and what was missing without it
 ///
@@ -3291,10 +3343,17 @@ fn absorb_claim(h: &mut Blake2b512, claim: &ComponentClaim) {
     // Only the last is "at the proof", and it is the one that cannot be fixed by
     // re-doing anything the attacker owns. Note also what "every proof" means
     // here: the COMPOSITION proofs. PedPoP's own round-one proof of knowledge is
-    // bound to `(CeremonyId, cohort)` and not to the seat roster, so a dealer
-    // that knows the shares can recompute the composition proofs after
-    // re-attributing -- what the binding prevents is reusing HONEST proofs, not
-    // re-attribution as such.
+    // bound to `(CeremonyId, cohort, roster digest)`. That does now include the
+    // seat KEYS -- but not the claim and not the verification shares -- so a
+    // dealer that knows the shares can still recompute the composition proofs
+    // after re-attributing. What the binding prevents is reusing HONEST proofs,
+    // not re-attribution as such.
+    //
+    // The round-one ATTESTATION on `dkg::Contribution` does bind the seat, and
+    // it does not change the sentence above: attestations are consumed by peers
+    // inside the DKG and never appear in an artifact, so nothing here can check
+    // one. What it changes is who could have produced the dealing being
+    // re-attributed, not what the re-attribution costs afterwards.
     h.update((claim.seat_keys.len() as u64).to_le_bytes());
     for k in &claim.seat_keys {
         h.update(k.as_bytes());
@@ -3831,6 +3890,172 @@ fn commitment_signing_payload(ceremony: &CeremonyId, commitment: &ComponentCommi
     out
 }
 
+/// **WHO is running one cohort's key generation**, as 32 bytes: the threshold,
+/// and every seat as `(roster id, identity key)` in the roster's canonical
+/// ascending order.
+///
+/// This is the answer to a defect review found and this crate had shipped: the
+/// round-one attestation named the ceremony, the cohort and the contributing
+/// seat, but never the RUN. Two runs sharing a [`CeremonyId`] and a cohort but
+/// differing in who was taking part therefore shared everything the attestation
+/// covered, so a seat's attested round-one message was a REUSABLE CREDENTIAL
+/// across them -- accepted in any run that kept that seat at the same position.
+/// PedPoP does not close it either: its proof of knowledge binds the participant
+/// INDEX, which the substitution preserves. See
+/// `dkg.rs::a_contribution_does_not_transplant_into_a_run_with_a_different_membership`
+/// and its two siblings, which perform the three shapes of it.
+///
+/// It is absorbed in two places, and they buy different things:
+///
+///   * into [`CeremonyId::dkg_context`], so that PedPoP's own proof of knowledge
+///     is over this roster and a transplanted contribution fails the PROTOCOL
+///     even if its attestation were ignored;
+///   * into [`dkg_contribution_payload`], so that the attestation SAYS which run
+///     it was made for, and the refusal names attribution rather than the
+///     polynomial.
+///
+/// Three components, each with its own killing test -- and each test has to work
+/// to isolate its component, because the three usually move together. Measured
+/// in an isolated copy, restored and hash-checked:
+///
+///   * **the seat keys** -- deleting them fails three tests:
+///     `a_contribution_does_not_transplant_into_a_run_that_reseats_one_of_its_peers`,
+///     which holds the ids and the threshold fixed and changes one seat's key,
+///     and then two more for a reason worth naming -- with the keys out of the
+///     digest, a contribution generated under a roster of the IMPOSTOR's own key
+///     shares this run's PedPoP context, so it stops being refused at the second
+///     layer and `a_contribution_the_seat_did_not_attest_is_refused`'s layer-two
+///     assertion and `a_seat_key_that_signs_bytes_it_did_not_generate_hands_its_half_over`
+///     both go red;
+///   * **the ids** -- deleting them fails exactly
+///     `a_contribution_does_not_transplant_into_a_run_with_a_different_membership`,
+///     which has to give the departing and the arriving seat ONE identity key,
+///     or the key vector would change too and the test would not be about ids;
+///   * **the threshold** -- deleting it fails exactly
+///     `a_contribution_does_not_transplant_across_a_change_of_threshold`, and it
+///     dies on the ERROR rather than on the refusal. PedPoP already refuses a
+///     threshold change on its own, because the commitment vector's length is
+///     part of the bytes its challenge hashes; without the threshold here the
+///     refusal is `BadCommitments` instead of `ContributionNotAttributable`.
+///
+/// Deleting the digest from [`CeremonyId::dkg_context`] alone -- leaving it in
+/// the payload -- fails the same three that the seat-key deletion does, with the
+/// membership test in place of the reseating one. So the two absorptions are
+/// separately covered, which is the point of having both.
+///
+/// **The seat count prefix is NOT load-bearing and no test can make it be.**
+/// Measured: deleting it leaves the whole suite green. Every element is a fixed
+/// 40 bytes and the seat vector is the last thing absorbed, so the length of the
+/// preimage already determines the count and no two rosters can share one. It
+/// costs 8 bytes to not have to make that argument again the next time a field
+/// is appended.
+///
+/// **Public** for [`dkg_contribution_payload`]'s reason: an independent
+/// implementation, or a signer in an HSM, must be able to build the same 32
+/// bytes. It performs NO check of any kind against its caller -- not that the
+/// ids ascend, not that they are in a domain, not that the keys are usable. The
+/// producers of a real one are [`dkg::Committing`](crate::dkg::Committing)'s
+/// constructor and its `deal`, both of which have validated all three before
+/// they get here.
+pub fn dkg_roster_digest(threshold: usize, seats: &[(u64, IdentityPublic)]) -> [u8; 32] {
+    let mut h = Blake2b512::new();
+    h.update(DKG_ROSTER_TAG);
+    h.update((threshold as u64).to_le_bytes());
+    h.update((seats.len() as u64).to_le_bytes());
+    for (id, key) in seats {
+        h.update(id.to_le_bytes());
+        h.update(key.as_bytes());
+    }
+    truncate(h)
+}
+
+/// **What a seat signs to attest its own round-one DKG contribution.**
+///
+/// [`dkg::Committing::begin`](crate::dkg::Committing::begin) produces one of
+/// these and signs it; [`dkg::Committing::deal`](crate::dkg::Committing::deal)
+/// rebuilds it for every contribution it is handed and checks the signature
+/// under the identity key that cohort's [`SeatRoster`] names for the seat the
+/// contribution is filed under. See `dkg`'s own docs for what that buys.
+///
+/// Five fields, and each answers a different transplant. The attribution below
+/// is MEASURED, not reasoned: each field deleted from this function, the whole
+/// `two-cohort` suite re-run with `--no-fail-fast` in an isolated copy, the file
+/// restored and hash-checked. Written out because this repo has shipped claims
+/// of the form "X is what stops Y" that nothing could have falsified.
+///
+///   * **the ceremony id** -- load-bearing.
+///     `dkg.rs::commitments_from_another_ceremony_are_refused_and_name_the_dealer`
+///     fails without it, on its first assertion. PedPoP's own proof of knowledge
+///     is over [`CeremonyId::dkg_context`], so it refuses the transplant too --
+///     what this buys is that the refusal names the ATTRIBUTION rather than the
+///     polynomial, and it is the one reported, because `deal` checks attribution
+///     before it hands anything to PedPoP. That same test asserts the second
+///     layer separately, on a RE-ATTESTED foreign message;
+///   * **the roster digest** -- load-bearing, and it was missing.
+///     [`dkg_roster_digest`] has the three tests, one per component. It is what
+///     makes this an attestation of a contribution to ONE RUN rather than a
+///     credential good for any run of this ceremony and cohort that keeps this
+///     seat's position;
+///   * **the roster id** -- load-bearing.
+///     `dkg.rs::a_contribution_relabelled_between_two_seats_that_share_a_key_is_refused`
+///     fails without it, and it has to give two seats ONE identity key to reach
+///     the field at all: with distinct keys the key lookup already refuses a
+///     relabelling, and PedPoP binds the participant INDEX inside its own proof
+///     of knowledge besides. So the honest statement is that this makes the
+///     attestation SAY which seat it is about rather than inherit it from a
+///     property of the bytes it covers;
+///   * **the commitment bytes** -- load-bearing.
+///     `dkg.rs::an_attestation_does_not_carry_to_another_contribution_by_the_same_seat`
+///     fails without them, and it fails whether the length prefix goes with them
+///     or stays -- the two deletions were measured separately, because the
+///     LAYOUT test below survives the prefix-only variant and it would be easy to
+///     mistake it for the cover. They are what makes this an attestation of a
+///     contribution rather than a licence to contribute: without them one
+///     signature from a seat would attest every message that seat ever files in
+///     that ceremony;
+///   * **the cohort name** -- load-bearing on the PUBLIC SIGNING PATH only, and
+///     the crate used to say flatly that "no test can make it be". Review
+///     constructed one and it is now
+///     `dkg.rs::an_attestation_built_for_the_other_cohort_does_not_verify_here`.
+///     Read the scope carefully, because the old sentence's REASONING was right
+///     and only its absoluteness was wrong: for a GENUINE contribution the field
+///     is redundant -- it is inside `dkg_context` and therefore inside the
+///     commitment bytes already, and the two cohorts' ids come from disjoint
+///     bands, so there is no cross-cohort replay of real messages to test. What
+///     the field binds is the LABEL supplied to this function, which is public
+///     and takes the cohort as a string: without it, a payload naming `"gates"`
+///     and one naming `"owners"` over the same commitment bytes are the same
+///     signed bytes, and a seat asked to sign the first has signed the second.
+///     Deleting it also fails `tests::the_two_signed_payloads_cannot_be_made_equal`,
+///     which is a LAYOUT tripwire and not a cover -- see there.
+///
+/// **Public** for [`seat_endorsement_challenge`]'s reason: an independent
+/// implementation, or a key living in an HSM, must be able to produce the
+/// attestation, and the rejection tests must be able to present one built for
+/// something else. It performs no check of any kind against its caller -- see
+/// [`dkg::Contribution`](crate::dkg::Contribution) on what follows from that,
+/// which is a real residual and not a small one.
+///
+/// Length-prefixed for the same reason [`absorb_claim`] is, and tagged for the
+/// reason every transcript here is tagged -- see [`DKG_CONTRIBUTION_TAG`].
+pub fn dkg_contribution_payload(
+    ceremony: &CeremonyId,
+    cohort: &str,
+    roster: &[u8; 32],
+    participant: u64,
+    commitments: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::from(DKG_CONTRIBUTION_TAG);
+    out.extend_from_slice(ceremony.as_bytes());
+    out.extend_from_slice(&(cohort.len() as u64).to_le_bytes());
+    out.extend_from_slice(cohort.as_bytes());
+    out.extend_from_slice(roster);
+    out.extend_from_slice(&participant.to_le_bytes());
+    out.extend_from_slice(&(commitments.len() as u64).to_le_bytes());
+    out.extend_from_slice(commitments);
+    out
+}
+
 /// The composition a proof of possession is taken under: the ceremony, both
 /// sealed digests, and both organisations.
 ///
@@ -4057,5 +4282,336 @@ mod tests {
         );
         assert_ne!(base.identity_commitment, moved.identity_commitment);
         assert_ne!(base.share_commitment, moved.share_commitment);
+    }
+
+    /// Every domain separator in this module, so the test below cannot silently
+    /// stop covering one that was added afterwards.
+    ///
+    /// Listed by hand, and for one round the comment claiming that this "cannot
+    /// silently stop covering one" was FALSE: a hand-maintained list is exactly
+    /// the thing that goes stale, and review pointed out that a new tag omitted
+    /// from it would have been silently uncovered. So the list is now checked
+    /// against the source file that declares the tags --
+    /// [`the_tag_list_is_every_tag_in_this_file`] -- and the claim is a test
+    /// rather than a hope.
+    const ALL_TAGS: &[(&str, &[u8])] = &[
+        ("CEREMONY_TAG", CEREMONY_TAG),
+        ("DKG_CONTEXT_TAG", DKG_CONTEXT_TAG),
+        ("COMMIT_TAG", COMMIT_TAG),
+        ("POP_TAG", POP_TAG),
+        ("COMMIT_SIGNATURE_TAG", COMMIT_SIGNATURE_TAG),
+        ("SEAT_ENDORSEMENT_TAG", SEAT_ENDORSEMENT_TAG),
+        ("CLAIM_DIGEST_TAG", CLAIM_DIGEST_TAG),
+        ("DKG_CONTRIBUTION_TAG", DKG_CONTRIBUTION_TAG),
+        ("DKG_ROSTER_TAG", DKG_ROSTER_TAG),
+    ];
+
+    /// **[`ALL_TAGS`] names every domain separator this file declares.**
+    ///
+    /// The prefix-freeness test below is only worth what its input list is
+    /// worth, and the list is written by hand. This reads the source of this
+    /// very file at compile time and asserts that every `const *_TAG: &[u8] =
+    /// b"..."` declaration in it appears in the list, BY NAME and BY VALUE.
+    /// Adding a tag without listing it fails here, at the moment it is added.
+    ///
+    /// Reading the file rather than deriving the list is the only option Rust
+    /// gives without a macro: there is no reflection over module items.
+    ///
+    /// **Two passes, and the second is there because the first has a false-PASS
+    /// mode that review found.** The first pass matches the exact one-line
+    /// declaration form the tags are written in. A tag written in some other
+    /// form -- `&'static [u8]`, a `const` split across lines -- would be missed
+    /// by that parser AND absent from [`ALL_TAGS`], so the counts would agree
+    /// and the test would go green over an uncovered tag. The comment here used
+    /// to claim the failure mode was a false alarm; it was not.
+    ///
+    /// So the second pass counts occurrences of the byte-literal namespace
+    /// prefix in the whole file, whatever syntax surrounds them, and requires
+    /// that count to equal [`ALL_TAGS`]'s length. The needle is assembled at
+    /// runtime rather than written as a literal, because this test's own source
+    /// is inside the string being searched.
+    ///
+    /// Measured: adding a tenth tag to the file and not to [`ALL_TAGS`] fails
+    /// this and nothing else.
+    #[test]
+    fn the_tag_list_is_every_tag_in_this_file() {
+        let src = include_str!("ceremony.rs");
+        let mut found = Vec::new();
+        for line in src.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("const ") else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(": &[u8] = b\"") else {
+                continue;
+            };
+            let Some(value) = value.strip_suffix("\";") else {
+                continue;
+            };
+            found.push((name.to_string(), value.to_string()));
+        }
+        assert_eq!(
+            found.len(),
+            ALL_TAGS.len(),
+            "this file declares {} tags in the canonical form and ALL_TAGS lists \
+             {}: {:?}",
+            found.len(),
+            ALL_TAGS.len(),
+            found.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        );
+        for (name, value) in &found {
+            let listed = ALL_TAGS
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is declared in this file but not in ALL_TAGS"));
+            assert_eq!(
+                listed.1,
+                value.as_bytes(),
+                "ALL_TAGS carries a stale value for {name}",
+            );
+        }
+
+        // Pass two: syntax-independent. Every tag value is a byte literal in
+        // this crate's namespace, so counting those literals catches a tag
+        // declared in a form pass one does not parse.
+        //
+        // The bare namespace itself is one such literal -- the assertion in
+        // `every_domain_separator_is_prefix_free` -- and it is not a tag, so
+        // matches whose next character closes the literal are excluded. That
+        // exclusion is exactly one occurrence today and the assertion below
+        // would fail if a second appeared, which is the behaviour wanted: a new
+        // bare-namespace literal is a thing somebody should have to look at.
+        let needle = format!("b{}two-cohort/composition/", '"');
+        let n = src
+            .match_indices(needle.as_str())
+            .filter(|(i, _)| !src[i + needle.len()..].starts_with('"'))
+            .count();
+        assert_eq!(
+            n,
+            ALL_TAGS.len(),
+            "this file contains {n} namespaced byte literals that are tag values \
+             and ALL_TAGS lists {} -- a tag declared in a form the parser above \
+             does not recognise would otherwise be silently uncovered",
+            ALL_TAGS.len(),
+        );
+    }
+
+    /// **No transcript in this module can be read as another one.**
+    ///
+    /// Every transcript here -- the two signed byte strings, and every hash
+    /// preimage -- begins with one of [`ALL_TAGS`], and this asserts that no tag
+    /// is a PREFIX of another. Prefix-freeness rather than mere inequality is
+    /// the property that matters: `t` and `t || x` at the head of two otherwise
+    /// free-form transcripts is a collision waiting for somebody to choose `x`,
+    /// and equality alone would not catch it.
+    ///
+    /// With that, two transcripts of different kinds agree only if Blake2b-512
+    /// collides (for the hashed ones) or if two distinct messages carry one
+    /// Ed25519 signature (for the signed ones). That is the whole of the
+    /// domain-separation claim this module makes, stated as a test rather than
+    /// as the comment it used to be -- `dkg_contribution_payload` is the fourth
+    /// tag to be added since the comment was written and nothing was checking.
+    ///
+    /// It also asserts the namespace, which is what separates these from
+    /// `crates/ceremony`'s `bridge/ceremony/round{1,2}/v1`: the same
+    /// [`IdentityKey`] signs in both crates, and neither list can see the other,
+    /// so the disjoint prefixes are what keeps them apart.
+    #[test]
+    fn every_domain_separator_is_prefix_free() {
+        for &(a_name, a) in ALL_TAGS {
+            assert!(
+                a.starts_with(b"two-cohort/composition/"),
+                "{a_name} must sit in this crate's namespace, which is what \
+                 separates it from `crates/ceremony`'s own signing tags",
+            );
+            for &(b_name, b) in ALL_TAGS {
+                if a_name == b_name {
+                    continue;
+                }
+                assert!(
+                    !a.starts_with(b),
+                    "{b_name} is a prefix of {a_name}: two transcripts of \
+                     different kinds could then share a leading segment",
+                );
+            }
+        }
+    }
+
+    /// **A seat's round-one attestation does not verify as its organisation's
+    /// commitment endorsement, or the other way about.**
+    ///
+    /// The sharper half of the test above, over the pair that could actually be
+    /// confused: these are the only two byte strings an [`IdentityKey`] signs in
+    /// this crate, and an organisation that also staffs one of its own seats
+    /// holds one key for both roles -- which [`Parties`] deliberately permits.
+    ///
+    /// **What changed, and it weakened this test rather than strengthening it.**
+    /// The previous version built a WORST CASE: it chose the commitment's digest
+    /// to be, byte for byte, the tail the contribution payload carried, so the
+    /// two strings were identical after their tags and one signature would have
+    /// verified in both roles the moment the tags coincided. That construction is
+    /// no longer achievable, because [`dkg_contribution_payload`] grew a 32-byte
+    /// roster digest:
+    ///
+    /// ```text
+    ///   endorsement:  TAG_c || ceremony || len(cohort) || cohort || digest[32]
+    ///   attestation:  TAG_d || ceremony || len(cohort) || cohort ||
+    ///                            roster[32] || participant[8] || len[8] || commitments
+    /// ```
+    ///
+    /// The endorsement's tail after the cohort is exactly 32 bytes; the
+    /// attestation's is at least 48. So for a shared cohort string they can never
+    /// be equal, and for different cohort strings the length prefix on `cohort`
+    /// differs before either tail is reached. **The two payloads are now
+    /// separated twice over -- by the tag and by the layout -- and the layout
+    /// half is asserted below** ([`the_two_signed_payloads_cannot_be_made_equal`]).
+    ///
+    /// **The honest consequence for the evidence table:** with the worst case
+    /// gone, this test no longer dies when `DKG_CONTRIBUTION_TAG` is set equal to
+    /// [`COMMIT_SIGNATURE_TAG`] -- the layouts already differ. The tag therefore
+    /// has exactly ONE killing test now, [`every_domain_separator_is_prefix_free`],
+    /// where it had two. That is a real reduction in coverage bought with a real
+    /// increase in separation, and it is written here rather than left for the
+    /// next measurement pass to discover.
+    ///
+    /// Both directions, because a domain separator that only worked one way
+    /// would be no separator at all.
+    #[test]
+    fn an_attestation_does_not_verify_as_a_commitment_endorsement() {
+        let (ceremony, _claim, participant, _v, _signer) = fixture();
+        let key = crate::identity::IdentityKey::from_seed(&[0x3B; 32]);
+
+        let commitments = [0x5Au8; 16];
+        let roster = [0x77u8; 32];
+        let commitment = ComponentCommitment {
+            cohort: Owners::NAME,
+            digest: [0x5Au8; 32],
+        };
+
+        let endorsement_payload = commitment_signing_payload(&ceremony, &commitment);
+        let attestation_payload =
+            dkg_contribution_payload(&ceremony, Owners::NAME, &roster, participant, &commitments);
+        assert_ne!(endorsement_payload, attestation_payload);
+
+        let endorsement = key.sign(&endorsement_payload);
+        let attestation = key.sign(&attestation_payload);
+
+        // CONTROL: each verifies in its own role.
+        assert!(key.public().verify(&endorsement_payload, &endorsement));
+        assert!(key.public().verify(&attestation_payload, &attestation));
+
+        assert!(
+            !key.public().verify(&attestation_payload, &endorsement),
+            "a commitment endorsement must not pass as a round-one attestation",
+        );
+        assert!(
+            !key.public().verify(&endorsement_payload, &attestation),
+            "a round-one attestation must not pass as a commitment endorsement",
+        );
+    }
+
+    /// **No choice of inputs makes the two signed byte strings equal, tags
+    /// aside.**
+    ///
+    /// This is the half of the domain separation that the test above used to
+    /// carry and now cannot -- see there. It asserts the LAYOUT argument, with
+    /// the tags stripped off, so it is testing the field structure and not the
+    /// separator:
+    ///
+    ///   * for the same cohort string, the endorsement's tail is exactly 32 bytes
+    ///     and the attestation's is at least 48, so the total lengths differ;
+    ///   * for different cohort strings, they are separated before either tail is
+    ///     reached -- by the 8-byte length prefix when the lengths differ, and by
+    ///     the cohort bytes themselves when they do not.
+    ///
+    /// The second case matters because the first is not enough on its own: a
+    /// caller is free to choose the cohort string (both builders take it), and a
+    /// cohort 16 bytes longer on the endorsement side makes the two payloads the
+    /// SAME LENGTH. The fixture below builds that -- 22 bytes against 6 -- and
+    /// asserts they are still unequal.
+    ///
+    /// **Two things this test does NOT do**, both found by review and both worth
+    /// stating rather than leaving to be discovered:
+    ///
+    ///   * it does not ISOLATE the length prefix. With both prefixes deleted, a
+    ///     22-byte string of `x` and `"owners"` still differ at their first byte,
+    ///     so the fixture observes the prefix working without showing it is the
+    ///     necessary separator. Constructing that would need two cohort strings
+    ///     where one is a prefix of the other, which the composed field layout
+    ///     does not otherwise permit;
+    ///   * the whole argument above is a proof about the layouts and this is a
+    ///     fixture, not the proof. Two representative points cannot exhaust the
+    ///     input space; the exhaustive step is the length arithmetic, which lives
+    ///     in this comment.
+    ///
+    /// **It is a tripwire on the layout as well as a test of it.** Deleting most
+    /// fields from [`dkg_contribution_payload`] fails it -- but not all: deleting
+    /// only `out.extend_from_slice(commitments)` while keeping its length prefix
+    /// leaves this green, because the tail still overshoots. That is not evidence
+    /// about any field either way; see that function for which test covers each.
+    #[test]
+    fn the_two_signed_payloads_cannot_be_made_equal() {
+        let (ceremony, _claim, participant, _v, _signer) = fixture();
+        let strip = |v: &[u8], tag: &[u8]| v[tag.len()..].to_vec();
+
+        // Case 1: same cohort, and the adversarial choice of every free field.
+        // 16 bytes of commitments is the shortest the attestation tail can be
+        // made without an empty commitment vector; the point is that even at its
+        // shortest it overshoots 32.
+        let commitment = ComponentCommitment {
+            cohort: Owners::NAME,
+            digest: [0x11u8; 32],
+        };
+        let a = strip(
+            &commitment_signing_payload(&ceremony, &commitment),
+            COMMIT_SIGNATURE_TAG,
+        );
+        for len in [0usize, 1, 16, 32] {
+            let b = strip(
+                &dkg_contribution_payload(
+                    &ceremony,
+                    Owners::NAME,
+                    &[0x11u8; 32],
+                    participant,
+                    &vec![0x11u8; len],
+                ),
+                DKG_CONTRIBUTION_TAG,
+            );
+            assert_ne!(a, b, "same cohort, {len}-byte commitments");
+            assert!(
+                b.len() > a.len(),
+                "the attestation tail must overshoot the endorsement's, which is \
+                 what makes the same-cohort case impossible rather than merely \
+                 unlikely",
+            );
+        }
+
+        // Case 2: cohort strings chosen so the TOTAL lengths coincide. The
+        // endorsement carries 32 tail bytes after its cohort, the attestation
+        // 32 + 8 + 8 + 0 = 48, so a cohort 16 bytes longer on the endorsement
+        // side makes the two the same length.
+        let long = "x".repeat(Owners::NAME.len() + 16);
+        let padded = ComponentCommitment {
+            cohort: Box::leak(long.into_boxed_str()),
+            digest: [0x11u8; 32],
+        };
+        let a = strip(
+            &commitment_signing_payload(&ceremony, &padded),
+            COMMIT_SIGNATURE_TAG,
+        );
+        let b = strip(
+            &dkg_contribution_payload(&ceremony, Owners::NAME, &[0x11u8; 32], participant, &[]),
+            DKG_CONTRIBUTION_TAG,
+        );
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "this case is only worth running if the two are the same length",
+        );
+        assert_ne!(
+            a, b,
+            "with the lengths matched it is the cohort length PREFIX that \
+             separates them, and it must",
+        );
     }
 }
