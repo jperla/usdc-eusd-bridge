@@ -31,17 +31,30 @@ pub struct Roster {
 }
 
 impl Roster {
-    /// Checked because both degenerate thresholds are reachable from a config
-    /// file: zero authorises every subset, and one above the roster authorises
-    /// none, which strands the funds rather than protecting them.
+    /// Reject degenerate thresholds and ambiguous participant identities.
+    /// Repeated ids must not overwrite a configured key, and one identity key
+    /// must not authenticate two different seats in attributable abort evidence.
     pub fn new(
         members: impl IntoIterator<Item = (ParticipantId, IdentityPublic)>,
         threshold: u16,
     ) -> Result<Self, Error> {
-        let members: BTreeMap<ParticipantId, IdentityPublic> = members.into_iter().collect();
         if threshold == 0 {
             return Err(Error::ThresholdZero);
         }
+        let mut checked = BTreeMap::new();
+        for (id, key) in members {
+            if id.0 == 0 {
+                return Err(Error::ReservedParticipantId);
+            }
+            if checked.contains_key(&id) {
+                return Err(Error::Duplicate(id));
+            }
+            if let Some((&first, _)) = checked.iter().find(|(_, previous)| **previous == key) {
+                return Err(Error::DuplicateIdentity { first, second: id });
+            }
+            checked.insert(id, key);
+        }
+        let members = checked;
         if threshold as usize > members.len() {
             return Err(Error::ThresholdExceedsRoster {
                 threshold,
@@ -93,6 +106,15 @@ pub enum Error {
     #[error("roster threshold {threshold} exceeds roster size {roster}")]
     ThresholdExceedsRoster { threshold: u16, roster: usize },
 
+    #[error("participant id 0 is reserved for the Shamir secret")]
+    ReservedParticipantId,
+
+    #[error("participants {first:?} and {second:?} have the same identity key")]
+    DuplicateIdentity { first: ParticipantId, second: ParticipantId },
+
+    #[error("local identity key does not match the roster for participant {0:?}")]
+    IdentityKeyMismatch(ParticipantId),
+
     #[error("participant {0:?} is not on the roster")]
     UnknownParticipant(ParticipantId),
 
@@ -102,7 +124,7 @@ pub enum Error {
     #[error("this signer {0:?} is not in the subset it was asked to sign with")]
     SelfNotInSubset(ParticipantId),
 
-    #[error("participant {0:?} already sent a message for this round")]
+    #[error("participant {0:?} appears more than once in this roster or round")]
     Duplicate(ParticipantId),
 
     #[error("round one is incomplete: {have} of {need} participants")]
@@ -318,6 +340,13 @@ impl<S: BindingStore, K: Anchor, A: Authorizer> Ceremony<S, K, A> {
             if self.roster.identity(id).is_none() {
                 return Err(Error::UnknownParticipant(id));
             }
+        }
+        // Our own messages enter the transcript directly; unlike peer messages,
+        // they do not pass receive_round_one's signature check. Validate the
+        // local key before creating a nonce or publishing an unauthenticated
+        // contribution (a one-seat ceremony could otherwise complete with it).
+        if self.roster.identity(self.me) != Some(&self.identity.public()) {
+            return Err(Error::IdentityKeyMismatch(self.me));
         }
         // Property 4. Checked before the backend is touched, so a sub-threshold
         // ceremony never produces a share at all -- a partial transcript from an

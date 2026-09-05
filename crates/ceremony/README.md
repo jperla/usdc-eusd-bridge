@@ -32,6 +32,17 @@ Each guard was checked by deleting it and confirming the named test fails.
 | 3. Identifiable abort | identity-signature checks + per-share verification | `identifiable_abort::{an_invalid_share_is_attributed_to_its_sender, a_round_message_signed_by_the_wrong_identity_key_is_refused, evidence_with_an_unauthenticated_round_one_message_is_rejected}` |
 | 3. Only a fault accuses | `Rejection::Fault` vs `Rejection::Error` | `identifiable_abort::{a_backend_outage_accuses_no_one, a_checker_that_cannot_check_does_not_convict}` |
 | 4. Sub-threshold cannot complete | `subset.len() < threshold` in `begin` | `threshold::a_sub_threshold_subset_is_refused_before_any_one_time_value_exists` |
+| Per-seat identity configuration | reject duplicate/zero participant ids, duplicate identity keys, and a local key that differs from its roster entry before round one | `roster_identity.rs` |
+
+Each of the four configuration guards was disabled individually in an isolated
+checkout. Each mutation failed exactly its corresponding test in
+`roster_identity.rs`, while the other three passed; the unmodified and restored
+controls passed all four. Without the local identity check, a separate witness
+completed a one-seat ceremony even though both of its identity signatures
+failed against the roster's key. The guard now refuses before a nonce exists.
+Moving that guard after the backend's round-one call also fails the regression:
+an instrumented real signer counts nonce allocations, with an honest control
+that demonstrates the counter increments.
 
 Two tests carry the weight of the whole file set, because they show the guards
 are not bookkeeping:
@@ -54,16 +65,9 @@ one.
 cargo test --offline -p ceremony
 ```
 
-At the time of writing this fails before reaching the crate, for a reason in the
-workspace root manifest rather than in this crate: the vendored MobileCoin
-checkout is a path dependency inside the workspace directory, so cargo adopts
-its crates as members of *this* workspace and they then try to inherit
-`workspace.package.rust-version` from a root that does not define it. The fix is
-one line in the root `Cargo.toml`, which this crate does not own:
-
-```toml
-exclude = ["vendor/mobilecoin", "vendor/serai"]
-```
+Run `./scripts/setup.sh` from the checkout root first so the vendored sources
+and locked dependencies are present. `--offline` deliberately fails if a
+required package is not already cached; such a failure is not a test result.
 
 ## What this crate does NOT establish
 

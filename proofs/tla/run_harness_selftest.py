@@ -45,6 +45,14 @@ CASES = [
      f"{COMPLETED}\n0 states generated", 0, ERROR,
      "a model that generated nothing checked nothing"),
 
+    ("zero progress, positive final summary",
+     f"0 states generated\n{COMPLETED}\n{STATES}", 0, CLEAN,
+     "progress counts do not replace the final summary"),
+
+    ("positive progress, zero final summary",
+     f"{STATES}\n{COMPLETED}\n0 states generated", 0, ERROR,
+     "earlier progress must not conceal an empty final count"),
+
     ("violation with a trace",
      f"Error: Invariant INV_Foo is violated.\n{TRACE}\n{STATES}", 12, VIOLATED,
      "the ordinary catch"),
@@ -188,6 +196,64 @@ def bridge_v3_cases():
     return out
 
 
+def isolated_execution_cases():
+    """Configs, models and execution errors remain isolated without a JVM."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+    import tlc_harness as harness
+
+    failures = []
+    with tempfile.TemporaryDirectory(prefix="harness-selftest-") as raw:
+        fixture = Path(raw)
+        java = fixture / "java"
+        jar = fixture / "tla2tools.jar"
+        model = fixture / "Model.tla"
+        config = fixture / "input.cfg"
+        for path, value in [(java, "stub"), (jar, "stub"),
+                            (model, "model snapshot"), (config, "config snapshot")]:
+            path.write_text(value)
+        workdirs = []
+
+        def complete(command, **kwargs):
+            work = Path(kwargs["cwd"])
+            workdirs.append(work)
+            if work == fixture or work == harness.HERE:
+                failures.append("TLC did not receive a private working directory")
+            if (work / model.name).read_text() != model.read_text():
+                failures.append("TLC model snapshot differs from requested source")
+            if (work / config.name).read_text() != config.read_text():
+                failures.append("TLC config snapshot differs from requested config")
+            if command[command.index("-config") + 1] != config.name:
+                failures.append("TLC config is not relative to its private model directory")
+            return subprocess.CompletedProcess(command, 0,
+                stdout=f"{COMPLETED}\n{STATES}", stderr="")
+
+        with patch.object(harness, "JAVA", str(java)), patch.object(harness, "JAR", jar):
+            with patch.object(harness.subprocess, "run", side_effect=complete):
+                result = harness.run(str(model), config)
+            if result.status != CLEAN:
+                failures.append(f"isolated successful invocation: {result}")
+            if any(work.exists() for work in workdirs):
+                failures.append("TLC work directory was not removed after completion")
+            with patch.object(harness.subprocess, "run", side_effect=OSError("cannot execute")):
+                result = harness.run(str(model), config)
+            if result.status != ERROR:
+                failures.append("an execution OSError did not fail closed")
+
+        with patch.dict("os.environ", {"JAVA_BIN": str(java)}, clear=True):
+            if harness.java_binary() != str(java):
+                failures.append("JAVA_BIN override was ignored")
+        with patch.dict("os.environ", {"JAVA_HOME": str(fixture)}, clear=True):
+            if harness.java_binary() != str(fixture / "bin" / "java"):
+                failures.append("JAVA_HOME override was ignored")
+
+    print(f"  {'isolated execution, cleanup and tool selection':<52} "
+          f"{'WRONG' if failures else 'ok'}")
+    return failures
+
+
 def main():
     fails = []
     print("=" * 78)
@@ -201,6 +267,10 @@ def main():
         if not ok:
             fails.append(f"{label}: wanted {want}, got {r.status} ({r.detail}) "
                          f"-- {why}")
+
+    counts = classify(f"7 states generated\n{COMPLETED}\n{STATES}", 0)
+    if counts.states != 12345:
+        fails.append(f"reported progress count instead of final count: {counts.states}")
 
     # `expect()` is the other place a wrong answer would be invisible: a run
     # that violates some OTHER invariant must not count as a hit for the one the
@@ -232,6 +302,7 @@ def main():
 
     print()
     fails.extend(bridge_v3_cases())
+    fails.extend(isolated_execution_cases())
 
     print()
     if fails:

@@ -6,9 +6,10 @@
 //! take its shape from here.
 //!
 //! **Decided: 3 operators at 2-of-3, and 1 independent gate.** Four seats;
-//! three must be compromised before funds can move -- *given* three premises.
-//! **One of the three is now enforced in code; the other two are not, and
-//! nothing any artifact can carry would enforce them:**
+//! three must be compromised before funds can move, given secure independent
+//! DKG randomness and the three possession/control premises below. **One of
+//! these three is enforced in code; the other two are not, and nothing any
+//! artifact can carry would enforce them:**
 //!
 //!   1. **UNBUILDABLE.** The four seats are four independent principals. Four
 //!      keys are four keys; whether four keys are four organisations is a fact
@@ -27,6 +28,13 @@
 //!      not that one actor held both secrets, not that the endorser is the
 //!      share's only holder (that is premise 2), not that the two witnesses are
 //!      distinct, and not present possession.
+//!
+//! Threshold secrecy also requires independent, honestly sampled DKG
+//! coefficients. Structural audit does not prove this: `p(x)=b*(1+x)` passes
+//! as 2-of-3 while every individual owner computes `b=s_i/(1+i)`. The passing
+//! witness in `tests/correlated_shares.rs` clears this module's funding gate and
+//! signs with one owner plus the gate. Its real seat endorsements do not
+//! establish coefficient randomness or historical execution of honest DKG.
 //!
 //! Premise 2 was missing from this headline and premise 3 was not stated
 //! anywhere until review; both are rows in
@@ -243,8 +251,9 @@
 //! canonical, non-empty, bounded, in its own control domain and disjoint from
 //! the other's; no component and no verification share is the identity; each
 //! reveal opens the commitment that was signed; and the declared degree is
-//! exact, so no subset smaller than the declared threshold reconstructs a
-//! component.
+//! exact, and no subset smaller than the declared threshold reaches a component
+//! using that subset's standard Lagrange interpolation. This does not rule out
+//! reconstruction using correlated coefficients or retained shares.
 //!
 //! Further trust conditions ride along and are named rather than folded in: the
 //! funder must have the two keys FROM the two organisations; must hold the view

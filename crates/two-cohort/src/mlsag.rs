@@ -176,9 +176,10 @@
 //! caught by `finish`. Neither can produce a signature that verifies. It does
 //! matter for ATTRIBUTION: `ResponseDoesNotOpenNonce { role }` names the seat
 //! whose published values are inconsistent, which is the seat that holds the
-//! wrong share only if seats hold what they were dealt. Verification shares
-//! (VSS) would make that checkable; there are none, because there is no dealing
-//! ceremony.
+//! wrong share only if seats hold what they were dealt. The DKG now provides
+//! verification shares, and `CohortShare::term` derives a holder's weighted
+//! term from them. This coordinator does not receive an authenticated DKG
+//! registry or compare each advertised `W_i` with its roster's expected term.
 //!
 //! # Limits
 //!
@@ -188,10 +189,11 @@
 //!   documented limitation and not a bypass: the two MLSAG rows are mandatory
 //!   conjuncts -- the verifier recomputes `L0`, `R0` *and* `L1` into one
 //!   challenge -- so row 1 cannot compensate for a missing gate term in row 0.
-//! * **Trusted dealer.** The shares these participants hold still come from
-//!   [`CompositeSpend::simulate`](crate::CompositeSpend::simulate), which
-//!   generates both component secrets in one process. This module removes `x`
-//!   from the SIGNING path; it does not add a DKG, VSS, or proof of possession.
+//! * **Key generation is supplied by the caller.** Production holders can use
+//!   [`CohortShare::term`](crate::CohortShare::term) after DKG and composition;
+//!   [`quorum_signers`] instead takes the trusted-dealer simulation, which
+//!   generates both component secrets in one process. The coordinator's
+//!   signature checks do not establish which of those paths supplied a seat.
 //! * **No policy over a decoded transaction.** See above: participants hold the
 //!   message bytes, not amounts and recipients.
 //! * **No concurrency defence (ROS / Drijvers).** One nonce commitment per

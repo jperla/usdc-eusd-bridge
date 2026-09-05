@@ -112,7 +112,8 @@
 //! one-sided check lets a cohort publish any threshold at or above its real one
 //! and [`AuditedRoot::structure`] reports seats to a funder that the cohort does
 //! not need. [`audit`] therefore checks that every `t`-subset reaches the same
-//! component AND that NO subset of ANY size below `t` reaches it.
+//! component AND that NO subset of ANY size below `t` reaches it using the
+//! standard Lagrange coefficients for that subset.
 //!
 //! Every size, not just `t-1`, and the difference is a defect this crate
 //! shipped: `t-1` alone establishes polynomial DEGREE, which comes apart from
@@ -123,6 +124,16 @@
 //! performs it. Cost is `C(n,t) + sum_{s=1}^{t-1} C(n,s)` interpolations,
 //! bounded by `2^MAX_AUDITED_ROSTER`. Two places in this header said `C(n,t) +
 //! C(n,t-1)` after the code had stopped doing that; review caught both.
+//!
+//! **This does not prove a minimum coalition size against malicious dealing.**
+//! `p(x) = b*(1+x)` has exact degree one, every pair reconstructs `b`, and no
+//! singleton equals `b`; it passes these checks as 2-of-3. Nevertheless any
+//! seat at point `i` recovers `b = s_i/(1+i)`. Possession proofs do not prove
+//! that polynomial coefficients were generated independently. The passing
+//! witness in `tests/correlated_shares.rs` reaches the production funding gate
+//! and spends with one owner plus the gate. Threshold secrecy additionally
+//! requires honest, independent DKG randomness and holders enforcing their
+//! locally generated claims; the artifact alone does not certify those facts.
 //!
 //! # What a funder can check, and what it still cannot
 //!
@@ -437,7 +448,7 @@ const DKG_ROSTER_TAG: &[u8] = b"two-cohort/composition/dkg-roster/v1";
 /// Largest roster [`audit`] will enumerate qualifying subsets of.
 ///
 /// The consistency check is `C(n, t)` interpolations for the upper bound on the
-/// degree plus `sum_{s<t} C(n, s)` for the lower bound on the minimum coalition,
+/// degree plus `sum_{s<t} C(n, s)` for excluding smaller standard interpolations,
 /// so at worst `2^n` -- 65536 interpolations at `n = 16`, each over at most 16
 /// points. 16 is far above the decided structure (3 owners, 1 gate); a roster
 /// past it is refused rather than silently made slow.
@@ -1456,7 +1467,10 @@ impl ComponentClaim {
     ///     returns `Ok`, and [`AuditedRoot::structure`] reports seats to a funder
     ///     that the cohort does not need.
     ///
-    /// Together they are the polynomial condition, not an approximation of it.
+    /// Together they establish the polynomial condition and reject smaller
+    /// standard interpolations. They do not establish entropy or independence
+    /// of the coefficients, and hence do not prove threshold secrecy against
+    /// malicious dealing; see the module's correlated-coefficient witness.
     fn check_consistency<C: ControlDomain>(&self) -> Result<()> {
         // The evaluation points are not recoverable from the artifact and do
         // not need to be, because they are not free: PedPoP evaluates its
@@ -1509,16 +1523,17 @@ impl ComponentClaim {
         // threshold and not only the `(t-1)`-subsets.
         //
         // WHY EVERY SIZE. Checking `t-1` alone establishes that the polynomial's
-        // degree is exactly `t-1`. Degree is not minimum coalition size, and the
-        // two come apart from `t = 3` upward. Review supplied the counterexample:
+        // degree is exactly `t-1`. It does not rule out every smaller standard
+        // interpolation. Review supplied this example at `t = 3`:
         //
         //     p(x) = b + a*x*(x - 1)     over evaluation points 1, 2, 3
         //
         // has degree 2, so no PAIR of seats interpolates to `b` and a declared
         // threshold of 3 is not an overstated degree -- but `p(1) = b`, so seat 1
         // holds the component outright. `AuditedRoot::structure` reports the
-        // declared threshold to a funder as the number of seats that must act,
-        // so the claim being checked has to be the coalition one.
+        // declared threshold to a funder, so even this elementary singleton
+        // recovery must be rejected. This check still cannot rule out recovery
+        // using a known relation between coefficients, such as p(x)=b*(1+x).
         // `composition.rs::a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree`
         // performs exactly that dealing, and returned `Ok` from `audit` before
         // this loop enumerated the smaller sizes.
@@ -2955,8 +2970,9 @@ impl CompositionArtifact {
 ///
 /// The whole of the funder's question about one side of the address in one
 /// value: WHO (the identity key that endorsed the commitment, checked against
-/// the one the funder supplied), HOW MANY seats are required, WHICH seats exist,
-/// and what they collectively control.
+/// the one the funder supplied), the declared interpolation threshold, WHICH
+/// seats exist, and what they collectively control. The threshold is a secrecy
+/// bound only under the DKG assumptions described in this module.
 ///
 /// It exists so that a caller comparing an audited root against a decided
 /// structure compares VALUES rather than reaching into the reveals -- the
@@ -3014,8 +3030,10 @@ impl CohortStructure {
         &self.seats
     }
 
-    /// Seats required to sign. Established in both directions: every subset this
-    /// size reconstructs the component, and no smaller subset does.
+    /// Declared interpolation threshold. Every subset this size reconstructs
+    /// the component, and no smaller subset's standard Lagrange interpolation
+    /// does. This is not proof that a smaller coalition cannot recover the
+    /// secret through correlated coefficients or retained copies of shares.
     pub fn threshold(&self) -> usize {
         self.threshold
     }

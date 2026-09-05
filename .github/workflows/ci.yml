@@ -4,7 +4,7 @@ on:
   push:
   pull_request:
 
-# Only the Solidity half runs here. The Rust workspace path-depends on a
+# Solidity, runner controls, and finite-state proof checks run here. Rust path-depends on a
 # MobileCoin checkout that scripts/setup.sh clones at a pinned revision, and
 # that graph pulls four more git forks including mbedtls, which needs a C
 # toolchain. Nobody has run that on a Linux runner, so it is not asserted here.
@@ -38,3 +38,24 @@ jobs:
       - name: Run the contract suite
         working-directory: contracts
         run: node test/run.mjs
+
+      - name: Check test runner failure propagation
+        run: node --test scripts/test-runners.mjs
+
+  proofs:
+    name: TLA+ models and negative controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install checksum-pinned TLC
+        run: ./scripts/setup-proofs.sh
+      - name: Run proof runners
+        run: ./scripts/proofs.sh

@@ -20,15 +20,13 @@ from pathlib import Path
 # This runner predates the shared harness and parses TLC itself. It borrows the
 # two pieces that decide whether a run may be BELIEVED, so the fail-closed rule
 # lives in one place even though the parsing does not.
-from tlc_harness import TRACE_VIOLATION_RC, fatal
+from tlc_harness import JAVA, JAR, TRACE_VIOLATION_RC, fatal
 
 
 HERE = Path(__file__).resolve().parent
 MODEL = HERE / "BridgeEscrowV3.tla"
 BASELINE_CFG = HERE / "BridgeEscrowV3.cfg"
 HONEST_CFG = HERE / "BridgeEscrowV3_honest.cfg"
-JAR = Path(os.environ.get("TLA2TOOLS_JAR", "/Users/jperla/josh/spec/tla2tools.jar"))
-JAVA = os.environ.get("JAVA_BIN", "/opt/homebrew/opt/openjdk@21/bin/java")
 
 BASELINE_INVARIANTS = (
     "TypeOK",

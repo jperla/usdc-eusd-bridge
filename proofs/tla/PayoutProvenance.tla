@@ -52,6 +52,14 @@ VARIABLES
 
 vars == <<paid, redeemed, trueVal, trueTok, truePayee>>
 
+ASSUME Outputs # {} /\ Values # {} /\ Tokens # {} /\ Payees # {}
+TypeOK ==
+    /\ paid \subseteq (Outputs \X Values \X Tokens \X Payees)
+    /\ redeemed \subseteq Outputs
+    /\ trueVal \in [Outputs -> Values]
+    /\ trueTok \in [Outputs -> Tokens]
+    /\ truePayee \in [Outputs -> Payees]
+
 (* Each output HAS one true opening, fixed for all time and different outputs
    may differ. Chosen nondeterministically at Init and never written again, so
    TLC explores every assignment rather than one.
@@ -96,21 +104,27 @@ Spec == Init /\ [][Next]_vars
    itself opens to. With any field left to the submitter, this fails: the same
    authenticated output yields a payout the output does not name.
 
-   Each conjunct is state-dependent -- it compares what was paid against what
-   the output opens to -- so none of them can hold by construction. *)
+   These are state-dependent comparisons. Their baseline truth follows from
+   the definition of derived fields; this is not an implementation proof. *)
+INV_AmountPinned == \A t \in paid : t[2] = trueVal[t[1]]
+INV_TokenPinned == \A t \in paid : t[3] = trueTok[t[1]]
+INV_PayeePinned == \A t \in paid : t[4] = truePayee[t[1]]
 INV_PayoutPinnedByOutput ==
-    \A t \in paid :
-        /\ t[2] = trueVal[t[1]]
-        /\ t[3] = trueTok[t[1]]
-        /\ t[4] = truePayee[t[1]]
+    INV_AmountPinned /\ INV_TokenPinned /\ INV_PayeePinned
 
-(* Stated separately because it is the consequence that costs money. One
-   authenticated output must not be able to produce two different payouts.
-   Replay alone does not give this: the replay set stops a second REDEMPTION,
-   but with a free field the FIRST redemption was already the submitter's
-   choice out of many, and TLC will exhibit two runs that differ. *)
+(* WITHIN ONE RUN only. Replay makes this hold even if every field is free.
+   It does not compare outcomes in different runs and must not be cited as
+   proof that a relayer cannot choose the first payout. *)
 INV_OneOutputOneOutcome ==
     \A t1, t2 \in paid : t1[1] = t2[1] => t1 = t2
+
+(* Compare all choices available for the SAME authenticated output. This
+   detects relayer discretion before replay state can hide it. It is a
+   state predicate over this model's transition relation, not a general
+   cross-run theorem about the deployed contract. *)
+INV_RelayerChoiceIndependent ==
+    \A o \in Outputs :
+        Cardinality(UsableValues(o) \X UsableTokens(o) \X UsablePayees(o)) = 1
 
 (*------------------------------- coverage --------------------------------*)
 
@@ -118,5 +132,10 @@ INV_OneOutputOneOutcome ==
    invariant above. This must be violated in a run that reaches a payout, so
    a spec too dead to move is visible instead of passing quietly. *)
 COV_CanPay == paid = {}
+COV_DifferentOutputsPay ==
+    ~(\E a, b \in Outputs : a # b
+        /\ trueVal[a] # trueVal[b] /\ trueTok[a] # trueTok[b]
+        /\ truePayee[a] # truePayee[b]
+        /\ a \in redeemed /\ b \in redeemed)
 
 =============================================================================

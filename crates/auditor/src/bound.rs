@@ -52,10 +52,24 @@ pub enum RateError {
 /// is how a rate limit is actually configured ("at most 250k USDC per hour"),
 /// and because per-second would force a lossy division at construction time --
 /// exactly where a rounding error becomes a permanently under-stated bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct ReleaseRate {
     max_amount: Amount,
     window: Duration,
+}
+
+impl<'de> Deserialize<'de> for ReleaseRate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct RawRate {
+            max_amount: Amount,
+            window: Duration,
+        }
+        let raw = RawRate::deserialize(deserializer)?;
+        // JSON is a construction path too. Deriving Deserialize directly on
+        // ReleaseRate bypassed new() and admitted a zero divisor in the bound.
+        Self::new(raw.max_amount, raw.window).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ReleaseRate {

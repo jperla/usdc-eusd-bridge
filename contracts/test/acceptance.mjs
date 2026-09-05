@@ -1,13 +1,13 @@
-// THE ACCEPTANCE TEST — the objective from docs/FINAL-PLAN.md, end to end.
+// Component acceptance for the objective from docs/FINAL-PLAN.md.
 //
 //   1. handle a USDC deposit into an Ethereum escrow account
 //   2. upon verified USDC deposit, release eUSD from the eUSD escrow wallet
 //   3. when eUSD is returned, release USDC from the Ethereum escrow account
 //
 // Legs 1 and 3 run here against a real EVM executing real compiled bytecode.
-// Leg 2 happens on MobileCoin and is established in Rust against MobileCoin's
-// own unmodified verifier; `scripts/acceptance.sh` runs that half first and
-// this file asserts the handoff rather than restating it.
+// Leg 2's signing primitives are checked separately in Rust against MobileCoin's
+// unmodified verifier. `scripts/acceptance.sh` runs those checks first. They do
+// not consume this EVM deposit or submit a transaction to MobileCoin.
 //
 // Leg 3 uses the REAL MobileCoinVerifier over a proof produced by
 // `crates/mc-return` from a real Block, a real BlockSignature, a real TxOut and
@@ -16,7 +16,7 @@
 // WHAT IS STILL NOT ESTABLISHED IS PRINTED AT THE END. Read it before quoting a
 // pass here as evidence that the bridge is safe to fund.
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -172,13 +172,30 @@ const chain = await Chain.create({
 const balanceOf = async (usdc, who) => decodeUint((await chain.must(
   usdc, selector('balanceOf(address)') + addrWord(who))).ret);
 
-const release = (escrow, p, enc = encodeProof) => chain.call(escrow,
-  encodeWithTrailingBytes('release(bytes)', [], '0x' + enc(p)),
-  { from: RELAYER });
+// A conservative execution budget for the complete transaction, including
+// intrinsic calldata cost. This is a regression budget, not a claim about
+// the current Ethereum block gas limit.
+const TRANSACTION_GAS_BUDGET = 30_000_000;
+const releaseData = (p, enc = encodeProof) =>
+  encodeWithTrailingBytes('release(bytes)', [], '0x' + enc(p));
+const intrinsicGas = (data) => 21_000 + [...Buffer.from(data.slice(2), 'hex')]
+  .reduce((sum, byte) => sum + (byte === 0 ? 4 : 16), 0);
+const release = (escrow, p, enc = encodeProof) => {
+  const data = releaseData(p, enc);
+  return chain.call(escrow, data, {
+    from: RELAYER,
+    gasLimit: BigInt(TRANSACTION_GAS_BUDGET - intrinsicGas(data)),
+  });
+};
+const requireError = (result, signature) => {
+  assert(!result.ok, `expected ${signature}, call succeeded`);
+  assertEq(result.ret.slice(0, 10), selector(signature),
+    `wrong refusal: ${revertReason(result.ret)}`);
+};
 
 /// The bridge as it would be deployed: escrow, a registry with the block's real
 /// signers enrolled as distinct entities, and the real verifier.
-async function deployBridge() {
+async function deployBridge(memoDomain = MEMO_DOMAIN) {
   const usdc = await chain.deploy('MockERC20');
 
   const reg = await chain.deploy('ValidatorRegistry',
@@ -199,7 +216,7 @@ async function deployBridge() {
     b32(FIX.disclosure.view_private_key));
   const verifier = await chain.deploy('MobileCoinVerifier',
     addrWord(reg) + b32(FIX.disclosure.recovered_subaddress_spend_key) +
-    word(TOKEN_ID) + b32(MEMO_DOMAIN) + addrWord(rc));
+    word(TOKEN_ID) + b32(memoDomain) + addrWord(rc));
 
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
@@ -210,7 +227,7 @@ async function deployBridge() {
 
 const B = await deployBridge();
 
-console.log('\nACCEPTANCE — docs/FINAL-PLAN.md, the three legs');
+console.log('\nEVM ACCEPTANCE — custody and MobileCoin return verification');
 
 // ---------------------------------------------------------------------- LEG 1
 
@@ -236,23 +253,6 @@ await test('LEG 1: a USDC deposit is custodied and announced to the operators',
   // Ethereum can announce the deposit; it cannot compel the eUSD release. That
   // asymmetry is why this leg is attested and capped rather than trustless.
   assertEq(r.logs[0].topics[3], mobDest, 'MobileCoin destination announced');
-});
-
-// ---------------------------------------------------------------------- LEG 2
-
-await test('LEG 2: releasing eUSD needs BOTH cohorts (proven in Rust)', async () => {
-  // scripts/acceptance.sh runs the two-cohort tests before this file. They
-  // check the composite spend key against MobileCoin's UNMODIFIED RingMLSAG
-  // verifier, including the negative case: a scalar missing the gate cohort's
-  // share produces a signature the stock verifier returns InvalidSignature for.
-  const spike = join(ROOT, 'proofs', 'executable', 'm2d-two-cohort', 'src', 'lib.rs');
-  assert(existsSync(spike), 'two-cohort artifact missing');
-  const src = readFileSync(spike, 'utf8');
-  for (const t of [
-    'an_owner_only_scalar_is_rejected_by_the_stock_verifier',
-    'key_image_is_invariant_across_every_owner_gate_subset_pair',
-    'stock_verifier_accepts_every_subset_pair',
-  ]) assert(src.includes(t), `missing from the artifact: ${t}`);
 });
 
 // ---------------------------------------------------------------------- LEG 3
@@ -282,8 +282,7 @@ await test('LEG 3: a REAL MobileCoin return releases USDC to the payee IN THE OU
 await test('LEG 3: the same return cannot be redeemed twice', async () => {
   await chain.must(B.usdc,
     selector('mint(address,uint256)') + addrWord(B.escrow) + word(AMOUNT * 4n));
-  assert(!(await release(B.escrow, proof())).ok,
-    'replay of a spent output must revert');
+  requireError(await release(B.escrow, proof()), 'AlreadyRedeemed(bytes32)');
 });
 
 await test('LEG 3: a forged signature releases nothing', async () => {
@@ -293,9 +292,15 @@ await test('LEG 3: a forged signature releases nothing', async () => {
   forged.signatures = forged.signatures.map((s, i) => i === 0
     ? ['0x' + (BigInt(s[0]) ^ 1n).toString(16).padStart(64, '0'), s[1]] : s);
 
-  const before = await balanceOf(B.usdc, BOB);
-  assert(!(await release(B.escrow, forged)).ok, 'forged signature must not release');
-  assertEq(await balanceOf(B.usdc, BOB), before, 'no USDC moved');
+  const fresh = await deployBridge();
+  await chain.must(fresh.usdc,
+    selector('mint(address,uint256)') + addrWord(fresh.escrow) + word(AMOUNT));
+  requireError(await release(fresh.escrow, forged), 'BadSignature(uint256)');
+  assertEq(await balanceOf(fresh.usdc, BOB), 0n, 'no USDC moved');
+  // The unmodified proof must still redeem this same funded escrow, proving
+  // the negative case did not pass on replay/insolvency and did not consume it.
+  assert((await release(fresh.escrow, proof())).ok, 'honest retry must release');
+  assertEq(await balanceOf(fresh.usdc, BOB), AMOUNT, 'honest payee received funds');
 });
 
 await test('LEG 3: an output not in the signed block releases nothing', async () => {
@@ -304,9 +309,13 @@ await test('LEG 3: an output not in the signed block releases nothing', async ()
     publicKey: '0x' + (BigInt(foreign.txOut.publicKey) ^ 1n)
       .toString(16).padStart(64, '0') };
 
-  const before = await balanceOf(B.usdc, BOB);
-  assert(!(await release(B.escrow, foreign)).ok, 'foreign output must not release');
-  assertEq(await balanceOf(B.usdc, BOB), before, 'no USDC moved');
+  const fresh = await deployBridge();
+  await chain.must(fresh.usdc,
+    selector('mint(address,uint256)') + addrWord(fresh.escrow) + word(AMOUNT));
+  requireError(await release(fresh.escrow, foreign), 'MembershipFailed()');
+  assertEq(await balanceOf(fresh.usdc, BOB), 0n, 'no USDC moved');
+  assert((await release(fresh.escrow, proof())).ok, 'honest retry must release');
+  assertEq(await balanceOf(fresh.usdc, BOB), AMOUNT, 'honest payee received funds');
 });
 
 await test('LEG 3: a relayer cannot name the amount or the payee', async () => {
@@ -532,38 +541,46 @@ await test('LIVENESS, NOT SAFETY: an escrow whose token id does not match its '
   assertEq(await balanceOf(usdc, BOB), AMOUNT, 'the payee was paid');
 });
 
+await test('DEPLOYMENT LIMIT: retagging one return pays two escrows sharing its address',
+  async () => {
+  // This is a witness to a remaining limitation, NOT a passing safety property.
+  // B has already paid this output. A second independently funded deployment
+  // with the same return address has independent replay storage. Its tag is
+  // not in the authenticated memo and a relayer can simply replace it.
+  const otherDomain = '0x' + 'd7'.repeat(32);
+  const second = await deployBridge(otherDomain);
+  await chain.must(second.usdc,
+    selector('mint(address,uint256)') + addrWord(second.escrow) + word(AMOUNT));
+  requireError(await release(second.escrow, proof()),
+    'WrongMemoDomain(bytes32,bytes32)');
+  const retagged = { ...proof(), memoDomainTag: otherDomain };
+  const r = await release(second.escrow, retagged);
+  assert(r.ok, `expected cross-deployment witness: ${revertReason(r.ret)}`);
+  assertEq(await balanceOf(second.usdc, BOB), AMOUNT, 'second deployment paid');
+  requireError(await release(B.escrow, proof()), 'AlreadyRedeemed(bytes32)');
+});
+
+await test('the complete return transaction stays within its gas budget', async () => {
+  assert(releaseGas > 0, 'the successful payout did not execute');
+  const total = releaseGas + intrinsicGas(releaseData(proof()));
+  assert(total <= TRANSACTION_GAS_BUDGET,
+    `release costs ${total} gas, budget ${TRANSACTION_GAS_BUDGET}`);
+});
+
 const ok = summary();
 
-const BLOCK_GAS_LIMIT = 30_000_000;
 console.log('');
-console.log(`  one full release (verify + payout): ${releaseGas.toLocaleString()} gas`);
-if (releaseGas > BLOCK_GAS_LIMIT) {
-  console.log('');
-  console.log('  ' + '!'.repeat(66));
-  console.log(`  THIS DOES NOT FIT IN AN ETHEREUM BLOCK. The limit is ` +
-    `${BLOCK_GAS_LIMIT.toLocaleString()};`);
-  console.log(`  this call needs ${(releaseGas / BLOCK_GAS_LIMIT * 100).toFixed(0)}% of it. ` +
-    `A transaction cannot exceed the block`);
-  console.log('  limit at any price, so the return leg as built is UNLANDABLE on');
-  console.log('  Ethereum L1. It is verified, and it does not fit.');
-  console.log('  ' + '!'.repeat(66));
-}
+console.log(`  release execution (verify + payout): ${releaseGas.toLocaleString()} gas`);
+console.log(`  including intrinsic gas: ${(releaseGas + intrinsicGas(releaseData(proof()))).toLocaleString()}`);
+console.log(`  tested transaction budget: ${TRANSACTION_GAS_BUDGET.toLocaleString()} gas`);
 console.log('');
 console.log('='.repeat(72));
 console.log('ESTABLISHED BY THIS RUN');
 console.log('='.repeat(72));
 console.log('  Leg 1  USDC is really custodied; the destination is announced.');
-console.log("  Leg 2  A scalar missing the gate share cannot satisfy stock MLSAG:");
-console.log("         MobileCoin's UNMODIFIED verifier returns InvalidSignature.");
-console.log('         Proven in Rust; run by scripts/acceptance.sh.');
-console.log('         AND THE SCALAR IS NEVER FORMED. Two-round commit/respond,');
-console.log('         no party ever holds the composite spend key:');
-console.log('         the_stock_verifier_accepts_a_signature_produced_without_');
-console.log('         forming_the_scalar, plus 21 more in mlsag_protocol.rs.');
-console.log('         Scoped to that module\'s three seat constructors --');
-console.log('         Cohort::reconstruct still exists for tests that need an');
-console.log('         independent answer, and quorum_signers is a one-process');
-console.log('         simulation helper.');
+console.log('  Leg 2  Not executed by this JavaScript suite.');
+console.log('         scripts/acceptance.sh runs the actual Rust tests first and');
+console.log('         stops on any Rust failure. Source names are not evidence.');
 console.log('  Leg 3  A proof built by MobileCoin\'s own crates -- real Block,');
 console.log('         real BlockSignature, real TxOut, real membership proof --');
 console.log('         is checked by the REAL on-chain verifier and pays the');
@@ -591,6 +608,17 @@ console.log('NOT ESTABLISHED — THE BRIDGE IS NOT READY TO HOLD FUNDS');
 console.log('='.repeat(72));
 console.log('  * NO LIVE CEREMONY AND NO DEPLOYMENT. Everything below is code');
 console.log('    and tests. Nobody has generated a key anyone holds.');
+console.log('  * These are component integration tests using synthetic MobileCoin');
+console.log('    blocks and a test ERC20. No Ethereum deposit observer, real USDC,');
+console.log('    MobileCoin transaction submission, or cross-process signer ran.');
+console.log('  * Replay protection is PER ESCROW. The witness above pays the');
+console.log('    same output twice across deployments sharing a return address.');
+console.log('    memoDomainTag is relayer-editable, not authenticated. Require');
+console.log('    distinct return addresses, a memo-bound domain, or shared replay.');
+console.log('  * An audited 2-of-3 dealing does not prove threshold secrecy:');
+console.log('    correlated coefficients can let one owner recover the secret.');
+console.log('    The Rust counterexample uses genuine endorsements and passes');
+console.log('    the funding gate. Honest independent DKG randomness is required.');
 console.log('  * n seat keys are not n entities. Nothing can establish that,');
 console.log('    and no later work will change it -- it is the assumption the');
 console.log('    whole structure rests on and it is discharged by who is');
@@ -609,15 +637,11 @@ console.log('    it would help.');
 console.log('  * The escrow\'s verifier is replaceable by governance after the');
 console.log('    timelock, which is equivalent to being able to forge returns.');
 console.log('    That is the trust model, deliberately; it is not a finding.');
-console.log('  * The ristretto255 one-way map has had ONE review (gpt-5.6-sol,');
-console.log('    reviews/elligator-sol.txt), which found two false comments --');
-console.log('    including SQRT_M1 documented as "changes no output" when the');
-console.log('    other root is a different map, 22 tests red. It also agrees');
-console.log('    with a THIRD implementation (@noble/curves 1.9.7, neither the');
-console.log('    fixture nor the contract) on 56 token ids and 62');
-console.log('    from_uniform_bytes vectors. That is real evidence and it is');
-console.log('    not an audit: one reviewer and two implementations that share');
-console.log('    a misreading of RFC 9496 would still pass.');
+console.log('  * Ristretto has specification review, dalek/noble differential');
+console.log('    checks and targeted mutation controls, including representative');
+console.log('    encodings and all official invalid vectors. This is finite');
+console.log('    evidence, not a proof of whole-group implementation correctness');
+console.log('    or a substitute for independent cryptographic review.');
 console.log('  * "No token id derives the identity" is a cryptographic');
 console.log('    heuristic (~2^-188), not a proof.');
 console.log('  * The escrow\'s token id and the verifier\'s are separate');

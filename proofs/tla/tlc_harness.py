@@ -44,6 +44,7 @@ Four defects, all found by review, all fixed here:
 Every result is one of three explicit outcomes -- CLEAN, VIOLATED, or ERROR --
 and ERROR is never silently treated as a pass.
 """
+import os
 import re
 import shutil
 import subprocess
@@ -51,8 +52,23 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-JAVA = "/opt/homebrew/opt/openjdk@21/bin/java"
-JAR = HERE / "tla2tools.jar"
+
+
+def java_binary():
+    """Honor explicit tool selection; avoid the macOS no-runtime java stub."""
+    if os.environ.get("JAVA_BIN"):
+        return shutil.which(os.environ["JAVA_BIN"]) or os.environ["JAVA_BIN"]
+    if os.environ.get("JAVA_HOME"):
+        return str(Path(os.environ["JAVA_HOME"]) / "bin" / "java")
+    for candidate in ("/opt/homebrew/opt/openjdk/bin/java",
+                      "/opt/homebrew/opt/openjdk@21/bin/java"):
+        if Path(candidate).is_file():
+            return candidate
+    return shutil.which("java") or "java"
+
+
+JAVA = java_binary()
+JAR = Path(os.environ.get("TLA2TOOLS_JAR", str(HERE / "tla2tools.jar"))).resolve()
 
 CLEAN, VIOLATED, ERROR = "CLEAN", "VIOLATED", "ERROR"
 
@@ -134,8 +150,10 @@ def classify(out, rc):
     The rule, on every path: the MARKER says what TLC found, the RETURN CODE
     says whether TLC finished finding it. Both must agree.
     """
-    m_states = re.search(r"([\d,]+) states generated", out)
-    states = int(m_states.group(1).replace(",", "")) if m_states else 0
+    # Long runs print progress counts before the final summary. Taking the
+    # first match reports timing-dependent partial counts as completed work.
+    state_counts = re.findall(r"([\d,]+) states generated", out)
+    states = int(state_counts[-1].replace(",", "")) if state_counts else 0
 
     m_viol = re.search(r"Invariant (\w+) is violated", out)
     # A state-independent invariant that is identically false gets a different
@@ -225,8 +243,19 @@ def run(module, cfg_path):
     # Two TLC processes in this checkout -- a runner and a mutation sweep, or
     # two sessions -- used to delete each other's state pool and die with
     # exceptions that the pre-fix classifier read as violations.
-    meta = tempfile.mkdtemp(prefix="tlc-", dir=HERE)
+    meta = tempfile.mkdtemp(prefix="tlc-")
     try:
+        # TLC resolves configs relative to the model directory even when an
+        # absolute path is supplied. Snapshot both into one private workdir;
+        # this also isolates generated configs and source-level mutants.
+        source = Path(module)
+        if not source.is_absolute():
+            source = HERE / source
+        config = Path(cfg_path)
+        if not config.is_absolute():
+            config = HERE / config
+        shutil.copy2(source, Path(meta) / source.name)
+        shutil.copy2(config, Path(meta) / config.name)
         p = subprocess.run(
             # -deadlock: terminal states are legitimate here (every deposit
             # released, every return redeemed, blocks exhausted). We assert
@@ -234,12 +263,16 @@ def run(module, cfg_path):
             # deadlock report entirely by treating "no invariant match" as a
             # pass; now it would be a loud ERROR, so it is disabled explicitly.
             [JAVA, "-XX:+UseParallelGC", "-cp", str(JAR), "tlc2.TLC",
-             "-config", Path(cfg_path).name, "-workers", "auto",
-             "-metadir", meta, "-deadlock", module],
-            cwd=HERE, capture_output=True, text=True, timeout=1800,
+             "-config", config.name,
+             "-workers", os.environ.get("TLC_WORKERS", "1"),
+             "-seed", "1", "-fp", "0",
+             "-metadir", str(Path(meta) / "states"), "-deadlock", source.name],
+            cwd=meta, capture_output=True, text=True, timeout=1800,
         )
     except subprocess.TimeoutExpired:
         return Result(ERROR, detail="TLC timed out")
+    except OSError as exc:
+        return Result(ERROR, detail=f"could not execute TLC: {exc}")
     finally:
         shutil.rmtree(meta, ignore_errors=True)
     return classify(p.stdout + p.stderr, p.returncode)

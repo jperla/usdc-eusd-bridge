@@ -785,16 +785,35 @@ await test('a bridge deployed for a different return address redeems nothing',
   assertRevertsWith(r, 'NotPayableToBridge()', 'wrong return address');
 });
 
-await test('a proof for another deployment of this bridge is refused', async () => {
+await test('a mismatched caller-supplied deployment tag is refused', async () => {
   // `memoDomainTag` is not in the MobileCoin data at all: it is a constant the
-  // submitter restates, so a proof assembled against one deployment cannot be
-  // handed to another. It is NOT what binds the memo -- that is the memo type,
-  // read out of the ciphertext below.
+  // submitter restates. It catches an unchanged proof's configuration
+  // mismatch; the test below demonstrates that a relayer can replace it.
+  // The authenticated memo type binds the purpose, not the deployment.
   const other = '0x' + Buffer.from('mc-bridge-return-v2')
     .toString('hex').padEnd(64, '0');
   const r = await callVerify(chain, V, mutate({ memoDomainTag: other }));
   assertRevertsWith(r, 'WrongMemoDomain(bytes32,bytes32)', 'wrong domain');
 });
+
+await test('LIMITATION: retagging the same signed output verifies in another deployment',
+  async () => {
+    const other = '0x' + Buffer.from('mc-bridge-return-v2')
+      .toString('hex').padEnd(64, '0');
+    const second = await deployVerifier(REG, realCheck, { memoDomain: other });
+    const original = await callVerify(chain, V, good());
+    assert(original.ok, 'control: the original deployment must accept');
+    const unchanged = await callVerify(chain, second, good());
+    assertRevertsWith(unchanged, 'WrongMemoDomain(bytes32,bytes32)',
+      'unchanged tag in second deployment');
+    const retagged = await callVerify(chain, second, mutate({ memoDomainTag: other }));
+    assert(retagged.ok, 'the deployment tag is not authenticated by the TxOut');
+    assertEq(retagged.ret, original.ret,
+      'retagging preserves the same output, beneficiary, amount, token and block');
+    // This is a demonstrated limitation, not a security property to preserve.
+    // Distinct funded escrows need disjoint return addresses or a deployment
+    // domain authenticated inside the encrypted memo (with a migration plan).
+  });
 
 // ================================================== THE PAYOUT IS DERIVED
 //

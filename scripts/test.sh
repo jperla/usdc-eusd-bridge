@@ -22,8 +22,11 @@ if [ ! -d vendor/mobilecoin/crypto/hashes ]; then
   exit 1
 fi
 
+echo "=== runner failure controls ==="
+node --test scripts/test-runners.mjs
+
 echo "=== rust ==="
-cargo test --offline "$@"
+cargo test --offline --locked "$@"
 
 echo
 echo "=== contracts ==="
@@ -31,4 +34,5 @@ echo "=== contracts ==="
 # from the lockfile if they are missing, so a fresh clone can run this script
 # without a separate documented step that someone has to remember.
 ./scripts/node-deps.sh
+node scripts/auditor-handoff.mjs
 cd contracts && node test/run.mjs

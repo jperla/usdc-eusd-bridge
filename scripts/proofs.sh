@@ -5,30 +5,31 @@
 # where the Rust and Solidity suites need neither. But they ARE part of the
 # evidence the README cites, so they need a command that runs them: a claim
 # nothing executes is a claim nobody checks.
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/../proofs/tla"
 
 # The tool is a jar, so a JVM is required. Homebrew's openjdk is keg-only and
 # is not linked into PATH by default, which presents as TLC "not finding a Java
 # runtime" while `brew list` shows it installed.
-if ! command -v java >/dev/null 2>&1; then
-  for d in /opt/homebrew/opt/openjdk/bin /opt/homebrew/opt/openjdk@21/bin \
-           /usr/lib/jvm/default-java/bin; do
-    [ -x "$d/java" ] && export PATH="$d:$PATH" && break
-  done
-fi
-if ! command -v java >/dev/null 2>&1; then
+JAVA_BIN=$(python3 -c 'from tlc_harness import JAVA; print(JAVA)')
+export JAVA_BIN
+if ! "$JAVA_BIN" -version >/dev/null 2>&1; then
   echo "no JVM found. Install one (brew install openjdk) or put java on PATH." >&2
   exit 2
 fi
-[ -f tla2tools.jar ] || {
+TLA2TOOLS_JAR=$(python3 -c 'from tlc_harness import JAR; print(JAR)')
+export TLA2TOOLS_JAR
+[ -f "$TLA2TOOLS_JAR" ] || {
   echo "proofs/tla/tla2tools.jar is missing. It is deliberately not committed" >&2
-  echo "(a tool, not a source artifact); fetch it from the TLA+ releases." >&2
+  echo "Run ./scripts/setup-proofs.sh from the repository root to fetch the pinned tool." >&2
   exit 2
 }
 
+shopt -s nullglob
+runners=(run_*.py)
+[ ${#runners[@]} -gt 0 ] || { echo "no proof runners found" >&2; exit 2; }
 pass=0; fail=0; failed=()
-for r in run_*.py; do
+for r in "${runners[@]}"; do
   printf '%-34s ' "$r"
   if out=$(python3 "$r" 2>&1); then
     echo "PASS"; pass=$((pass + 1))

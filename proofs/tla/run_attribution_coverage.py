@@ -1,458 +1,113 @@
 #!/usr/bin/env python3
-"""Does what the artifact ATTRIBUTES support the guarantee the structure claims?
-
-Written BEFORE the per-seat rework, so the rework is measured against something
-rather than blessing itself. ClaimAcceptance.tla is the reason that ordering is
-worth paying for: it named a boundary honestly and the implementation then
-walked across it.
-
-Four switches, all mutation-tested, and they are THREE DIFFERENT KINDS of thing:
-
-  * AttributionPerSeat  -- a design choice, and the one this rework made.
-  * MaxKeysPerPrincipal, NoRetainedCopies -- assumptions about the world that no
-    artifact can discharge.
-  * EndorserHoldsShare  -- a property of THIS implementation. It was added
-    after an adversarial review found the model's baseline silently assuming
-    it, and it was FALSE with a Rust counterexample until the seat endorsement
-    became a linked proof of knowledge of BOTH the identity secret and the
-    share. It is now TRUE in the tree, and the FALSE row below is kept because
-    it prices what the implementation buys.
-
-They are switches rather than omissions so that each residual is exhibited.
-
-The matrix is the point, and it has three columns because the three properties
-respond DIFFERENTLY to the switches. The bar (how many slots the funder fills)
-is blind to all three residuals. The forgery SHAPE is blind to two of them. Only
-the guarantee (how few principals can actually spend) tracks every one. Those
-differences are what stop "four keys" being read as "four entities", and stop
-"the forgery is unreachable" being read as "the address is safe".
-"""
+"""Bounded coalition analysis, conditional on explicit ownership assumptions."""
 import sys
-from tlc_harness import CLEAN, VIOLATED, ERROR, HERE, expect
+import tempfile
+from pathlib import Path
+from tlc_harness import CLEAN, VIOLATED, HERE, expect
 
 MODULE = "AttributionCoverage.tla"
-
-# The guarantee, and the bar. Kept apart everywhere in this file.
+CONFIGS = tempfile.TemporaryDirectory(prefix="attribution-configs-")
 GUARANTEE = "INV_SpendNeedsThresholdPrincipals"
 BAR = "INV_AttributedKeysMeetThreshold"
-INVARIANTS = [GUARANTEE, BAR]
-
-# Checked as a third column rather than once, because "the forgery state is
-# unreachable" read on its own is exactly the overclaim this file exists to
-# prevent. NoRetainedCopies=FALSE is the row that proves the point: this comes
-# back CLEAN there while a coalition of ONE is spending.
 SHAPE = "COV_ForgeryShape"
-
-# An adversarial review's candidate replacement for the guarantee, reading only
-# the constants. Checked in the model so it can be RUN rather than argued about.
-# See the SURVIVAL section, and the definition's own header for why no matrix
-# can exclude the whole family it comes from.
 FAKE = "FAKE_ConstantsOnlyGuarantee"
-
 BOOLEANS = ["AttributionPerSeat", "NoRetainedCopies", "EndorserHoldsShare"]
+PROPERTIES = [GUARANTEE, BAR, SHAPE]
 
-# One row of the mutation matrix: a label, the config change, what each of the
-# three properties must do, and why. A row whose result differs from `expect`
-# fails the runner -- in EITHER direction. A switch that fails to break what it
-# claims is not load-bearing; one that breaks something it does not claim means
-# the model is not measuring what its names say.
-#
-# `kw` is passed to write_cfg. Everything not named there stays at the decided
-# values, so each row differs from the baseline in exactly one thing.
+# Expected violations, with each property tested in its own exhaustive run.
 ROWS = [
-    ("AttributionPerSeat = FALSE", dict(off="AttributionPerSeat"),
-     {GUARANTEE: True, BAR: True, SHAPE: True},
-     "DESIGN     -- this is the rework",
-     "one key per cohort: a dealer holds every seat and the artifact reports "
-     "three organisations. forgery.rs performs this one to a published address."),
-
-    # The row an adversarial review forced into existence. It is NOT a variant
-    # of the two below: here the four slots are filled by four distinct,
-    # genuine keys held by four distinct principals, no dealer kept a copy of
-    # anything, and the guarantee falls anyway -- because nothing ties the
-    # signer of a seat to the holder of that seat's share. Rust performs it.
-    ("EndorserHoldsShare = FALSE", dict(off="EndorserHoldsShare"),
-     {GUARANTEE: True, BAR: False, SHAPE: True},
-     "BUILT      -- the code is NO LONGER on this branch; this prices it",
-     "what a decoupled endorser costs, kept as the row that measures the fix. "
-     "`ceremony::endorse_seat` now takes the SHARE as well as the identity key "
-     "and produces an AND-composed proof of knowledge of both, so neither an "
-     "identity key alone nor a share alone yields a verifying endorsement. "
-     "seat_forgery.rs::a_seat_holder_with_a_real_share_cannot_endorse_a_"
-     "substituted_dealing and seat_identity.rs::a_dealer_that_keeps_the_shares_"
-     "is_refused_at_the_seat_endorsement are the two former counterexamples, "
-     "inverted. NOT closed by it: a dealer that dealt REAL shares and kept "
-     "copies, which is the NoRetainedCopies row below."),
-
-    ("MaxKeysPerPrincipal = 4", dict(max_keys=4),
-     {GUARANTEE: True, BAR: False, SHAPE: True},
-     "ASSUMPTION -- not buildable by anyone",
-     "four slots filled from four names that all resolve to one controller "
-     "(or one organisation that lent its seat key)."),
-
-    ("NoRetainedCopies = FALSE", dict(off="NoRetainedCopies"),
-     # Seats really are held by four distinct principals here -- the collapse
-     # shape is genuinely unreachable -- and the guarantee falls to the dealer.
-     {GUARANTEE: True, BAR: False, SHAPE: False},
-     "ASSUMPTION -- not buildable by anyone",
-     "the shares really went to distinct parties and the dealer kept copies; "
-     "a dealt cohort and a DKG'd one publish the same material."),
+    ("per-cohort attribution", dict(off="AttributionPerSeat"), {GUARANTEE, BAR, SHAPE}),
+    ("identity/share owners may differ", dict(off="EndorserHoldsShare"), {GUARANTEE, SHAPE}),
+    ("up to four keys per principal", dict(max_keys=4), {GUARANTEE, SHAPE}),
+    ("retained share copies", dict(off="NoRetainedCopies"), {GUARANTEE}),
+    ("up to two keys per principal", dict(max_keys=2), {GUARANTEE}),
 ]
 
-# How a VIOLATED / CLEAN pair reads for each property. For an invariant,
-# violated is bad news about the design; for a reachability probe stated as a
-# negation, violated means the state is reachable.
-CELL = {
-    GUARANTEE: ("BREAKS", "holds"),
-    BAR: ("BREAKS", "holds"),
-    SHAPE: ("REACHABLE", "unreachable"),
-}
 
-
-def tla(b):
-    return "TRUE" if b else "FALSE"
-
-
-def write_cfg(name, off=None, compromise=3, owner_t=2, max_keys=1, invariants=None):
-    """One config. `off` names the single boolean set FALSE, if any."""
+def write_cfg(name, off=None, compromise=3, owner_t=2, max_keys=1, invariants=None,
+              specification="Spec"):
     lines = [
-        "SPECIFICATION Spec",
-        "CONSTANTS",
-        # Three operator seats at a quorum of two, one gate seat at a quorum of
-        # one: production::owners() and production::gates(), exactly.
-        "    OwnerSeats = {o1, o2, o3}",
-        "    GateSeats = {g1}",
-        # Five principals, so a one-key-each map is not forced to be a bijection
-        # and there is a principal spare to play a dealer that holds no seat of
-        # its own.
+        f"SPECIFICATION {specification}", "CONSTANTS",
+        "    OwnerSeats = {o1, o2, o3}", "    GateSeats = {g1}",
+        # One spare principal permits a dealer who holds no attributed seat.
         "    Principals = {p1, p2, p3, p4, p5}",
-        "    CohortKeys = {kOwners, kGates}",
-        "    NoOne = noone",
-        f"    OwnerT = {owner_t}",
-        "    GateT = 1",
-        f"    CompromiseT = {compromise}",
-        f"    MaxKeysPerPrincipal = {max_keys}",
+        "    CohortKeys = {kOwners, kGates}", "    NoOne = noone",
+        f"    OwnerT = {owner_t}", "    GateT = 1",
+        f"    CompromiseT = {compromise}", f"    MaxKeysPerPrincipal = {max_keys}",
     ]
-    for s in BOOLEANS:
-        lines.append(f"    {s} = {tla(s != off)}")
-    for i in (invariants or INVARIANTS):
-        lines.append(f"INVARIANT {i}")
-    p = HERE / f"{name}.cfg"
+    lines += [f"    {s} = {'FALSE' if s == off else 'TRUE'}" for s in BOOLEANS]
+    lines += [f"INVARIANT {i}" for i in (invariants or [GUARANTEE, BAR])]
+    p = Path(CONFIGS.name) / f"{name}.cfg"
     p.write_text("\n".join(lines) + "\n")
     return p
-
-
-def one(name, inv, **kw):
-    """Run MODULE with exactly one invariant, requiring exact attribution."""
-    return expect(MODULE, write_cfg(name, invariants=[inv], **kw), inv)
 
 
 def main():
     fails = []
 
-    print("=" * 78)
-    print("BASELINE -- per-seat attribution, all three residuals assumed away")
-    print("=" * 78)
-    print("  This is the BEST CASE. It assumes the rework landed, that a seat's")
-    print("  endorser holds that seat's share -- which the linked endorsement")
-    print("  now enforces -- and that the world cooperates, which is the half")
-    print("  no artifact can discharge.")
-    for inv in ["TypeOK"] + INVARIANTS:
-        # Each invariant in its own run. TLC halts at the first violation, so a
-        # single run over a list cannot establish that the others were checked.
-        r = one(f"_ac_base_{inv}", inv)
-        print(f"  {inv:<36} {r.status} ({r.states} states)"
-              + (f" {r.detail}" if r.detail else ""))
-        if r.status is not CLEAN:
-            fails.append(f"baseline: {inv} is {r.status}")
+    def check(name, inv, wanted, **kw):
+        r = expect(MODULE, write_cfg(name, invariants=[inv], **kw), inv)
+        print(f"  {name} / {inv}: {r}")
+        if r.status != wanted:
+            fails.append(f"{name} / {inv}: expected {wanted}, got {r}")
+        return r
 
-    print()
-    print("=" * 78)
-    print("COVERAGE -- the model must move, and the bound must be tight")
-    print("=" * 78)
-    cov = one("_ac_cov_COV_CanSpend", "COV_CanSpend")
-    ok = cov.status == VIOLATED
-    print(f"  COV_CanSpend                         "
-          f"{'violated -- a spend is reachable' if ok else 'NOT VIOLATED -- ' + str(cov.status)}")
-    if not ok:
-        fails.append("COV_CanSpend was not violated; nothing ever spends")
+    print("BASELINE: per-seat attribution plus THREE ownership assumptions")
+    for inv in ["TypeOK", GUARANTEE, BAR]:
+        check(f"_ac_base_{inv}", inv, CLEAN)
+    print("COVERAGE: spending exists, and the claimed lower bound is tight")
+    for inv in ["COV_CanSpend", "COV_TightCoalition"]:
+        check(f"_ac_cov_{inv}", inv, VIOLATED)
+    check("_ac_cov_COV_ForgeryShape", SHAPE, CLEAN)
 
-    # Without this, `>= 3` would look healthy in a model whose smallest
-    # coalition happened to be 4, and would be measuring the config.
-    cov = one("_ac_cov_COV_TightCoalition", "COV_TightCoalition")
-    ok = cov.status == VIOLATED
-    print(f"  COV_TightCoalition                   "
-          f"{'violated -- a coalition of exactly 3 is reachable' if ok else 'NOT VIOLATED -- ' + str(cov.status)}")
-    if not ok:
-        fails.append("COV_TightCoalition was not violated; the bound is slack, "
-                     "so the invariant is not measuring the structure")
+    print("MUTATION MATRIX: type safety and each property checked separately")
+    for index, (label, kw, violations) in enumerate(ROWS):
+        print(f"  {label}")
+        check(f"_ac_row{index}_TypeOK", "TypeOK", CLEAN, **kw)
+        for inv in PROPERTIES:
+            check(f"_ac_row{index}_{inv}", inv,
+                  VIOLATED if inv in violations else CLEAN, **kw)
 
-    # The forgery state must be UNREACHABLE once the seats are pinned. Stated
-    # without any reference to coalition size, so it is independent of the
-    # guarantee rather than implied by it.
-    cov = one("_ac_cov_COV_ForgeryShape", "COV_ForgeryShape")
-    ok = cov.status == CLEAN
-    print(f"  COV_ForgeryShape                     "
-          f"{'CLEAN -- one principal holding a whole cohort is unreachable' if ok else 'REACHABLE -- ' + str(cov.status)}")
-    if not ok:
-        fails.append("COV_ForgeryShape is reachable under per-seat attribution")
+    print("SENSITIVITY AND SURVIVAL: reject inflated claims and a specific fake oracle")
+    check("_ac_overclaim_guarantee", GUARANTEE, VIOLATED, compromise=4)
+    check("_ac_overclaim_bar", BAR, CLEAN, compromise=4)
+    check("_ac_undecided_threshold", GUARANTEE, VIOLATED, owner_t=1)
+    check("_ac_survive_real", GUARANTEE, CLEAN, max_keys=2, compromise=2)
+    check("_ac_survive_fake", FAKE, VIOLATED, max_keys=2, compromise=2)
+    check("_ac_survive_fake_base", FAKE, CLEAN)
 
-    print()
-    print("=" * 78)
-    print("MUTATION -- one change at a time, one invariant per run")
-    print("=" * 78)
-    print(f"  {'change from the baseline':<32} {'guarantee':<11} {'bar':<8} {'forgery shape':<13}")
-    print(f"  {'(baseline, above)':<32} {'holds':<11} {'holds':<8} {'unreachable':<13}")
+    # The two-principal residual claim must itself be tight, rather than merely
+    # surviving because no modeled coalition spends below an unrelated bound.
+    check("_ac_survive_tight", "COV_TightCoalition", VIOLATED,
+          max_keys=2, compromise=2)
 
-    def row(label, kw, expect_break, tag=None):
-        """One matrix row. Returns the cells; records any surprise as a failure.
+    print("CORRELATED SHARES: named holders do not establish share independence")
+    for inv, wanted in [("TypeOK", CLEAN), (GUARANTEE, VIOLATED),
+                         (BAR, CLEAN), (SHAPE, CLEAN)]:
+        check(f"_ac_correlated_{inv}", inv, wanted,
+              specification="SpecCorrelatedShares")
+    check("_ac_correlated_bound", GUARANTEE, CLEAN, compromise=2,
+          specification="SpecCorrelatedShares")
+    check("_ac_correlated_tight", "COV_TightCoalition", VIOLATED, compromise=2,
+          specification="SpecCorrelatedShares")
 
-        TypeOK is checked in EVERY configuration, not just the baseline. An
-        earlier version checked it only in the all-on run, which left the
-        mutated configurations without a type oracle at all.
-        """
-        slug = label.replace(" ", "").replace("=", "")
-        t = one(f"_ac_{slug}_TypeOK", "TypeOK", **kw)
-        if t.status is not CLEAN:
-            fails.append(f"{label}: TypeOK is {t.status} {t.detail}")
-        cells = {}
-        for prop in [GUARANTEE, BAR, SHAPE]:
-            want = expect_break[prop]
-            r = one(f"_ac_{slug}_{prop}", prop, **kw)
-            got = r.status == VIOLATED
-            hit, miss = CELL[prop]
-            if r.status == ERROR:
-                cells[prop] = "ERROR"
-                fails.append(f"{label} / {prop}: {r.detail}")
-            elif got == want:
-                cells[prop] = hit if got else miss
-            else:
-                # Either the change is not load-bearing for what it claims, or
-                # it is load-bearing for something it does not claim. Both mean
-                # the model is not measuring what its names say.
-                cells[prop] = f"UNEXPECTED({r.status})"
-                fails.append(f"{label}: expected {prop} to "
-                             f"{'break' if want else 'hold'}, it did not")
-        print(f"  {label + (' ' + tag if tag else ''):<32} "
-              f"{cells[GUARANTEE]:<11} {cells[BAR]:<8} {cells[SHAPE]:<13}")
-        return cells
-
-    for label, kw, expect_break, kind, why in ROWS:
-        row(label, kw, expect_break)
-        print(f"      {kind}")
-        print(f"      {why}")
-
-    print()
-    print("  Read the last row. The forgery SHAPE is unreachable there -- the")
-    print("  seats really are held by four distinct principals -- and the")
-    print("  guarantee falls anyway, to a dealer holding copies. 'No cohort")
-    print("  collapsed into one principal' is one way to lose, not the property.")
-
-    print()
-    print("=" * 78)
-    print("ORACLE -- does the guarantee read the COALITION, or just the switches?")
-    print("=" * 78)
-    print("  Every boolean ON, CompromiseT and both quorums untouched, and only")
-    print("  the collusion bound moved from 1 to 2: two of the four named")
-    print("  parties turn out to be one entity.")
-    # WHY THIS EXISTS. An adversarial review showed that with the collusion
-    # residual as a BOOLEAN, this entire file was equally well satisfied by a
-    # guarantee that never reads the coalition at all:
-    #
-    #   spend.seats # {} => AttributionPerSeat /\ NoRetainedCopies
-    #                       /\ CompromiseT <= OwnerT + GateT
-    #
-    # -- clean at baseline, violated by every mutation, violated at
-    # CompromiseT = 4 and at OwnerT = 1. The same guard causing and detecting
-    # the bug, which this repo has shipped before. This row was the first fix:
-    # no BOOLEAN differs from the baseline, so a guarantee written over the
-    # booleans cannot break here, and the real one must.
-    #
-    # It is NOT sufficient on its own, and saying so is the point of the SURVIVAL
-    # section below. A second review pass observed that MaxKeysPerPrincipal is
-    # itself a constant and supplied a stand-in that survives this row too. Read
-    # this row as excluding predicates over the BOOLEANS, and SURVIVAL as
-    # excluding the one that beat it.
-    cells = row("MaxKeysPerPrincipal = 2", dict(max_keys=2),
-                {GUARANTEE: True, BAR: False, SHAPE: False}, tag="")
-    print("      The guarantee breaks while every BOOLEAN a fake could read is")
-    print("      unchanged. That excludes a predicate over the switches; it does")
-    print("      NOT by itself show the guarantee reads spend.by, since this row")
-    print("      moves a constant -- see SURVIVAL. The forgery shape stays")
-    print("      unreachable: no ONE principal holds a whole cohort, and the")
-    print("      separation is gone regardless.")
-    print("      Result: the decided structure tolerates ZERO collusion among")
-    print("      the named parties. One shared controller across two operator")
-    print("      seats already puts a spend below COMPROMISE_THRESHOLD.")
-
-    print()
-    print("=" * 78)
-    print("SENSITIVITY -- the guarantee must depend on the numbers it asserts")
-    print("=" * 78)
-    # If the guarantee held for whatever number is written in the config, it
-    # would be measuring nothing. Four seats do not give four principals of
-    # separation: a quorum is OwnerT + GateT = 3, and that is exactly what
-    # per-seat attribution supports -- not one more.
-    r = one("_ac_overclaim_guarantee", GUARANTEE, compromise=4)
-    ok = r.status == VIOLATED
-    print(f"  CompromiseT = 4, {GUARANTEE:<36} "
-          f"{'VIOLATED (good)' if ok else 'survives -- ' + str(r.status)}")
-    if not ok:
-        fails.append("the guarantee survives an inflated CompromiseT, so it is "
-                     "not sensitive to the number it asserts")
-    # ...while the BAR still passes at 4, because four keys is four keys. That
-    # is the separation this file exists to make: the count a funder can check
-    # is satisfied in the very run where the guarantee is violated.
-    r = one("_ac_overclaim_bar", BAR, compromise=4)
-    ok = r.status == CLEAN
-    print(f"  CompromiseT = 4, {BAR:<36} "
-          f"{'CLEAN -- four slots is still four slots' if ok else 'unexpected -- ' + str(r.status)}")
-    if not ok:
-        fails.append(f"{BAR} did not survive CompromiseT = 4")
-
-    # And it must track the ACCESS STRUCTURE, not the constant 3. Drop the
-    # operator quorum to 1-of-3 and the guarantee falls with every switch still
-    # on and four genuinely distinct principals holding four seats: separation
-    # is OwnerT + GateT, and attribution does not rescue a threshold nobody
-    # decided. That is the model's counterpart of forgery.rs::
-    # a_decided_roster_at_an_undecided_threshold_is_refused_on_both_paths, and
-    # it is why per-seat keys are not a substitute for the release gate's
-    # threshold arm.
-    r = one("_ac_undecided_threshold", GUARANTEE, owner_t=1)
-    ok = r.status == VIOLATED
-    print(f"  OwnerT = 1,      {GUARANTEE:<36} "
-          f"{'VIOLATED (good)' if ok else 'survives -- ' + str(r.status)}")
-    if not ok:
-        fails.append("the guarantee survives a 1-of-3 operator quorum, so it is "
-                     "measuring the constant rather than the access structure")
-
-    print()
-    print("=" * 78)
-    print("SURVIVAL -- the direction the ORACLE row could not test")
-    print("=" * 78)
-    # WHY THIS SECTION EXISTS. The ORACLE row above holds every constant fixed
-    # except MaxKeysPerPrincipal -- but that knob IS a constant, which a second
-    # adversarial review used to defeat the whole matrix. Its stand-in,
-    # FAKE_ConstantsOnlyGuarantee in the model, is true at the baseline and
-    # false at every single row above, including the oracle. Every row so far
-    # asks the guarantee to BREAK; a predicate that breaks too easily is never
-    # caught by rows like that.
-    #
-    # This is the missing direction: a configuration where the guarantee must
-    # SURVIVE and the stand-in must not. At MaxKeysPerPrincipal = 2 two of the
-    # four names may be one principal, so the smallest coalition is two -- which
-    # is exactly what a claim of CompromiseT = 2 asserts, so the real guarantee
-    # is clean. The stand-in reads 2 * 2 <= 3 and is false.
-    print("  MaxKeysPerPrincipal = 2 with the claim lowered to match it: the")
-    print("  guarantee must HOLD here. A predicate that merely breaks whenever")
-    print("  the constants look wrong cannot pass this row.")
-    survive = dict(max_keys=2, compromise=2)
-    r = one("_ac_survive_real", GUARANTEE, **survive)
-    ok = r.status == CLEAN
-    print(f"  {GUARANTEE:<36} "
-          f"{'CLEAN (good) -- 2 names, 1 controller, and the claim says 2' if ok else 'UNEXPECTED -- ' + str(r.status)}")
-    if not ok:
-        fails.append("the guarantee does not survive a claim its own structure "
-                     "supports, so it is not measuring coalition size either")
-
-    r = one("_ac_survive_fake", FAKE, **survive)
-    ok = r.status == VIOLATED
-    print(f"  {FAKE:<36} "
-          f"{'VIOLATED (good) -- the stand-in and the guarantee disagree here' if ok else 'AGREES -- ' + str(r.status)}")
-    if not ok:
-        fails.append(f"{FAKE} agrees with the guarantee in every configuration "
-                     "this runner examines, so the matrix does not establish "
-                     "that the guarantee reads the coalition")
-
-    # ...and the stand-in must be a genuine stand-in, not something that fails
-    # everywhere. If it were already violated at the baseline the row above
-    # would be worthless.
-    r = one("_ac_survive_fake_base", FAKE)
-    ok = r.status == CLEAN
-    print(f"  {FAKE + ' at the baseline':<36} "
-          f"{'CLEAN -- so it really is a candidate replacement' if ok else 'unexpected -- ' + str(r.status)}")
-    if not ok:
-        fails.append(f"{FAKE} is not clean at the baseline, so it is not a "
-                     "candidate the matrix needed to exclude")
-
-    print()
-    print("=" * 78)
     if fails:
-        print("FAIL")
-        for f in fails:
-            print(f"  - {f}")
+        print("FAIL\n  " + "\n  ".join(fails))
         return 1
-
-    print("PASS")
-    print()
-    print("WHAT THIS ESTABLISHES")
-    print("  Of the two attribution designs this model compares, only per-seat")
-    print("  can support the claim the decided structure makes. Under per-cohort")
-    print("  attribution the model reaches a state with one principal holding a")
-    print("  whole operator cohort and a spending coalition of TWO against a")
-    print("  threshold of three -- the cardinality and the shape that")
-    print("  forgery.rs::a_dealt_owner_cohort_passes_the_audit_and_the_release_gate")
-    print("  exhibits in Rust. Under per-seat attribution, with all THREE")
-    print("  residuals assumed away, that state is unreachable and the smallest")
-    print("  coalition is exactly COMPROMISE_THRESHOLD -- derived from OwnerT +")
-    print("  GateT, not read off the config, since raising the claim to 4 or")
-    print("  dropping the operator quorum to 1 breaks it.")
-    print()
-    print("  Read 'assumed away' strictly. One of those three is not a fact")
-    print("  about the world but a property of this code -- EndorserHoldsShare")
-    print("  -- and it is now enforced rather than assumed: the endorsement is")
-    print("  an AND-composed proof of knowledge of the identity secret and the")
-    print("  share. The other two remain assumptions. So the baseline is still")
-    print("  not a description of the tree, but for two reasons rather than")
-    print("  three.")
-    print("  (Slots and their holders, not key VALUES -- this model has no key")
-    print("  values in it, and the Rust counterpart is what carries those.)")
-    print()
-    print("WHAT IT DOES NOT ESTABLISH, stated because two false claims have")
-    print("shipped from this repo already:")
-    print("  * NOT that per-seat attribution is the only mechanism that could")
-    print("    work. The alternative modelled here is one key per cohort, whose")
-    print("    false branch leaves the seat map entirely unconstrained. Beating")
-    print("    that does not rule out designs this model never considered.")
-    print("  * NOT anything about auditing, funding or publication. There is no")
-    print("    audit action, no artifact validation and no address in this")
-    print("    model; 'every check passes' is its premise, not its result. The")
-    print("    end-to-end half is what forgery.rs performs, in Rust.")
-    print("  * NOT that four slots hold four distinct KEY VALUES. The bar")
-    print("    invariant counts attribution slots the artifact demands. Key")
-    print("    values are not modelled.")
-    print()
-    print("WHAT IT ASSUMES, precisely -- all three are rows above and all three")
-    print("break the guarantee. TWO of them are not buildable by anyone. The")
-    print("THIRD was buildable, and has now been built:")
-    print("  1. the parties behind the attributed slots are distinct entities.")
-    print("     NOT BUILDABLE. The ORACLE row prices it exactly: the decided")
-    print("     structure tolerates ZERO collusion. Two names, one controller,")
-    print("     and the spend is already below COMPROMISE_THRESHOLD -- with the")
-    print("     seats still pinned and no cohort visibly collapsed.")
-    print("  2. no dealer kept copies of the shares it handed out. NOT")
-    print("     BUILDABLE: a dealt cohort and a DKG'd cohort publish identical")
-    print("     material.")
-    print("  3. the party that ENDORSES a seat used a share behind it.")
-    print("     NO LONGER ASSUMED: it is enforced. `ceremony::endorse_seat`")
-    print("     takes the identity key AND the share and produces one proof")
-    print("     under one challenge, so neither secret alone verifies. The two")
-    print("     former counterexamples are now refusals, by exact error.")
-    print("     What it still does NOT give: that ONE actor held both secrets")
-    print("     (two parties can run the sigma protocol between them), nor that")
-    print("     the named party is the share's only holder -- which is")
-    print("     assumption 2, and is why that row is still here.")
-    print()
-    print("  Per-seat attribution therefore raises the BAR from 2 attribution")
-    print("  slots to 4. It does not turn four slots into four entities, nor")
-    print("  four signatures into four share-holders, and the matrix is what")
-    print("  says so rather than a promise: the bar invariant is CLEAN in all")
-    print("  FOUR runs where the guarantee is being violated.")
-    print()
-    print("Scope: this is COVERAGE, not cryptography. Whether a Schnorr")
-    print("transcript really binds a seat key, and whether the commitment really")
-    print("seals it, is a Rust and test-vector question in crates/two-cohort.")
-    print("This says only what such a binding would and would not be worth.")
+    print("PASS: conditional bounds, mutation specificity and tightness checked.")
+    print("Per-seat attribution raises the bar from two slots to four.")
+    print("The three-principal bound additionally assumes separate key owners,")
+    print("identity/share ownership by the same principal, and no retained copies.")
+    print("Linked knowledge proofs require contributions from both secrets;")
+    print("they do NOT prove that one principal holds both. Separate parties can")
+    print("jointly produce a verifying proof while retaining separate secrets.")
+    print("Thus EndorserHoldsShare remains a premise, not a theorem of the Rust")
+    print("endorsement API. This model contains no proof-verification algorithm.")
+    print("The quorum bound also assumes independent share material. Correlated")
+    print("owner shares reduce the modeled bound to one owner plus one gate,")
+    print("even with all three ownership assumptions true and four slots filled.")
+    print("Scope: five principals, three owner seats, one gate seat. These are")
+    print("finite structural checks, not a proof of implementation or operations.")
     return 0
 
 

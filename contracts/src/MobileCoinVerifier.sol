@@ -49,9 +49,12 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
     ///
     /// Not to be confused with BRIDGE_RETURN_MEMO_TYPE above, which is the
     /// binding that involves the memo. This one is nowhere in the MobileCoin
-    /// data: it is a constant the submitter must restate, so a proof assembled
-    /// for one deployment cannot be handed to another. It carries no
-    /// information an attacker does not have and defends nothing on its own.
+    /// data: it is a constant the submitter must restate. An unchanged proof
+    /// fails under a different tag, but a relayer can replace the tag without
+    /// changing the signed output. It provides no cross-deployment replay
+    /// protection; independently funded escrows must not share a return address
+    /// unless an authenticated deployment domain or shared replay state is
+    /// enforced separately.
     bytes32 public immutable memoDomain;
 
     ValidatorRegistry public immutable registry;

@@ -22,14 +22,15 @@ pragma solidity ^0.8.26;
 ///   near-miss encoding -- non-canonical field elements, negative `s`,
 ///   non-square results, negative `t`, and `y == 0` -- or that bijection, and
 ///   with it the comparison, is lost.
-/// * Cofactor-free. Ed25519 has eight points of small order; ristretto's
-///   quotient makes them all the identity's coset, so there is no small-order
-///   or non-prime-order subgroup input to guard against here.
+/// * Cofactor-free. Valid representatives lie in the even Edwards subgroup;
+///   quotienting its order-four torsion subgroup yields a prime-order group.
+///   Arbitrary Edwards points are not valid ristretto representatives. The
+///   public decoder admits no non-identity small-order group element.
 ///
 /// Follows the reference construction in curve25519-dalek (the implementation
 /// MobileCoin itself links), including its SQRT_RATIO_M1 sign conventions.
-/// Every constant and every branch below is pinned against that implementation
-/// by contracts/test/fixtures/ristretto.json.
+/// Tested against dalek, the RFC 9496 vectors and independent noble fixtures.
+/// Finite vectors do not prove correctness for every possible group element.
 ///
 /// Not constant time, and does not try to be: every input is public. The one
 /// secret-shaped input, the return address's view private key, is published by
@@ -483,10 +484,9 @@ library Ristretto255 {
     ///     u/v a non-zero square           -> (true,  +sqrt(u/v))
     ///     u/v a non-zero non-square       -> (false, +sqrt(i*u/v))
     ///
-    /// The u = v = 0 case returns TRUE, not false -- `_map` reaches v = 0 with
-    /// u != 0 (see the note there), and `encode` reaches u = v = 0 at the
-    /// identity, so both corners are live and neither is the one this comment
-    /// used to imply.
+    /// The u = v = 0 case returns TRUE, not false. Both `_map` at a vanishing
+    /// denominator and `encode` at the identity reach u != 0, v = 0;
+    /// `encode` always supplies u = 1.
     ///
     /// The returned root is always the non-negative one. Both callers rely on
     /// that: it is what makes the decoded x and the encoded s canonical.
@@ -623,8 +623,9 @@ library Ristretto255 {
 /// TEST ONLY -- NEVER DEPLOY.
 ///
 /// Test wrapper: the library's functions are internal, and points are memory
-/// structs no external caller can hold. Everything here takes and returns wire
-/// encodings, so a test can only assert what a real caller could observe.
+/// structs no external caller can hold. The raw-coordinate encoder below is
+/// test-only: it checks invariance across equivalent internal representatives,
+/// which an encode/decode round trip cannot exercise.
 ///
 /// It lives in this file, and not in `src/TestMocks.sol` with the other
 /// test-only contracts, because a wrapper for `internal` functions has to be
@@ -633,6 +634,18 @@ library Ristretto255 {
 /// `src/` and fails unless it is either on the deployable allowlist or marked
 /// exactly like this one, so a production contract cannot arrive here unnamed.
 contract Ristretto255Probe_DO_NOT_DEPLOY {
+    /// Inputs must be valid extended coordinates. No production entry point
+    /// accepts raw coordinates; this probe lets tests supply independently
+    /// generated points, torsion-equivalent representatives and projective
+    /// rescalings to the actual encoder.
+    function encodeCoordinates(uint256 x, uint256 y, uint256 z, uint256 t)
+        external
+        view
+        returns (bytes32)
+    {
+        return Ristretto255.encode(Ristretto255.Point(x, y, z, t));
+    }
+
     function decodes(bytes32 encoded) external view returns (bool ok) {
         (ok,) = Ristretto255.decode(encoded);
     }

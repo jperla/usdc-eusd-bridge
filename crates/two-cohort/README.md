@@ -113,7 +113,8 @@ subsets is the correctness condition for the scheme, not bookkeeping.
 | `release_gate.rs::a_simulated_root_reaches_the_funding_path_today` | the gap the gate closes, performed: a simulated root is published at the decided shape and then spent |
 | `release_gate.rs::the_gate_refuses_a_key_audited_under_organisations_this_deployment_does_not_name` | a ceremony run by a different pair of organisations differs in nothing else, and is refused on the endorser arm alone |
 | `release_gate.rs::the_funder_question_is_answerable_from_the_artifact` + `audit_alone_accepts_a_shape_nobody_decided` | both halves of the funder's sequence, and that the second is load-bearing |
-| **`composition.rs::a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree`** | **declared threshold is minimum coalition size, not only polynomial degree** — the `p(x) = b + a·x(x−1)` dealing that passed before this round |
+| **`composition.rs::a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree`** | smaller standard interpolations are rejected, including the `p(x) = b + a·x(x−1)` dealing in which a seat directly holds `b` |
+| **`correlated_shares.rs`** | the residual: `p(x)=b*(1+x)` passes audit and the production funding gate as 2-of-3, but one owner's share plus the genuine gate produces a stock-verifier-accepted spend; coefficient independence is not proved by the artifact |
 | `holder_proving.rs` (5 tests) | `CohortShare::prove` is the checked default; `the_raw_prover_signs_what_the_default_entry_point_refuses` separates it from `prove_unchecked` on one share, one composition, one claim |
 
 ### Known-answer vectors used
@@ -193,13 +194,24 @@ production::check_decided_structure(address.root())?;
 Plus: the two supplied keys differ; each roster is canonical, non-empty, bounded
 and inside its own control domain, so the two are disjoint; no component and no
 verification share is the identity; each reveal opens the commitment that was
-signed; and no subset smaller than the declared threshold reconstructs a
-component. The last of those was **wrong until this round** — the check
+signed; and no subset smaller than the declared threshold reaches a component
+using that subset's standard Lagrange interpolation. The last check
 enumerated only the `(t−1)`-subsets, which establishes polynomial *degree* and
 not minimum *coalition size*. Review supplied `p(x) = b + a·x(x−1)`, a genuine
 degree-2 dealing declared 3-of-3 in which seat 1 alone holds `b`;
 `a_dealing_one_seat_can_open_is_refused_even_at_the_declared_degree` performs it
 and `check_consistency` now enumerates every size below `t`.
+
+That still does **not** establish minimum coalition size against malicious
+dealing. With `p(x)=b*(1+x)`, each owner's share is `(1+i)*b`: no singleton
+equals `b`, and every pair interpolates correctly, but any one owner recovers
+`b` by division by the public `1+i`. `correlated_shares.rs` demonstrates genuine
+possession and identity proofs, a successful production funding authorization,
+and an accepted spend using only one owner plus the gate. A secure threshold
+claim needs honest independent DKG randomness and holders checking their own
+DKG result; the public artifact cannot certify entropy or historical protocol
+execution. These assumptions are separate from share erasure and independent
+organisational control.
 
 **What it does not answer, and none of this is closable by wording:**
 
@@ -453,4 +465,3 @@ became a library.
   compiler leaves in registers or on the stack are outside this crate's reach.
   `participant_terms_zeroize_their_weight` establishes that the wiring is real;
   it does not establish that dropped memory is scrubbed.
-
