@@ -144,6 +144,12 @@ export class Chain {
 
   static async create(opts) {
     const contracts = compileAll(opts);
+    return Chain.fromCompiled(contracts);
+  }
+
+  // Fresh state from already compiled sources: independent funded controls
+  // need the same deployment layout without recompiling the whole verifier.
+  static async fromCompiled(contracts) {
     const evm = await EVM.create();
     const c = new Chain(evm, contracts);
     c.deployer = new Address(hexToBytes('0x' + 'de'.repeat(19) + 'a1'));

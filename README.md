@@ -4,7 +4,8 @@ An experimental bridge between USDC on Ethereum and eUSD on MobileCoin.
 **Not ready to hold funds.** Passing component tests and bounded models are
 not a production security certificate.
 
-See [the PR 2 hardening review](docs/PR2-HARDENING-REVIEW.md) for the current
+See [the v2 implementation results](docs/PR2-V2-HARDENING.md) for the latest
+changes and remaining deployment gates. See [the PR 2 hardening review](docs/PR2-HARDENING-REVIEW.md) for the current
 findings, executable counterexamples, verification results, and remaining
 funding blockers. Older design documents and review transcripts are historical
 evidence; their claims and test counts may predate the implementation.
@@ -35,25 +36,27 @@ and an effective freeze transaction. These are explicit trust boundaries.
 
 | Component | Current scope |
 |---|---|
-| `contracts/src/Escrow.sol` | ERC20 custody, caps, permissionless payout, per-escrow replay protection, freeze and governance controls. |
+| `contracts/src/Escrow.sol` | ERC20 custody, caps, permissionless payout, authenticated chain/escrow domains and replay protection, freeze and governance controls. |
 | `MobileCoinVerifier.sol` | Quorum/header/membership checks; recipient recognition; amount/token and beneficiary recovery from the authenticated output. |
 | `Ristretto255.sol` | Ristretto decoding, encoding, arithmetic and uniform-byte mapping; independently cross-checked against RFC 9496 and noble/dalek vectors. |
 | `crates/two-cohort` | DKG/composition and non-reconstructing MLSAG primitives accepted by MobileCoin's stock verifier. Not a deployed distributed signer. |
-| `crates/ceremony` | Signing state machine, contextual nonce binding, authorization hooks and attributable messages. |
+| `crates/ceremony` | Signing state machine, fsynced single-writer binding journal, independent-anchor adapter, authorization hooks and attributable messages. |
 | `crates/auditor` | Deposit/release reconciliation, exposure calculation and structured freeze decisions. |
 | `crates/mc-return` | Return-proof construction using MobileCoin's own types and verifier. |
-| `crates/e2e` | A scoped auditor-to-EVM handoff adapter/test, not a live three-leg bridge. |
+| `crates/e2e` | Auditor handoff and connected EVM-deposit → authenticated Rust release-intent signing → synthetic return → EVM payout simulation. |
 
 `Proof` no longer contains relayer-chosen amount, token ID, or beneficiary.
 Recipient checking returns the already computed shared secret; the verifier
 reuses it to open the amount, verify its Pedersen commitment, and decrypt the
 memo. A second scalar multiplication is unnecessary.
 
-**Replay protection is local to an escrow.** `memoDomainTag` is not authenticated
-by the MobileCoin output. Independently funded deployments must use distinct
-return addresses, a cryptographically memo-bound deployment domain, or shared
-replay state. A passing test explicitly demonstrates duplicate payouts when
-two escrows share an address; it is a counterexample, not a safety guarantee.
+**Return memos are deployment-bound.** Version `0x8002` carries
+`beneficiary20 || domain32 || reserved12` inside the authenticated encrypted
+memo. The sender obtains the domain from `redemptionDomain(escrow)` on the
+intended chain before creating the output. The verifier hashes the protocol
+version, chain ID, calling escrow, and configured namespace. Legacy `0x8001`
+memos are rejected; relayers cannot migrate or retag already-signed returns.
+Verifier upgrades retaining a namespace must retain that escrow's replay state.
 
 ## Reproduce
 
@@ -76,12 +79,13 @@ For the proof suite, install Java 21, then:
 
 ```sh
 ./scripts/setup-proofs.sh  # official TLC release, pinned SHA-256
-./scripts/proofs.sh        # all 14 discovered proof runners
+./scripts/proofs.sh        # all 15 discovered proof runners
 ```
 
 See [proofs/README.md](proofs/README.md) for tool overrides and model scope.
-CI runs Solidity, runner failure controls, and the proof runners. The native
-Rust build is still locally verified, not claimed to have passed Linux CI.
+CI is configured for Solidity, runner failure controls, proof runners, and a
+native Linux Rust/integration job. Configuration is not a claim that the
+remote native job has passed; see the PR checks for its result.
 
 ## What the evidence establishes
 
@@ -97,10 +101,17 @@ failure/retry coverage, and a source-level counter-mutation. Payout provenance
 separates replay uniqueness from relayer choice. Attribution models explicitly
 exhibit the correlated-share threshold failure.
 
-**Not established:** a connected live Ethereum deposit observer → authorized
-distributed signing → MobileCoin submission → confirmed return → real USDC
-payout. No live ceremony, durable nonce backend, authenticated signer transport,
-concurrency-safe production signing service, deployed validator enrollment,
-or operational freeze-latency guarantee has been demonstrated here. The
-acceptance command runs related component integrations; it does not erase
-those boundaries.
+**Not established:** a live Ethereum observer, independent cross-host signing,
+MobileCoin full-transaction submission/confirmation, or real USDC payout. The
+local flow signs a structured release intent derived from an executed deposit;
+it does not construct or validate a complete MobileCoin transaction. Test
+shares, synthetic ledger blocks, mock ERC20, and an in-memory independent
+anchor are explicit simulation boundaries. The journal survives process exit,
+but production rollback protection requires an external monotonic anchor.
+
+The MLSAG implementation now uses two nonce commitments with a transcript-bound
+factor on both curve bases, following the structure of FROST binding factors.
+It remains a custom composition requiring independent cryptographic review;
+passing the stock verifier and mutation checks is not a concurrent-security
+proof. The packet codec provides authentication only when callers provision
+trusted roster keys and require the expected seat, session and round context.

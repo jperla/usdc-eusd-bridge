@@ -71,6 +71,10 @@ echo
 rule
 echo "LEGS 1 AND 3 — real EVM, real verifier, real proof"
 rule
+BRIDGE_RETURN_FIXTURE_BIN="$(node scripts/rust-artifact.mjs mc-return --example return-fixture)"
+export BRIDGE_RETURN_FIXTURE_BIN
+BRIDGE_LOCAL_RELEASE_BIN="$(node scripts/rust-artifact.mjs e2e --bin local-release)"
+export BRIDGE_LOCAL_RELEASE_BIN
 ./scripts/node-deps.sh
 node scripts/auditor-handoff.mjs
 cd contracts && node test/acceptance.mjs

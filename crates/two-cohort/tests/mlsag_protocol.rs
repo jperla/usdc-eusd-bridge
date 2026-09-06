@@ -364,7 +364,13 @@ fn the_one_time_scalar_is_in_neither_the_protocol_nor_its_transcript() {
 
     // `alpha_0` is what would close the gap, and no published scalar is it:
     // the transcript carries `alpha_0` only as the point `sum_i alpha_i * G`.
-    let alpha_0_g: RistrettoPoint = nonces.iter().map(|n| n.nonce_public).sum();
+    let alpha_0_g: RistrettoPoint = nonces
+        .iter()
+        .map(|n| {
+            n.nonce_public
+                + transcript_msgs.binding_factor(&params, Seat::Spend(n.role)) * n.binding_public
+        })
+        .sum();
     for t in &transcript {
         assert_ne!(*t * RISTRETTO_BASEPOINT_POINT, alpha_0_g);
     }
@@ -983,6 +989,8 @@ fn a_forged_gate_contribution_is_named_in_round_two() {
         image_term: forged_weight * base,
         nonce_public: forged_alpha * RISTRETTO_BASEPOINT_POINT,
         nonce_image: forged_alpha * base,
+        binding_public: RistrettoPoint::default(),
+        binding_image: RistrettoPoint::default(),
     });
 
     session
@@ -1062,6 +1070,8 @@ fn a_shifted_key_image_term_is_named_in_round_two() {
         image_term: liar_weight * base + delta,
         nonce_public: liar_alpha * RISTRETTO_BASEPOINT_POINT,
         nonce_image: liar_alpha * base + delta,
+        binding_public: RistrettoPoint::default(),
+        binding_image: RistrettoPoint::default(),
     });
 
     session
@@ -1478,6 +1488,7 @@ fn malformed_sessions_are_refused_with_the_variant_that_describes_them() {
     );
     let mask_nonce = MaskNonce {
         nonce_public: RISTRETTO_BASEPOINT_POINT,
+        binding_public: RistrettoPoint::default(),
     };
     assert_eq!(
         session.round_one(&[], &mask_nonce).unwrap_err(),
@@ -1512,5 +1523,94 @@ fn a_transcript_that_does_not_describe_the_ring_is_refused() {
             found: 4
         },
         "got {err}"
+    );
+}
+
+#[test]
+fn both_nonce_commitments_are_required_in_the_participants_transcript() {
+    let s = setup(7001, 2, 3, 1, 1);
+    let id = sid(701);
+    let params = s.params(&id);
+    let osub = owner_ids(&[0, 1]);
+    let gsub = gate_ids(&[0]);
+    for image in [false, true] {
+        let seats = quorum_signers(&s.spend, &osub, &gsub).unwrap();
+        let (mut nonces, armed, mask, _) =
+            commit_all(&params, seats, s.mask(), &mut MemoryNonceGuard::new());
+        assert_ne!(nonces[0].nonce_public, nonces[0].binding_public);
+        if image {
+            nonces[0].binding_image += RISTRETTO_BASEPOINT_POINT;
+        } else {
+            nonces[0].binding_public += RISTRETTO_BASEPOINT_POINT;
+        }
+        let mut rng = ChaCha20Rng::seed_from_u64(52);
+        let session = Session::open(params, &mut rng)
+            .unwrap()
+            .round_one(&nonces, &mask)
+            .unwrap();
+        let err = armed
+            .into_iter()
+            .next()
+            .unwrap()
+            .respond(&params, session.round_one_transcript())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            SigningError::NotInTranscript {
+                seat: Seat::Spend(SpendRole::View)
+            }
+        );
+    }
+}
+
+#[test]
+fn binding_factor_covers_all_commitments_roles_session_and_decoys() {
+    let s = setup(7701, 2, 3, 1, 1);
+    let id = sid(7701);
+    let params = s.params(&id);
+    let seats = quorum_signers(&s.spend, &owner_ids(&[0, 1]), &gate_ids(&[0])).unwrap();
+    let (nonces, _, mask, _) = commit_all(&params, seats, s.mask(), &mut MemoryNonceGuard::new());
+    let mut rng = ChaCha20Rng::seed_from_u64(77);
+    let session = Session::open(params, &mut rng)
+        .unwrap()
+        .round_one(&nonces, &mask)
+        .unwrap();
+    let t = session.round_one_transcript();
+    let seat = Seat::Spend(SpendRole::View);
+    let rho = t.binding_factor(&params, seat);
+    assert_ne!(rho, Scalar::ZERO);
+    assert_ne!(rho, Scalar::ONE);
+    for field in 0..9 {
+        let mut altered = t.clone();
+        let n = &mut altered.nonces[1];
+        match field {
+            0 => n.share_public += RISTRETTO_BASEPOINT_POINT,
+            1 => n.image_term += RISTRETTO_BASEPOINT_POINT,
+            2 => n.nonce_public += RISTRETTO_BASEPOINT_POINT,
+            3 => n.nonce_image += RISTRETTO_BASEPOINT_POINT,
+            4 => n.binding_public += RISTRETTO_BASEPOINT_POINT,
+            5 => n.binding_image += RISTRETTO_BASEPOINT_POINT,
+            6 => altered.mask.nonce_public += RISTRETTO_BASEPOINT_POINT,
+            7 => altered.mask.binding_public += RISTRETTO_BASEPOINT_POINT,
+            _ => altered.responses[0] += Scalar::ONE,
+        }
+        assert_ne!(rho, altered.binding_factor(&params, seat), "field {field}");
+    }
+    assert_ne!(rho, t.binding_factor(&params, Seat::Mask));
+    assert_ne!(rho, t.binding_factor(&s.params(&sid(7702)), seat));
+    let mut reordered = t.clone();
+    reordered.nonces.reverse();
+    assert_eq!(
+        rho,
+        reordered.binding_factor(&params, seat),
+        "canonical seat ordering"
+    );
+    // Load-bearing effective nonce is nonlinear in the peer commitment set.
+    let mut peer = t.clone();
+    peer.nonces[1].binding_public += RISTRETTO_BASEPOINT_POINT;
+    let mine = &t.nonces[0];
+    assert_ne!(
+        mine.nonce_public + rho * mine.binding_public,
+        mine.nonce_public + peer.binding_factor(&params, seat) * mine.binding_public
     );
 }

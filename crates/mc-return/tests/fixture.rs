@@ -11,9 +11,7 @@ mod common;
 use common::*;
 use mc_blockchain_types::compute_block_id;
 use mc_crypto_digestible::{Digestible, MerlinTranscript};
-use mc_return::{
-    attestation::AttestationRoute, chain::HeaderChain, QuorumEvidence, ReturnProof,
-};
+use mc_return::{attestation::AttestationRoute, chain::HeaderChain, QuorumEvidence, ReturnProof};
 use mc_transaction_core::membership_proofs::{hash_leaf, is_membership_proof_valid};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -40,6 +38,7 @@ fn make_proof(route: AttestationRoute) -> (Scenario, ReturnProof) {
         quorum,
         s.view_key(),
         &s.return_spend_public(),
+        &REDEMPTION_DOMAIN,
     )
     .expect("scenario should produce a valid return proof");
     (s, proof)
@@ -50,7 +49,9 @@ fn hex_field(v: &Value, path: &[&str]) -> Vec<u8> {
     for p in path {
         cur = &cur[*p];
     }
-    let s = cur.as_str().unwrap_or_else(|| panic!("{path:?} is not a string"));
+    let s = cur
+        .as_str()
+        .unwrap_or_else(|| panic!("{path:?} is not a string"));
     hex::decode(s.trim_start_matches("0x")).expect("hex")
 }
 
@@ -117,17 +118,20 @@ fn writes_the_fixture_and_every_field_in_it_checks_out() {
         let from: u64 = e["range"]["from"].as_str().unwrap().parse().unwrap();
         let to: u64 = e["range"]["to"].as_str().unwrap().parse().unwrap();
         let mut hash = [0u8; 32];
-        hash.copy_from_slice(&hex::decode(
-            e["hash"].as_str().unwrap().trim_start_matches("0x"),
-        )
-        .unwrap());
+        hash.copy_from_slice(
+            &hex::decode(e["hash"].as_str().unwrap().trim_start_matches("0x")).unwrap(),
+        );
         rebuilt.push(mc_transaction_core::tx::TxOutMembershipElement {
             range: mc_transaction_core::membership_proofs::Range::new(from, to).unwrap(),
             hash: hash.into(),
         });
     }
     let rebuilt_proof = mc_transaction_core::tx::TxOutMembershipProof::new(
-        v["membership_proof"]["index"].as_str().unwrap().parse().unwrap(),
+        v["membership_proof"]["index"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap(),
         v["membership_proof"]["highest_index"]
             .as_str()
             .unwrap()

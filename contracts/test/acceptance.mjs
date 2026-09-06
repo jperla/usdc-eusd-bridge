@@ -16,7 +16,9 @@
 // WHAT IS STILL NOT ESTABLISHED IS PRINTED AT THE END. Read it before quoting a
 // pass here as evidence that the bridge is safe to fund.
 
-import { readFileSync } from 'fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -26,7 +28,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
-const FIX = JSON.parse(readFileSync(
+let FIX = JSON.parse(readFileSync(
   join(ROOT, 'crates', 'mc-return', 'fixtures', 'return.json'), 'utf8'));
 const AMT = JSON.parse(readFileSync(
   join(HERE, 'fixtures', 'amount.json'), 'utf8'));
@@ -38,7 +40,7 @@ const RELAYER = '0x' + 'de'.repeat(20);
 const MEMO_DOMAIN =
   '0x' + Buffer.from('mc-bridge-return-v1').toString('hex').padEnd(64, '0');
 
-const ANCHOR = FIX.chain[FIX.chain.length - 1];
+let ANCHOR = FIX.chain[FIX.chain.length - 1];
 const SIGS = FIX.quorum.signatures;
 
 // Token, amount and payee all come from the fixture: the escrow must be
@@ -98,13 +100,12 @@ function encodeProof(p) {
     word(p.cumulativeTxoCount), word(p.rootRangeFrom), word(p.rootRangeTo),
     b32(p.rootHash), b32(p.contentsHash),
     null, null, null,
-    b32(p.memoDomainTag),
     null, word(p.merkleIndex),
   ];
   const tails = [dynB32s(p.signerKeys), dynSigs(p.signatures), txOutBlob,
                  dynB32s(p.merklePath)];
   let off = head.length * 32;
-  for (const [slot, t] of [[9, tails[0]], [10, tails[1]], [11, tails[2]], [13, tails[3]]]) {
+  for (const [slot, t] of [[9, tails[0]], [10, tails[1]], [11, tails[2]], [12, tails[3]]]) {
     head[slot] = word(off);
     off += t.length / 2;
   }
@@ -146,7 +147,7 @@ const proof = () => ({
   rootHash: ANCHOR.root_element.hash,
   contentsHash: ANCHOR.contents_hash,
   signerKeys: SIGS.map((s) => s.signer),
-  signatures: SIGS.map((s) => [
+  signatures: FIX.quorum.signatures.map((s) => [
     '0x' + s.signature.slice(2, 66), '0x' + s.signature.slice(66, 130)]),
   txOut: {
     commitment: FIX.tx_out.masked_amount.commitment,
@@ -222,10 +223,32 @@ async function deployBridge(memoDomain = MEMO_DOMAIN) {
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
 
+  await targetFixture(verifier, escrow);
   return { usdc, reg, verifier, escrow };
 }
 
+async function targetFixture(verifier, escrow) {
+  const domain = (await chain.must(verifier, selector('redemptionDomain(address)') + addrWord(escrow))).ret;
+  const binary = process.env.BRIDGE_RETURN_FIXTURE_BIN || join(HERE, '../../target/debug/examples/return-fixture');
+  if (process.env.BRIDGE_RETURN_FIXTURE_BIN && !existsSync(binary)) throw Error('configured upstream generator is missing');
+  const dir = join(HERE, 'fixtures/returns-v2');
+  const cached = join(dir, domain.slice(2) + '.json');
+  if (existsSync(binary)) {
+    const raw = execFileSync(binary, [domain], {encoding: 'utf8', timeout: 30_000});
+    FIX = JSON.parse(raw);
+    mkdirSync(dir, {recursive:true});
+    writeFileSync(cached, JSON.stringify(FIX, null, 2) + '\n');
+  } else {
+    // Solidity-only CI uses committed upstream-generated proofs. Full local
+    // acceptance rebuilds the Rust generator first and regenerates each one.
+    FIX = JSON.parse(readFileSync(cached, 'utf8'));
+  }
+  ANCHOR = FIX.chain[FIX.chain.length - 1];
+  assertEq(FIX.disclosure.redemption_domain, domain, 'upstream return domain');
+}
+
 const B = await deployBridge();
+let depositLog;
 
 console.log('\nEVM ACCEPTANCE — custody and MobileCoin return verification');
 
@@ -253,7 +276,37 @@ await test('LEG 1: a USDC deposit is custodied and announced to the operators',
   // Ethereum can announce the deposit; it cannot compel the eUSD release. That
   // asymmetry is why this leg is attested and capped rather than trustless.
   assertEq(r.logs[0].topics[3], mobDest, 'MobileCoin destination announced');
+  depositLog = r.logs[0];
 });
+
+if (process.env.BRIDGE_LOCAL_RELEASE_BIN) {
+  await test('CONNECTED LOCAL FLOW: deposit log authorizes an authenticated, durable two-cohort intent', async () => {
+    assert(depositLog, 'the EVM deposit must have executed');
+    const dir = mkdtempSync(join(tmpdir(), 'bridge-local-roundtrip-'));
+    const request = {chain_id: '0x'+word(1), escrow: B.escrow,
+      topics: depositLog.topics, data: depositLog.data,
+      return_output_digest: FIX.tx_out_digest.digest, token_id: TOKEN_ID.toString()};
+    const invoke = input => spawnSync(process.env.BRIDGE_LOCAL_RELEASE_BIN, [dir],
+      {input:JSON.stringify(input), encoding:'utf8', timeout:30_000});
+    try {
+      for (const bad of [{...request, data:'0x'+word(0)}, {...request, token_id:'8192'},
+                         {...request, topics:[]}, {...request, unknown:true}]) {
+        const r = invoke(bad);
+        assert(!r.error && r.status !== 0, 'malformed authorization must fail');
+      }
+      const result = invoke(request);
+      assert(!result.error && result.status===0, `local signer: ${result.error || result.stderr}`);
+      const signed = JSON.parse(result.stdout);
+      assertEq(signed.stock_mlsag_verified, true, 'MobileCoin stock MLSAG verifier');
+      assertEq(signed.amount, AMOUNT.toString(), 'exact deposited amount');
+      assertEq(signed.destination, depositLog.topics[3], 'exact deposited destination');
+      assertEq(signed.return_output_digest, FIX.tx_out_digest.digest, 'bound return association');
+      assertEq(signed.authenticated_packets, 10, 'both rounds, all spend seats plus mask');
+      const replay = invoke(request);
+      assert(!replay.error && replay.status!==0, 'process restart cannot reset nonce state');
+    } finally { rmSync(dir, {recursive:true, force:true}); }
+  });
+}
 
 // ---------------------------------------------------------------------- LEG 3
 
@@ -288,11 +341,11 @@ await test('LEG 3: the same return cannot be redeemed twice', async () => {
 await test('LEG 3: a forged signature releases nothing', async () => {
   // Same escrow, same registry, one bit of one signature flipped. If this ever
   // passes, every other assertion in this file is worthless.
+  const fresh = await deployBridge();
   const forged = proof();
   forged.signatures = forged.signatures.map((s, i) => i === 0
     ? ['0x' + (BigInt(s[0]) ^ 1n).toString(16).padStart(64, '0'), s[1]] : s);
 
-  const fresh = await deployBridge();
   await chain.must(fresh.usdc,
     selector('mint(address,uint256)') + addrWord(fresh.escrow) + word(AMOUNT));
   requireError(await release(fresh.escrow, forged), 'BadSignature(uint256)');
@@ -304,12 +357,12 @@ await test('LEG 3: a forged signature releases nothing', async () => {
 });
 
 await test('LEG 3: an output not in the signed block releases nothing', async () => {
+  const fresh = await deployBridge();
   const foreign = proof();
   foreign.txOut = { ...foreign.txOut,
     publicKey: '0x' + (BigInt(foreign.txOut.publicKey) ^ 1n)
       .toString(16).padStart(64, '0') };
 
-  const fresh = await deployBridge();
   await chain.must(fresh.usdc,
     selector('mint(address,uint256)') + addrWord(fresh.escrow) + word(AMOUNT));
   requireError(await release(fresh.escrow, foreign), 'MembershipFailed()');
@@ -337,6 +390,7 @@ await test('LEG 3: a relayer cannot name the amount or the payee', async () => {
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
+  await targetFixture(verifier, escrow);
   await chain.must(usdc,
     selector('mint(address,uint256)') + addrWord(escrow) + word(AMOUNT * 100n));
 
@@ -373,6 +427,7 @@ await test('LEG 3: the recipient check is load-bearing, not decorative',
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
+  await targetFixture(verifier, escrow);
   await chain.must(usdc,
     selector('mint(address,uint256)') + addrWord(escrow) + word(AMOUNT * 4n));
 
@@ -410,6 +465,7 @@ await test('LEG 3: the Pedersen commitment check is load-bearing in a FUNDED esc
   const escrow = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
+  await targetFixture(verifier, escrow);
   await chain.must(usdc,
     selector('mint(address,uint256)') + addrWord(escrow) + word(AMOUNT * 4n));
   assertEq(await balanceOf(usdc, escrow), AMOUNT * 4n,
@@ -504,6 +560,7 @@ await test('LIVENESS, NOT SAFETY: an escrow whose token id does not match its '
     escrow, selector('eusdTokenId()'))).ret, 0), ESCROW_TOKEN_ID,
     'the escrow\'s token id');
 
+  await targetFixture(verifier, escrow);
   await chain.must(usdc,
     selector('mint(address,uint256)') + addrWord(escrow) + word(AMOUNT * 4n));
   assertEq(await balanceOf(usdc, escrow), AMOUNT * 4n,
@@ -534,6 +591,7 @@ await test('LIVENESS, NOT SAFETY: an escrow whose token id does not match its '
   const matched = await chain.deploy('Escrow',
     addrWord(usdc) + addrWord(verifier) + word(TOKEN_ID) + word(CAP) +
     addrWord(GOV) + addrWord(AUDITOR) + word(0));
+  await targetFixture(verifier, matched);
   await chain.must(usdc,
     selector('mint(address,uint256)') + addrWord(matched) + word(AMOUNT * 4n));
   const good2 = await release(matched, proof());
@@ -541,23 +599,29 @@ await test('LIVENESS, NOT SAFETY: an escrow whose token id does not match its '
   assertEq(await balanceOf(usdc, BOB), AMOUNT, 'the payee was paid');
 });
 
-await test('DEPLOYMENT LIMIT: retagging one return pays two escrows sharing its address',
-  async () => {
-  // This is a witness to a remaining limitation, NOT a passing safety property.
-  // B has already paid this output. A second independently funded deployment
-  // with the same return address has independent replay storage. Its tag is
-  // not in the authenticated memo and a relayer can simply replace it.
-  const otherDomain = '0x' + 'd7'.repeat(32);
-  const second = await deployBridge(otherDomain);
-  await chain.must(second.usdc,
-    selector('mint(address,uint256)') + addrWord(second.escrow) + word(AMOUNT));
-  requireError(await release(second.escrow, proof()),
-    'WrongMemoDomain(bytes32,bytes32)');
-  const retagged = { ...proof(), memoDomainTag: otherDomain };
-  const r = await release(second.escrow, retagged);
-  assert(r.ok, `expected cross-deployment witness: ${revertReason(r.ret)}`);
-  assertEq(await balanceOf(second.usdc, BOB), AMOUNT, 'second deployment paid');
-  requireError(await release(B.escrow, proof()), 'AlreadyRedeemed(bytes32)');
+await test('one authenticated return cannot pay a second escrow, even with the same verifier', async () => {
+  const first = await deployBridge();
+  const old = proof();
+  await chain.must(first.usdc, selector('mint(address,uint256)') + addrWord(first.escrow) + word(AMOUNT));
+  chain.evm.common.setChain(5);
+  try {
+    requireError(await release(first.escrow, old), 'WrongMemoDomain(bytes32,bytes32)');
+    assertEq(await balanceOf(first.usdc, BOB), 0n, 'cross-chain replay pays nothing');
+  } finally { chain.evm.common.setChain(1); }
+  assert((await release(first.escrow, old)).ok, 'first payout');
+  for (const namespace of [MEMO_DOMAIN, '0x'+'d7'.repeat(32)]) {
+    const second = await deployBridge(namespace);
+    await chain.must(second.usdc, selector('mint(address,uint256)') + addrWord(second.escrow) + word(AMOUNT));
+    requireError(await release(second.escrow, old), 'WrongMemoDomain(bytes32,bytes32)');
+    requireError(await release(second.escrow, {...old, memoDomainTag: namespace}), 'WrongMemoDomain(bytes32,bytes32)');
+    assertEq(await balanceOf(second.usdc, BOB), 0n, 'no duplicate payout');
+    assert((await release(second.escrow, proof())).ok, 'a NEW return naming second escrow pays');
+  }
+  const sameVerifier = await chain.deploy('Escrow', addrWord(first.usdc) + addrWord(first.verifier) +
+    word(TOKEN_ID) + word(CAP) + addrWord(GOV) + addrWord(AUDITOR) + word(0));
+  await chain.must(first.usdc, selector('mint(address,uint256)') + addrWord(sameVerifier) + word(AMOUNT));
+  requireError(await release(sameVerifier, old), 'WrongMemoDomain(bytes32,bytes32)');
+  requireError(await release(first.escrow, old), 'AlreadyRedeemed(bytes32)');
 });
 
 await test('the complete return transaction stays within its gas budget', async () => {
@@ -594,7 +658,7 @@ console.log('         id are unmasked from the output\'s MaskedAmountV2 and');
 console.log('         then checked by recomputing value*B_token +');
 console.log('         blinding*B_blinding and requiring it to equal the block\'s');
 console.log('         Pedersen commitment; the payee is AES-CTR-decrypted from');
-console.log('         the output\'s memo and its type required to be 0x8001.');
+console.log('         the output\'s memo and its type required to be 0x8002 with an authenticated chain/escrow/domain.');
 console.log('         All three come from one shared secret, S = [a]R, which');
 console.log('         the recipient check already had to compute. `Proof` has');
 console.log('         no amount, tokenId or beneficiary field: a proof in the');
@@ -610,11 +674,9 @@ console.log('  * NO LIVE CEREMONY AND NO DEPLOYMENT. Everything below is code');
 console.log('    and tests. Nobody has generated a key anyone holds.');
 console.log('  * These are component integration tests using synthetic MobileCoin');
 console.log('    blocks and a test ERC20. No Ethereum deposit observer, real USDC,');
-console.log('    MobileCoin transaction submission, or cross-process signer ran.');
-console.log('  * Replay protection is PER ESCROW. The witness above pays the');
-console.log('    same output twice across deployments sharing a return address.');
-console.log('    memoDomainTag is relayer-editable, not authenticated. Require');
-console.log('    distinct return addresses, a memo-bound domain, or shared replay.');
+console.log('    MobileCoin transaction submission or independently hosted signers ran.');
+if (process.env.BRIDGE_LOCAL_RELEASE_BIN) console.log('    The connected local intent signer ran in a Rust subprocess with test keys.');
+console.log('  * v2 memos bind chain, escrow and namespace; old v1 returns are refused.');
 console.log('  * An audited 2-of-3 dealing does not prove threshold secrecy:');
 console.log('    correlated coefficients can let one owner recover the secret.');
 console.log('    The Rust counterexample uses genuine endorsements and passes');

@@ -17,6 +17,16 @@ JAVA_BIN=/absolute/path/to/java TLA2TOOLS_JAR=/absolute/path/to/tla2tools.jar ./
 
 `JAVA_HOME` is also supported. `TLC_WORKERS` defaults to one in the shared harness. Setup verifies the pinned artifact; the proof runner permits an explicit alternate JAR for toolchain experiments, so such runs must record their own version and hash. The checked model and mutation runs use isolated temporary working directories. Java may require permission to create its local management socket in a restricted sandbox.
 
-`scripts/proofs.sh` executes the **14 `proofs/tla/run_*.py` runners**, including their coverage and mutation checks. It does **not** execute every historical `.tla`, `.cfg`, `check_*.py`, or other analysis file in this directory. Its success therefore applies to the configurations those runners select, not to every proof-like artifact in the repository.
+`scripts/proofs.sh` executes the **15 `proofs/tla/run_*.py` runners**, including their coverage and mutation checks. It does **not** execute every historical `.tla`, `.cfg`, `check_*.py`, or other analysis file in this directory. Its success therefore applies to the configurations those runners select, not to every proof-like artifact in the repository.
 
 These are finite-state model checks and counterexample witnesses. Authenticated output decoding, cryptographic primitives, implementation refinement and operational ceremony assumptions require separate evidence. Claim retry success is reachable, not guaranteed eventually. Attribution thresholds additionally depend on ownership and independent share material; the correlated-share scenario demonstrates why counting attribution slots does not establish that threshold.
+
+## Authenticated deployment replay
+
+`DeploymentReplay.tla` models chain/escrow/namespace destinations authenticated
+inside v2 return memos, legacy rejection, and persistent replay state per
+chain+escrow. The runner checks three invariants, successful-payment coverage,
+six guard-removal matrices and a source mutation that substitutes relay metadata
+for the authenticated domain. The baseline generates 3,328 states. Hash/memo
+integrity and persistence of an existing escrow's replay mapping are assumptions;
+this does not prove implementation refinement or live-chain finality.

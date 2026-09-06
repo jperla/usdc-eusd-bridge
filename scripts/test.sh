@@ -33,6 +33,10 @@ echo "=== contracts ==="
 # The Solidity suite is a Node program with real dependencies. Install them
 # from the lockfile if they are missing, so a fresh clone can run this script
 # without a separate documented step that someone has to remember.
+BRIDGE_RETURN_FIXTURE_BIN="$(node scripts/rust-artifact.mjs mc-return --example return-fixture)"
+export BRIDGE_RETURN_FIXTURE_BIN
+BRIDGE_LOCAL_RELEASE_BIN="$(node scripts/rust-artifact.mjs e2e --bin local-release)"
+export BRIDGE_LOCAL_RELEASE_BIN
 ./scripts/node-deps.sh
 node scripts/auditor-handoff.mjs
 cd contracts && node test/run.mjs

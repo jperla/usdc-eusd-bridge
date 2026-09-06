@@ -9,20 +9,19 @@
 //! came out, so a disclosure that does not actually match the chain cannot be
 //! published.
 //!
-//! What this module deliberately does NOT do is make the disclosure verifiable
-//! *on Ethereum*. See `LIMITATIONS` in the crate README: everything here is
-//! keyed on `s = a * R`, and Ethereum can neither compute `s` (it has no view
-//! key, and must not) nor be shown that a supplied `s` is the right one without
-//! a discrete-log-equality proof against the bridge's published view public
-//! key. No such proof is constructed here, and none is implied by the fixture.
+//! Ethereum independently recovers these fields using the deliberately public
+//! return-address view key. The separate release reserve keeps its view key
+//! private. The v2 memo binds the beneficiary to a particular redemption
+//! domain computed by the target verifier from chain, escrow and namespace.
 
 use mc_crypto_keys::{RistrettoPrivate, RistrettoPublic};
 use mc_transaction_core::{
+    encrypted_fog_hint::EncryptedFogHint,
     get_tx_out_shared_secret,
     onetime_keys::recover_public_subaddress_spend_key,
     ring_signature::{generators, CompressedCommitment, Scalar},
     tx::TxOut,
-    Amount,
+    Amount, BlockVersion, MemoPayload, PublicAddress,
 };
 
 use crate::error::{Error, Result};
@@ -37,7 +36,47 @@ use crate::error::{Error, Result};
 /// bridge's own view key opens, and only the party who *created* that output
 /// could have written its memo. In other words the memo is self-addressed --
 /// the person choosing the payout address is the person being paid.
-pub const BRIDGE_RETURN_MEMO_TYPE: [u8; 2] = [0x80, 0x01];
+pub const BRIDGE_RETURN_MEMO_TYPE: [u8; 2] = [0x80, 0x02];
+
+/// Versioned, canonical return memo. Obtain `redemption_domain` from the
+/// target verifier's `redemptionDomain(escrow)` on the intended chain BEFORE
+/// creating the output. Legacy v1 memos cannot be safely upgraded by relayers.
+/// Data = beneficiary20 || domain32 || reserved12 (all zero).
+pub fn bridge_return_memo(
+    beneficiary: [u8; 20],
+    redemption_domain: [u8; 32],
+) -> Result<MemoPayload> {
+    if beneficiary == [0; 20] {
+        return Err(Error::ZeroBeneficiary);
+    }
+    let mut data = [0u8; 64];
+    data[..20].copy_from_slice(&beneficiary);
+    data[20..52].copy_from_slice(&redemption_domain);
+    Ok(MemoPayload::new(BRIDGE_RETURN_MEMO_TYPE, data))
+}
+
+/// Construct and encrypt a deployment-bound return using MobileCoin's own
+/// TxOut API. This is an output builder, not a transaction submission or proof
+/// that it has been included in a ledger.
+pub fn create_return_tx_out(
+    amount: Amount,
+    recipient: &PublicAddress,
+    tx_private_key: &RistrettoPrivate,
+    fog_hint: EncryptedFogHint,
+    beneficiary: [u8; 20],
+    redemption_domain: [u8; 32],
+) -> Result<TxOut> {
+    let memo = bridge_return_memo(beneficiary, redemption_domain)?;
+    TxOut::new_with_memo(
+        BlockVersion::MAX,
+        amount,
+        recipient,
+        tx_private_key,
+        fog_hint,
+        |_ctx| Ok(memo),
+    )
+    .map_err(|e| Error::ReturnOutputConstruction(format!("{e}")))
+}
 
 /// The plaintext behind a return output.
 #[derive(Clone, Debug)]
@@ -65,6 +104,8 @@ pub struct Disclosure {
     pub memo_data: [u8; 64],
     /// First 20 bytes of the memo data.
     pub beneficiary: [u8; 20],
+    /// Bytes 20..52 of the memo data, authenticated by the output digest.
+    pub redemption_domain: [u8; 32],
 }
 
 impl Disclosure {
@@ -89,7 +130,8 @@ impl Disclosure {
         // already made and will never fire; it is here for the versions that
         // do not make it -- MaskedAmountV1's `get_value` does not compare
         // commitments -- and for any future variant that forgets to.
-        let expected = CompressedCommitment::new(amount.value, blinding, &generators(*amount.token_id));
+        let expected =
+            CompressedCommitment::new(amount.value, blinding, &generators(*amount.token_id));
         if &expected != masked_amount.commitment() {
             return Err(Error::CommitmentMismatch);
         }
@@ -110,6 +152,14 @@ impl Disclosure {
         }
         let mut beneficiary = [0u8; 20];
         beneficiary.copy_from_slice(&memo_data[..20]);
+        if memo_data[52..].iter().any(|b| *b != 0) {
+            return Err(Error::NonzeroMemoReserved);
+        }
+        if beneficiary == [0; 20] {
+            return Err(Error::ZeroBeneficiary);
+        }
+        let mut redemption_domain = [0u8; 32];
+        redemption_domain.copy_from_slice(&memo_data[20..52]);
 
         Ok(Self {
             view_private_key: *view_private_key,
@@ -120,6 +170,7 @@ impl Disclosure {
             memo_type,
             memo_data,
             beneficiary,
+            redemption_domain,
         })
     }
 
@@ -133,6 +184,17 @@ impl Disclosure {
     pub fn require_paid_to(&self, return_subaddress_spend_public: &RistrettoPublic) -> Result<()> {
         if &self.recovered_subaddress_spend_key != return_subaddress_spend_public {
             return Err(Error::NotPaidToReturnAddress);
+        }
+        Ok(())
+    }
+
+    /// A relayer cannot retarget a signed output to another escrow or chain.
+    pub fn require_domain(&self, expected: &[u8; 32]) -> Result<()> {
+        if &self.redemption_domain != expected {
+            return Err(Error::MemoWrongDomain {
+                got: self.redemption_domain,
+                want: *expected,
+            });
         }
         Ok(())
     }

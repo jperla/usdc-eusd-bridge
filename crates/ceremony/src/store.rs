@@ -456,7 +456,11 @@ impl BindingStore for MemoryStore {
     }
 
     fn reserve(&mut self, slot: SlotId) -> Result<Receipt, StoreError> {
-        let record = self.slots.get(&slot).copied().unwrap_or(SlotRecord::Reserved);
+        let record = self
+            .slots
+            .get(&slot)
+            .copied()
+            .unwrap_or(SlotRecord::Reserved);
         self.write(slot, record)
     }
 
@@ -633,3 +637,8 @@ impl<A: Anchor> Anchor for Rc<RefCell<A>> {
         self.borrow_mut().commit(receipt)
     }
 }
+
+#[cfg(unix)]
+mod file;
+#[cfg(unix)]
+pub use file::{DurableNonceGuard, FileStore};

@@ -4,11 +4,7 @@ on:
   push:
   pull_request:
 
-# Solidity, runner controls, and finite-state proof checks run here. Rust path-depends on a
-# MobileCoin checkout that scripts/setup.sh clones at a pinned revision, and
-# that graph pulls four more git forks including mbedtls, which needs a C
-# toolchain. Nobody has run that on a Linux runner, so it is not asserted here.
-# Run it locally with ./scripts/setup.sh && ./scripts/test.sh.
+# Native integration, Solidity bytecode, and finite-state negative controls.
 
 jobs:
   contracts:
@@ -59,3 +55,26 @@ jobs:
         run: ./scripts/setup-proofs.sh
       - name: Run proof runners
         run: ./scripts/proofs.sh
+
+  native:
+    name: Rust and connected local signing integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang libclang-dev pkg-config protobuf-compiler
+          rustup toolchain install nightly-2024-10-11 --profile minimal
+      - name: Pinned vendors and locked dependency caches
+        run: ./scripts/setup.sh
+      - name: Rust, durable signing and real EVM return tests
+        run: ./scripts/test.sh
+      - name: Generated upstream proofs are reproducible
+        run: git diff --exit-code -- crates/mc-return/fixtures contracts/test/fixtures/returns-v2

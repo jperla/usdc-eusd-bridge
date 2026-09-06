@@ -54,6 +54,7 @@ const RIS = JSON.parse(readFileSync(
   join(HERE, 'fixtures', 'ristretto.json'), 'utf8'
 ));
 
+const FIXTURE_ESCROW = '0x' + '71'.repeat(20);
 const GOV = '0x' + '11'.repeat(20);
 const MEMO_DOMAIN =
   '0x' + Buffer.from('mc-bridge-return-v1').toString('hex').padEnd(64, '0');
@@ -135,7 +136,6 @@ function encodeProof(p) {
     b32(p.rootHash), b32(p.contentsHash),
     null, null,                                   // signerKeys, signatures
     null,                                         // txOut
-    b32(p.memoDomainTag),
     null,                                         // merklePath
     word(p.merkleIndex),
   ];
@@ -143,7 +143,7 @@ function encodeProof(p) {
                  dynB32s(p.merklePath)];
   let off = head.length * 32;
   for (const [slot, tail] of [[9, tails[0]], [10, tails[1]], [11, tails[2]],
-                              [13, tails[3]]]) {
+                              [12, tails[3]]]) {
     head[slot] = word(off);
     off += tail.length / 2;
   }
@@ -177,7 +177,7 @@ function encodeLegacyProof(p) {
 
 const callVerify = (chain, verifier, p, enc = encodeProof) =>
   chain.call(verifier, encodeWithTrailingBytes(
-    'verifyReturn(bytes)', [], '0x' + enc(p)));
+    'verifyReturn(bytes)', [], '0x' + enc(p)), { from: FIXTURE_ESCROW });
 
 /// `openAmount(bytes32, TxOutFields)`. The tuple's canonical type string has to
 /// match the struct field for field or the selector is for another function.
@@ -188,7 +188,7 @@ const callOpenAmount = (chain, verifier, sharedSecret, txOut) =>
 
 const callOpenMemo = (chain, verifier, sharedSecret, eMemo) =>
   chain.call(verifier, encodeWithTrailingBytes(
-    'openMemo(bytes32,bytes)', [b32(sharedSecret)], eMemo));
+    'openMemo(bytes32,bytes)', [b32(sharedSecret)], eMemo), { from: FIXTURE_ESCROW });
 
 // Custom-error selectors, so a revert is asserted by NAME and a test cannot
 // pass on the wrong failure.
@@ -196,7 +196,7 @@ const ERR = {};
 for (const sig of [
   'QuorumNotMet()', 'BadSignature(uint256)', 'SignerCountMismatch()',
   'WrongTokenId(uint64,uint64)', 'WrongMemoDomain(bytes32,bytes32)',
-  'WrongMemoType(bytes2,bytes2)', 'ZeroBeneficiary()', 'NotPayableToBridge()',
+  'NonzeroMemoReserved(bytes12)', 'WrongMemoType(bytes2,bytes2)', 'ZeroBeneficiary()', 'NotPayableToBridge()',
   'MembershipFailed()', 'BlockIdMismatch(bytes32,bytes32)',
   'InvalidMaskedTokenId(uint256)', 'InconsistentCommitment(bytes32,bytes32)',
   'InvalidValueGenerator(bytes32)', 'InvalidMemoLength(uint256)',
@@ -441,7 +441,7 @@ await test('the returned amount, token id and payee are the ones MobileCoin '
   assertEq('0x' + r.ret.slice(2 + 64 + 24, 2 + 128),
     '0x' + FIX.disclosure.memo_data.replace(/^0x/, '').slice(0, 40),
     'beneficiary, vs the first 20 bytes of the decrypted memo data');
-  assertEq(FIX.disclosure.memo_type, '0x8001',
+  assertEq(FIX.disclosure.memo_type, '0x8002',
     'the fixture must be a bridge-return memo, or this test proves nothing');
 });
 
@@ -785,35 +785,19 @@ await test('a bridge deployed for a different return address redeems nothing',
   assertRevertsWith(r, 'NotPayableToBridge()', 'wrong return address');
 });
 
-await test('a mismatched caller-supplied deployment tag is refused', async () => {
-  // `memoDomainTag` is not in the MobileCoin data at all: it is a constant the
-  // submitter restates. It catches an unchanged proof's configuration
-  // mismatch; the test below demonstrates that a relayer can replace it.
-  // The authenticated memo type binds the purpose, not the deployment.
-  const other = '0x' + Buffer.from('mc-bridge-return-v2')
-    .toString('hex').padEnd(64, '0');
-  const r = await callVerify(chain, V, mutate({ memoDomainTag: other }));
-  assertRevertsWith(r, 'WrongMemoDomain(bytes32,bytes32)', 'wrong domain');
+await test('the memo binds chain, escrow and namespace; relay retagging is ineffective', async () => {
+  const original = await callVerify(chain, V, good());
+  assert(original.ok, 'honest domain control');
+  const other = '0x' + 'd7'.repeat(32);
+  const second = await deployVerifier(REG, realCheck, { memoDomain: other });
+  assertRevertsWith(await callVerify(chain, second, mutate({ memoDomainTag: other })),
+    'WrongMemoDomain(bytes32,bytes32)', 'namespace replay');
+  const wrongCaller = await chain.call(V, encodeWithTrailingBytes(
+    'verifyReturn(bytes)', [], '0x' + encodeProof(good())), { from: GOV });
+  assertRevertsWith(wrongCaller, 'WrongMemoDomain(bytes32,bytes32)', 'escrow replay');
+  const domain = await chain.must(V, selector('redemptionDomain(address)') + addrWord(FIXTURE_ESCROW));
+  assertEq(domain.ret, FIX.disclosure.redemption_domain, 'Rust memo vs EVM domain');
 });
-
-await test('LIMITATION: retagging the same signed output verifies in another deployment',
-  async () => {
-    const other = '0x' + Buffer.from('mc-bridge-return-v2')
-      .toString('hex').padEnd(64, '0');
-    const second = await deployVerifier(REG, realCheck, { memoDomain: other });
-    const original = await callVerify(chain, V, good());
-    assert(original.ok, 'control: the original deployment must accept');
-    const unchanged = await callVerify(chain, second, good());
-    assertRevertsWith(unchanged, 'WrongMemoDomain(bytes32,bytes32)',
-      'unchanged tag in second deployment');
-    const retagged = await callVerify(chain, second, mutate({ memoDomainTag: other }));
-    assert(retagged.ok, 'the deployment tag is not authenticated by the TxOut');
-    assertEq(retagged.ret, original.ret,
-      'retagging preserves the same output, beneficiary, amount, token and block');
-    // This is a demonstrated limitation, not a security property to preserve.
-    // Distinct funded escrows need disjoint return addresses or a deployment
-    // domain authenticated inside the encrypted memo (with a migration plan).
-  });
 
 // ================================================== THE PAYOUT IS DERIVED
 //
@@ -1382,34 +1366,38 @@ await test('the permissive test recipient check no longer redeems anything',
   assert(!r.ok, 'a blanket yes redeemed a return');
 });
 
-await test('every memo the oracle published decrypts to the address it carries',
-  async () => {
-  // Four memos from tools/amount-fixtures, encrypted by MobileCoin's own
-  // MemoPayload: a real address, the zero address, all-ones, and one with the
-  // wrong memo type. The verifier's own `openMemo` -- the function
-  // `verifyReturn` calls -- adjudicates each.
+await test('legacy upstream memos remain decryptable but cannot authorize v2 payouts', async () => {
   const v = await deployVerifier(REG, realCheck);
+  const probe = await chain.deploy('AmountOpenerProbe_DO_NOT_DEPLOY');
   for (const m of AMT.memos) {
-    const r = await callOpenMemo(chain, v, m.sharedSecret, m.ciphertext);
-    if (m.memoType !== '0x8001') {
-      assertRevertsWith(r, 'WrongMemoType(bytes2,bytes2)', m.name);
-      assertEq('0x' + r.ret.slice(10, 14), m.memoType, `${m.name}: reported type`);
-      assertEq('0x' + r.ret.slice(10 + 64, 10 + 68), '0x8001',
-        `${m.name}: reported want`);
-    } else if (BigInt(m.beneficiary) === 0n) {
-      assertRevertsWith(r, 'ZeroBeneficiary()', m.name);
-    } else {
-      assert(r.ok, `${m.name}: ${errorOf(r)}`);
-      assertEq('0x' + r.ret.slice(26), m.beneficiary, `${m.name}: beneficiary`);
-    }
+    const raw = await chain.must(probe, encodeWithTrailingBytes(
+      'openMemo(bytes32,bytes)', [b32(m.sharedSecret)], m.ciphertext));
+    assertEq('0x' + raw.ret.slice(2,6), m.memoType, 'upstream type');
+    assertEq('0x' + raw.ret.slice(90,130), m.beneficiary, 'upstream beneficiary');
+    assertRevertsWith(await callOpenMemo(chain, v, m.sharedSecret, m.ciphertext),
+      'WrongMemoType(bytes2,bytes2)', m.name);
   }
+  assert(AMT.memos.length >= 4, 'oracle coverage');
+});
 
-  // All four cases were actually exercised, so a fixture that lost its
-  // negative memos would fail here rather than quietly shrink the test.
-  assert(AMT.memos.some((m) => m.memoType !== '0x8001'), 'no wrong-type memo');
-  assert(AMT.memos.some((m) => BigInt(m.beneficiary) === 0n), 'no zero-payee memo');
-  assert(AMT.memos.some((m) => m.memoType === '0x8001' &&
-    BigInt(m.beneficiary) !== 0n), 'no honest memo');
+await test('v2 memo refuses legacy type, nonzero reserved bytes, wrong domain and zero payee', async () => {
+  const v = await deployVerifier(REG, realCheck);
+  // CTR bit changes yield precisely chosen plaintext changes. These isolated
+  // opener controls do not claim altered ciphertext retains a block signature.
+  const edit = (start, bytes) => {
+    const ct = Buffer.from(FIX.tx_out.e_memo.slice(2), 'hex');
+    const pt = Buffer.from(FIX.disclosure.memo_type.slice(2) + FIX.disclosure.memo_data.slice(2), 'hex');
+    for (let i=0;i<bytes.length;i++) ct[start+i] ^= pt[start+i] ^ bytes[i];
+    return '0x'+ct.toString('hex');
+  };
+  for (const [start, bytes, error] of [
+    [0, [0x80, 1], 'WrongMemoType(bytes2,bytes2)'],
+    [22, Array(32).fill(0), 'WrongMemoDomain(bytes32,bytes32)'],
+    [54, [1], 'NonzeroMemoReserved(bytes12)'],
+    [65, [1], 'NonzeroMemoReserved(bytes12)'],
+    [2, Array(20).fill(0), 'ZeroBeneficiary()'],
+  ]) assertRevertsWith(await callOpenMemo(chain, v, FIX.disclosure.shared_secret, edit(start, bytes)), error, error);
+  assert((await callOpenMemo(chain, v, FIX.disclosure.shared_secret, FIX.tx_out.e_memo)).ok, 'honest retry');
 });
 
 await test('a memo that is not 66 bytes is not a memo', async () => {

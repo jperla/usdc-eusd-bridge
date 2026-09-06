@@ -1,3 +1,9 @@
+//! Version 2 uses effective nonces `alpha_i + rho_i*beta_i`, where the
+//! independently derived beta nonce and every participant commitment enter
+//! the transcript-bound rho. In the algebra below, aggregate `alpha_0` means
+//! the sum of these effective nonces. `SpendNonce` carries both commitments
+//! on both bases; packet authentication is available in [`wire`].
+//!
 //! Two-round distributed MLSAG signing over a composite spend root.
 //!
 //! This is the module that closes the gap the rest of the crate leaves open.
@@ -100,29 +106,18 @@
 //!     alpha_i = H(NONCE_DOMAIN | binding | seat | w_i)
 //! ```
 //!
-//! No `RngCore` reaches [`SpendSigner::commit`] at all. WHY: a sampled nonce
-//! makes the catastrophic case -- one `alpha_i` answering two different
-//! challenges, which gives up the share as `(r - r')/(c' - c) = w_i` -- depend
-//! on the freshness of a caller-supplied RNG. A signer restarted from a
-//! snapshot, a seeded HSM, or a retried job replays its RNG stream and
-//! republishes the same nonce under a new session. Deriving `alpha_i` from the
-//! session binding means a different session gets a different nonce with no
-//! state and no entropy required.
+//! No participant RNG is required: two domain-separated hashes derive the
+//! hiding and binding nonces from the secret, session and seat. Replaying a
+//! coordinator RNG cannot repeat a participant's nonces across different
+//! bindings. Both nonces must nevertheless be treated as one-time secrets.
 //!
-//! That leaves exactly one way to get two challenges against one nonce: run the
-//! *same* session twice, varying only what the participant does not commit to
-//! (the coordinator's decoy responses, or the set of participants). Determinism
-//! cannot close that, because `alpha_i` would have to be bound to a transcript
-//! that does not exist yet when it is chosen. It is closed by state instead:
-//! [`NonceGuard`] reserves `(binding, seat)` and refuses a second reservation,
-//! so a seat commits at most once per session id, ever. A retry uses a fresh
-//! session id, which is a fresh binding, which is a fresh nonce -- safe, and
-//! allowed.
-//!
-//! **The guard must be durable to be worth anything.** [`MemoryNonceGuard`] is
-//! a test stand-in; a signer that can restart needs a store that survives the
-//! restart and cannot be rolled back. `crates/ceremony/src/store.rs` is that
-//! store, with the rollback anchor the problem actually requires.
+//! [`NonceGuard`] reserves `(binding, seat)` before either nonce commitment
+//! is returned and refuses a second reservation. A retry uses a fresh session
+//! ID and an independently authorized intent. DurableNonceGuard in the ceremony
+//! crate supplies an fsynced journal and requires a separate rollback anchor.
+//! Transcript binding is an additional defence, not permission to reuse the
+//! two nonces. Secret-keyed derivation also needs independent cryptographic
+//! review in this custom MLSAG composition.
 //!
 //! # What the coordinator can and cannot check
 //!
@@ -196,24 +191,22 @@
 //!   signature checks do not establish which of those paths supplied a seat.
 //! * **No policy over a decoded transaction.** See above: participants hold the
 //!   message bytes, not amounts and recipients.
-//! * **No concurrency defence (ROS / Drijvers).** One nonce commitment per
-//!   participant, an aggregate `R = sum_i A_i` that is linear in the
-//!   contributions, and an adversary that can open many sessions at once is the
-//!   setting Wagner's k-tree algorithm attacks. Nothing here bounds
-//!   concurrency, and there is no binding factor making the aggregate nonce
-//!   non-linear in the round-one set. `crates/ceremony/src/frost.rs` has the
-//!   shape of the fix -- two commitments `(D, E)` per participant and
-//!   `rho_i = H(ctx_id, i)` over the whole round-one package -- and porting it
-//!   into the MLSAG chain is not done here. No forgery is claimed; the
-//!   precondition is present and the standard defence is absent.
-//! * **No transport, no authentication, no identifiable abort.** Round messages
-//!   are values, not signed packets. A coordinator cannot forge a *valid*
+//! * **Concurrency hardening, not a composition proof.** Each seat now uses
+//!   two independently domain-separated secret-keyed nonces, with a FROST-style
+//!   binding factor over the complete session and canonical round-one set.
+//!   Both G and Hp(P) commitments use the same factor. This closes the known
+//!   linear aggregate-nonce shape; it does not establish a formal concurrent
+//!   security theorem for this custom two-cohort MLSAG construction. Independent
+//!   cryptographic review and durable per-seat nonce guards remain required.
+//! * **No deployed transport or automatic blame service.** Raw round messages
+//!   remain low-level values. [`wire`] adds bounded identity-signed packets for
+//!   callers that supply an authenticated roster and expected round context. A coordinator cannot forge a *valid*
 //!   signature -- the checks above are jointly sufficient -- but anyone on the
 //!   wire can kill a session unattributably, and the errors below are a label
 //!   for an honest coordinator's retry logic, not evidence against a
 //!   participant. `crates/ceremony/src/identity.rs` states the principle this
-//!   module does not yet implement: abort evidence is a signature, never a
-//!   transcript.
+//!   wire module follows: abort evidence is a signature, never a transcript.
+//!   Operating the network service and retaining evidence remain deployment work.
 //! * **Best-effort zeroization**, for the reason given at the crate root.
 
 use core::fmt;
@@ -249,10 +242,10 @@ pub const RING_MLSAG_CHALLENGE_DOMAIN_TAG: &str = "mc_ring_mlsag_challenge";
 
 /// Domain separator for [`SessionBinding`]. Local to this crate: nothing
 /// upstream hashes a session description, because upstream has no session.
-const SESSION_BINDING_DOMAIN: &[u8] = b"bridge/two-cohort/mlsag/session/v1";
+const SESSION_BINDING_DOMAIN: &[u8] = b"bridge/two-cohort/mlsag/session/v2";
 
 /// Domain separator for deterministic nonce derivation.
-const NONCE_DOMAIN: &[u8] = b"bridge/two-cohort/mlsag/nonce/v1";
+const NONCE_DOMAIN: &[u8] = b"bridge/two-cohort/mlsag/nonce/v2";
 
 /// `Hn( m | key_image | L0 | R0 | L1 )`, byte for byte as
 /// `mlsag_sign.rs`/`mlsag_verify.rs` compute it.
@@ -674,6 +667,50 @@ fn derive_nonce(secret: &Scalar, binding: &SessionBinding, seat: Seat) -> Scalar
     Scalar::from_hash(h)
 }
 
+/// Independent secret-keyed binding nonce; version separated from hiding nonce.
+fn derive_binding_nonce(secret: &Scalar, binding: &SessionBinding, seat: Seat) -> Scalar {
+    let mut h = Blake2b512::new();
+    h.update(b"mc-bridge-mlsag-binding-nonce-v2");
+    h.update(binding.0);
+    h.update(seat.tag());
+    h.update(secret.to_bytes());
+    Scalar::from_hash(h)
+}
+
+/// FROST-style two-commitment binding (RFC 9591 sections 4.4-4.5),
+/// adapted to both MLSAG bases. This is NOT an RFC 9591 ciphersuite or a
+/// security proof for the composed MLSAG protocol. Sort by role for a unique
+/// encoding; chain_around separately rejects duplicates before using it.
+fn binding_factor(binding: SessionBinding, round: &RoundOne, seat: Seat) -> Scalar {
+    let mut h = Blake2b512::new();
+    h.update(b"mc-bridge-mlsag-binding-factor-v2");
+    h.update(binding.0);
+    h.update(seat.tag());
+    h.update((round.nonces.len() as u64).to_le_bytes());
+    let mut nonces: Vec<_> = round.nonces.iter().collect();
+    nonces.sort_by_key(|n| n.role);
+    for n in nonces {
+        h.update(Seat::Spend(n.role).tag());
+        for point in [
+            n.share_public,
+            n.image_term,
+            n.nonce_public,
+            n.nonce_image,
+            n.binding_public,
+            n.binding_image,
+        ] {
+            h.update(point.compress().as_bytes());
+        }
+    }
+    h.update(round.mask.nonce_public.compress().as_bytes());
+    h.update(round.mask.binding_public.compress().as_bytes());
+    h.update((round.responses.len() as u64).to_le_bytes());
+    for response in &round.responses {
+        h.update(response.to_bytes());
+    }
+    Scalar::from_hash(h)
+}
+
 // ---------------------------------------------------------------------------
 // Participants
 // ---------------------------------------------------------------------------
@@ -740,7 +777,7 @@ impl SpendSigner {
         self.role
     }
 
-    /// ROUND ONE. Derive this session's nonce and publish the four group
+    /// ROUND ONE. Derive this session's two nonces and publish the six group
     /// elements.
     ///
     /// Takes the whole [`SessionParams`], not a base point: the base is
@@ -771,6 +808,7 @@ impl SpendSigner {
         // the original is still zeroized on drop.
         let (role, weight) = (self.role, self.weight);
         let alpha = derive_nonce(&weight, &binding, seat);
+        let beta = derive_binding_nonce(&weight, &binding, seat);
 
         let nonce = SpendNonce {
             role,
@@ -778,6 +816,8 @@ impl SpendSigner {
             image_term: weight * base,
             nonce_public: alpha * g,
             nonce_image: alpha * base,
+            binding_public: beta * g,
+            binding_image: beta * base,
         };
         let armed = ArmedSpendSigner {
             role,
@@ -785,6 +825,7 @@ impl SpendSigner {
             base,
             weight,
             alpha,
+            beta,
         };
         Ok((nonce, armed))
     }
@@ -836,6 +877,7 @@ pub struct ArmedSpendSigner {
     base: RistrettoPoint,
     weight: Scalar,
     alpha: Scalar,
+    beta: Scalar,
 }
 
 impl ArmedSpendSigner {
@@ -887,6 +929,8 @@ impl ArmedSpendSigner {
             image_term: self.weight * self.base,
             nonce_public: self.alpha * g,
             nonce_image: self.alpha * self.base,
+            binding_public: self.beta * g,
+            binding_image: self.beta * self.base,
         };
         if !round_one.nonces.iter().any(|n| *n == mine) {
             return Err(SigningError::NotInTranscript {
@@ -898,7 +942,9 @@ impl ArmedSpendSigner {
         let chained = chain_around(params.message, &ground, round_one)?;
         Ok(SpendResponse {
             role: self.role,
-            response: self.alpha - chained.c_real * self.weight,
+            response: self.alpha
+                + binding_factor(self.binding, round_one, Seat::Spend(self.role)) * self.beta
+                - chained.c_real * self.weight,
         })
     }
 }
@@ -954,11 +1000,18 @@ impl MaskSigner {
 
         let z = self.z;
         let alpha = derive_nonce(&z, &binding, Seat::Mask);
+        let beta = derive_binding_nonce(&z, &binding, Seat::Mask);
         Ok((
             MaskNonce {
                 nonce_public: alpha * RISTRETTO_BASEPOINT_POINT,
+                binding_public: beta * RISTRETTO_BASEPOINT_POINT,
             },
-            ArmedMaskSigner { binding, z, alpha },
+            ArmedMaskSigner {
+                binding,
+                z,
+                alpha,
+                beta,
+            },
         ))
     }
 }
@@ -979,6 +1032,7 @@ pub struct ArmedMaskSigner {
     binding: SessionBinding,
     z: Scalar,
     alpha: Scalar,
+    beta: Scalar,
 }
 
 impl ArmedMaskSigner {
@@ -992,13 +1046,16 @@ impl ArmedMaskSigner {
         if params.binding() != self.binding {
             return Err(SigningError::SessionMismatch);
         }
-        if round_one.mask.nonce_public != self.alpha * RISTRETTO_BASEPOINT_POINT {
+        if round_one.mask.nonce_public != self.alpha * RISTRETTO_BASEPOINT_POINT
+            || round_one.mask.binding_public != self.beta * RISTRETTO_BASEPOINT_POINT
+        {
             return Err(SigningError::NotInTranscript { seat: Seat::Mask });
         }
         let ground = Ground::open(params)?;
         let chained = chain_around(params.message, &ground, round_one)?;
         Ok(MaskResponse {
-            response: self.alpha - chained.c_real * self.z,
+            response: self.alpha + binding_factor(self.binding, round_one, Seat::Mask) * self.beta
+                - chained.c_real * self.z,
         })
     }
 }
@@ -1036,6 +1093,10 @@ pub struct SpendNonce {
     pub nonce_public: RistrettoPoint,
     /// `alpha_i * Hp(P)`.
     pub nonce_image: RistrettoPoint,
+    /// Independently derived beta_i * G, combined using transcript rho_i.
+    pub binding_public: RistrettoPoint,
+    /// The same beta_i on Hp(P).
+    pub binding_image: RistrettoPoint,
 }
 
 /// ROUND TWO message from one spend-row participant: `r_i = alpha_i - c*w_i`.
@@ -1049,6 +1110,7 @@ pub struct SpendResponse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaskNonce {
     pub nonce_public: RistrettoPoint,
+    pub binding_public: RistrettoPoint,
 }
 
 /// ROUND TWO message for the mask row: `r_1 = alpha_1 - c*z`.
@@ -1075,6 +1137,24 @@ pub struct RoundOne {
     pub responses: Vec<Scalar>,
 }
 
+impl RoundOne {
+    /// Digest of the full public transcript for authenticated round-two packets.
+    pub fn context_id(&self, params: &SessionParams<'_>) -> [u8; 32] {
+        let mut h = Blake2b256::new();
+        h.update(b"mc-bridge-mlsag-wire-context-v2");
+        h.update(params.binding().as_bytes());
+        // binding_factor already commits to every canonical transcript field.
+        h.update(self.binding_factor(params, Seat::Mask).to_bytes());
+        h.finalize().into()
+    }
+
+    /// Public transcript coefficient for independent inspection. Signing APIs
+    /// validate the session and unique participant roles before using it.
+    pub fn binding_factor(&self, params: &SessionParams<'_>, seat: Seat) -> Scalar {
+        binding_factor(params.binding(), self, seat)
+    }
+}
+
 /// `c_real`, the challenge that closes the loop back to the real ring index.
 ///
 /// Public -- it is a hash of public data, and both the verifier and every
@@ -1095,6 +1175,7 @@ impl RealChallenge {
 
 /// The decompressed, hashed form of a session's ring. Derived, never sent.
 struct Ground {
+    binding: SessionBinding,
     real_index: usize,
     ring: Vec<(RistrettoPublic, Commitment)>,
     /// `Hp(P_i)` for every ring member, precomputed because the chain uses
@@ -1129,6 +1210,7 @@ impl Ground {
             .map_err(|_| SigningError::OutputCommitmentInvalid)?;
 
         Ok(Ground {
+            binding: params.binding(),
             real_index: params.real_index,
             ring,
             hp,
@@ -1192,9 +1274,24 @@ fn chain_around(
     };
 
     // Row-0 and row-1 commitments for the real index.
-    let l0_real: RistrettoPoint = round_one.nonces.iter().map(|n| n.nonce_public).sum();
-    let r0_real: RistrettoPoint = round_one.nonces.iter().map(|n| n.nonce_image).sum();
-    let l1_real = round_one.mask.nonce_public;
+    let l0_real: RistrettoPoint = round_one
+        .nonces
+        .iter()
+        .map(|n| {
+            n.nonce_public
+                + binding_factor(ground.binding, round_one, Seat::Spend(n.role)) * n.binding_public
+        })
+        .sum();
+    let r0_real: RistrettoPoint = round_one
+        .nonces
+        .iter()
+        .map(|n| {
+            n.nonce_image
+                + binding_factor(ground.binding, round_one, Seat::Spend(n.role)) * n.binding_image
+        })
+        .sum();
+    let l1_real = round_one.mask.nonce_public
+        + binding_factor(ground.binding, round_one, Seat::Mask) * round_one.mask.binding_public;
 
     let g = RISTRETTO_BASEPOINT_POINT;
     let real = ground.real_index;
@@ -1378,12 +1475,20 @@ impl<'a> Session<'a> {
                 role: n.role,
                 share_public: n.share_public,
                 image_term: n.image_term,
-                nonce_public: n.nonce_public,
-                nonce_image: n.nonce_image,
+                nonce_public: n.nonce_public
+                    + binding_factor(self.params.binding(), &round_one, Seat::Spend(n.role))
+                        * n.binding_public,
+                nonce_image: n.nonce_image
+                    + binding_factor(self.params.binding(), &round_one, Seat::Spend(n.role))
+                        * n.binding_image,
             })
             .collect();
 
+        let mask_commitment = round_one.mask.nonce_public
+            + binding_factor(self.params.binding(), &round_one, Seat::Mask)
+                * round_one.mask.binding_public;
         Ok(ChallengedSession {
+            mask_commitment,
             real_index: self.ground.real_index,
             hp_real: self.ground.spend_base(),
             target: *self.ground.target(),
@@ -1412,6 +1517,7 @@ impl fmt::Debug for Session<'_> {
 /// Like [`Session`], holds no secret.
 #[derive(Debug)]
 pub struct ChallengedSession {
+    mask_commitment: RistrettoPoint,
     real_index: usize,
     hp_real: RistrettoPoint,
     target: RistrettoPublic,
@@ -1530,7 +1636,7 @@ impl ChallengedSession {
         // Upstream's `check_value_is_preserved`, done without knowing `z`:
         // `alpha_1*G - r_1*G = c*z*G`, and `c != 0` was checked when the chain
         // closed.
-        let recovered = (self.round_one.mask.nonce_public - mask.response * g) * c.invert();
+        let recovered = (self.mask_commitment - mask.response * g) * c.invert();
         if recovered != self.balance_target {
             return Err(SigningError::ValueNotConserved {
                 recovered: hex32(&recovered),
@@ -1644,3 +1750,6 @@ pub fn sign<R: RngCore + CryptoRng>(
 
     challenged.finish(&responses, &mask_response)
 }
+
+#[path = "mlsag_wire.rs"]
+pub mod wire;

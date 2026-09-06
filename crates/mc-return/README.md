@@ -1,3 +1,7 @@
+> Current return schema: v2 (`0x8002`), with authenticated chain/escrow/namespace.
+> See [the v2 hardening report](../../docs/PR2-V2-HARDENING.md). Historical
+> implementation discussion below may describe earlier verifier boundaries.
+
 # mc-return
 
 The relayer-side half of the bridge's RETURN leg. Given a MobileCoin ledger in
@@ -159,7 +163,7 @@ signature from one node cannot make up a quorum. The `BlockMetadata` route has
 no such gap: quorum counting there is upstream's `TrustedValidatorSet`,
 including recursive inner sets.
 
-**The memo type is unregistered.** `BRIDGE_RETURN_MEMO_TYPE = 0x8001` sits
+**The memo type is unregistered.** `BRIDGE_RETURN_MEMO_TYPE = 0x8002` sits
 outside MobileCoin's allocated 0x00xx–0x02xx range but is not registered with
 anyone. A future collision would misrender the memo in wallets; it is not a
 bridge security boundary, because the escrow pays out only for an output the
@@ -171,3 +175,17 @@ fixture uses a default `VerificationReport`. Upstream's `TrustedValidatorSet`
 does not inspect the evidence either — it checks the signature and the quorum.
 Deciding whether the attesting enclave is one the bridge accepts is a separate
 problem this crate does not address.
+
+## Building v2 returns
+
+Call the target verifier's `redemptionDomain(escrow)` on the intended chain.
+Pass that exact 32-byte result to `create_return_tx_out` along with the amount,
+recipient, transaction key and Ethereum beneficiary. `ReturnProof::build` also
+requires the expected domain and refuses a signed output that names another
+one. Memo data is `beneficiary20 || domain32 || zero12`; zero beneficiaries and
+nonzero reserved bytes fail closed. The memo type, domain and entire ciphertext
+are bound by the quorum-authenticated output digest.
+
+`examples/return-fixture.rs` creates deterministic synthetic signed blocks for
+a supplied domain. It uses test keys and is never a transaction submission tool.
+Legacy v1 outputs cannot be relayer-retagged into v2 returns.

@@ -102,3 +102,27 @@ required package is not already cached; such a failure is not a test result.
   makes no attempt to make progress without a full subset.
 * **Identity key management.** Rotation, revocation and the consequences of an
   identity key compromise (attribution silently fails) are out of scope.
+
+## Durable journal and MLSAG adapter
+
+On Unix, `store::FileStore` uses a mode-0600, no-symlink journal in an existing
+private directory. It holds an exclusive OS writer lock, fsyncs each appended
+hash-chained record and reads the journal back before returning a receipt.
+Missing, malformed, torn, oversized or conflicting state is refused. Open and
+create are separate operations; create never overwrites. The current backend
+revalidates the entire log per write and caps it at 128 MiB: it is intended for
+bounded prototype operation, not a high-throughput signing service.
+
+`store::DurableNonceGuard` connects this store to the two-cohort MLSAG signer.
+It compares the full journal head/sequence with a separately supplied Anchor
+before issuing a nonce. Its context index uses full 256-bit hashes. Reopening a
+valid old snapshot cannot be detected by the journal alone; the independent
+anchor is essential. `MemoryAnchor` is only a simulation. Anchor disagreement,
+including a crash between journal sync and anchor commit, stops signing and
+needs operator reconciliation. There is no automatic recovery service here.
+
+Tests cover process exit without destructors, exclusive locking, re-open and
+conflicting contexts, every single-byte corruption and partial final frame,
+symlinks, independent-anchor rollback detection and duplicate MLSAG reservation
+across a reopen. Filesystem fsync semantics and the independent anchor remain
+platform assumptions; the tests do not simulate a physical power failure.

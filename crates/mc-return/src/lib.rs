@@ -45,7 +45,9 @@ pub use attestation::{
     AttestationRoute, BlockMetadataQuorum, BlockSignatureQuorum, QuorumEvidence,
 };
 pub use chain::HeaderChain;
-pub use disclosure::{Disclosure, BRIDGE_RETURN_MEMO_TYPE};
+pub use disclosure::{
+    bridge_return_memo, create_return_tx_out, Disclosure, BRIDGE_RETURN_MEMO_TYPE,
+};
 pub use error::{Error, Result};
 pub use merkle::TxOutTree;
 pub use transcript::TranscriptScript;
@@ -77,6 +79,7 @@ impl ReturnProof {
         quorum: QuorumEvidence,
         view_private_key: &RistrettoPrivate,
         return_subaddress_spend_public: &RistrettoPublic,
+        expected_redemption_domain: &[u8; 32],
     ) -> Result<Self> {
         let anchor = chain.anchor().clone();
 
@@ -122,6 +125,7 @@ impl ReturnProof {
 
         let disclosure = Disclosure::open(&tx_out, view_private_key)?;
         disclosure.require_paid_to(return_subaddress_spend_public)?;
+        disclosure.require_domain(expected_redemption_domain)?;
 
         Ok(Self {
             chain,

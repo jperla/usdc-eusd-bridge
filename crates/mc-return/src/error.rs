@@ -83,6 +83,18 @@ pub enum Error {
     #[error("memo type is {got:02x?}, not the bridge return memo {want:02x?}")]
     MemoWrongType { got: [u8; 2], want: [u8; 2] },
 
+    #[error("memo redemption domain is {got:02x?}, not {want:02x?}")]
+    MemoWrongDomain { got: [u8; 32], want: [u8; 32] },
+
+    #[error("reserved return memo bytes must be zero")]
+    NonzeroMemoReserved,
+
+    #[error("return memo names the zero Ethereum address")]
+    ZeroBeneficiary,
+
+    #[error("could not construct return output: {0}")]
+    ReturnOutputConstruction(String),
+
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 

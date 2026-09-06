@@ -75,9 +75,18 @@ fn tx_out_json(tx_out: &TxOut) -> Value {
     } else {
         v.insert("masked_amount".into(), Value::Null);
     }
-    v.insert("target_key".into(), Value::String(hx(tx_out.target_key.as_bytes())));
-    v.insert("public_key".into(), Value::String(hx(tx_out.public_key.as_bytes())));
-    v.insert("e_fog_hint".into(), Value::String(hx(tx_out.e_fog_hint.as_ref())));
+    v.insert(
+        "target_key".into(),
+        Value::String(hx(tx_out.target_key.as_bytes())),
+    );
+    v.insert(
+        "public_key".into(),
+        Value::String(hx(tx_out.public_key.as_bytes())),
+    );
+    v.insert(
+        "e_fog_hint".into(),
+        Value::String(hx(tx_out.e_fog_hint.as_ref())),
+    );
     v.insert(
         "e_memo".into(),
         match &tx_out.e_memo {
@@ -221,9 +230,8 @@ impl ReturnProof {
             "quorum": quorum_json(&self.quorum),
             "quorum_cost": quorum_cost,
 
-            // The disclosure. NOT verifiable on Ethereum as it stands -- see
-            // the crate README. Present so the Solidity side can be written and
-            // tested against real numbers while that gap is closed.
+            // Fixture disclosure, independently checked by the Ethereum verifier.
+            // Deliberately public test return view key; never a reserve key.
             "disclosure": {
                 "view_private_key": hx(self.disclosure.view_private_key.to_bytes().as_ref()),
                 "shared_secret": hx(&self.disclosure.shared_secret.to_bytes()),
@@ -232,6 +240,7 @@ impl ReturnProof {
                     hx(&self.disclosure.recovered_subaddress_spend_key.to_bytes()),
                 "memo_type": hx(&self.disclosure.memo_type),
                 "memo_data": hx(&self.disclosure.memo_data),
+                "redemption_domain": hx(&self.disclosure.redemption_domain),
                 "on_chain_verifiable": false,
             },
 

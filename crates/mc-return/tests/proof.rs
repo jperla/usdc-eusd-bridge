@@ -23,6 +23,7 @@ fn build_with(
         quorum,
         s.view_key(),
         &s.return_spend_public(),
+        &REDEMPTION_DOMAIN,
     )
 }
 
@@ -53,6 +54,7 @@ fn a_well_formed_return_is_accepted_on_the_block_metadata_route() {
         quorum,
         s.view_key(),
         &s.return_spend_public(),
+        &REDEMPTION_DOMAIN,
     )
     .expect("metadata route should accept the same return");
     assert_eq!(proof.disclosure.amount.value, s.value);
@@ -122,7 +124,10 @@ fn a_chain_with_a_missing_block_is_refused() {
     let s = Scenario::build();
     let headers = vec![s.ledger.block(0).clone(), s.ledger.block(2).clone()];
     let err = HeaderChain::new(headers).unwrap_err();
-    assert!(matches!(err, Error::ChainBroken { index: 2, .. }), "got {err:?}");
+    assert!(
+        matches!(err, Error::ChainBroken { index: 2, .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -145,7 +150,10 @@ fn an_output_that_is_not_ours_is_refused() {
     // not reproduce the commitment, so this surfaces as AmountNotRecoverable;
     // CommitmentMismatch is the same refusal one layer out.
     assert!(
-        matches!(err, Error::AmountNotRecoverable(_) | Error::CommitmentMismatch),
+        matches!(
+            err,
+            Error::AmountNotRecoverable(_) | Error::CommitmentMismatch
+        ),
         "an output paid to a third party was accepted: {err:?}"
     );
 }
@@ -162,10 +170,7 @@ fn an_output_to_us_without_the_bridge_memo_is_refused() {
         memo[..20].copy_from_slice(&hex_20("00000000000000000000000000000000deadbeef"));
         mc_transaction_core::tx::TxOut::new_with_memo(
             mc_transaction_core::BlockVersion::MAX,
-            mc_transaction_core::Amount::new(
-                7,
-                mc_transaction_core::TokenId::from(EUSD_TOKEN_ID),
-            ),
+            mc_transaction_core::Amount::new(7, mc_transaction_core::TokenId::from(EUSD_TOKEN_ID)),
             &bridge.default_subaddress(),
             &<mc_crypto_keys::RistrettoPrivate as mc_util_from_random::FromRandom>::from_random(
                 &mut r,
@@ -190,12 +195,10 @@ fn an_output_to_us_without_the_bridge_memo_is_refused() {
         quorum,
         bridge.view_private_key(),
         bridge.default_subaddress().spend_public_key(),
+        &REDEMPTION_DOMAIN,
     )
     .unwrap_err();
-    assert!(
-        matches!(err, Error::MemoWrongType { .. }),
-        "got {err:?}"
-    );
+    assert!(matches!(err, Error::MemoWrongType { .. }), "got {err:?}");
 }
 
 #[test]
@@ -213,6 +216,7 @@ fn a_return_paid_to_a_different_subaddress_is_refused() {
         quorum,
         s.view_key(),
         wrong.spend_public_key(),
+        &REDEMPTION_DOMAIN,
     )
     .unwrap_err();
     assert!(matches!(err, Error::NotPaidToReturnAddress), "got {err:?}");
@@ -231,6 +235,7 @@ fn an_unsigned_anchor_is_refused() {
         quorum,
         s.view_key(),
         &s.return_spend_public(),
+        &REDEMPTION_DOMAIN,
     )
     .unwrap_err();
     assert!(matches!(err, Error::ThresholdNotMet { .. }), "got {err:?}");
@@ -256,9 +261,13 @@ fn a_forged_signature_is_refused() {
         mc_return::QuorumEvidence::BlockSignature(q),
         s.view_key(),
         &s.return_spend_public(),
+        &REDEMPTION_DOMAIN,
     )
     .unwrap_err();
-    assert!(matches!(err, Error::BadBlockSignature { position: 1, .. }), "got {err:?}");
+    assert!(
+        matches!(err, Error::BadBlockSignature { position: 1, .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -280,4 +289,49 @@ fn each_block_commits_to_exactly_the_outputs_that_preceded_it() {
         );
         assert_eq!(s.ledger.block(i).root_element.range.to, full - 1);
     }
+}
+
+#[test]
+fn authenticated_return_cannot_be_retargeted_by_the_relayer() {
+    let s = Scenario::build();
+    let chain = s.ledger.chain(0, 2).unwrap();
+    let quorum = signature_evidence(&s.validators, &[0, 1, 2], 3, chain.anchor());
+    let wrong = [0xd7; 32];
+    let err = ReturnProof::build(
+        chain,
+        &s.anchor_tree(),
+        s.return_index,
+        quorum,
+        s.view_key(),
+        &s.return_spend_public(),
+        &wrong,
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::MemoWrongDomain { got, want }
+        if got == REDEMPTION_DOMAIN && want == wrong));
+    let honest = build_with(
+        &s,
+        s.ledger.chain(0, 2).unwrap(),
+        &s.anchor_tree(),
+        s.return_index,
+    )
+    .unwrap();
+    assert_eq!(honest.disclosure.redemption_domain, REDEMPTION_DOMAIN);
+}
+
+#[test]
+fn builder_and_opener_agree_on_canonical_v2_memo() {
+    use mc_return::{bridge_return_memo, Disclosure, BRIDGE_RETURN_MEMO_TYPE};
+    assert!(matches!(
+        bridge_return_memo([0; 20], REDEMPTION_DOMAIN),
+        Err(Error::ZeroBeneficiary)
+    ));
+    let s = Scenario::build();
+    let memo = bridge_return_memo(s.beneficiary, REDEMPTION_DOMAIN).unwrap();
+    assert_eq!(*memo.get_memo_type(), BRIDGE_RETURN_MEMO_TYPE);
+    assert_eq!(&memo.get_memo_data()[20..52], &REDEMPTION_DOMAIN);
+    assert_eq!(&memo.get_memo_data()[52..], &[0; 12]);
+    let opened =
+        Disclosure::open(s.ledger.tree.get(s.return_index).unwrap(), s.view_key()).unwrap();
+    assert_eq!(opened.memo_data, *memo.get_memo_data());
 }

@@ -9,16 +9,16 @@
 #![allow(dead_code)] // each integration test binary uses a different subset
 
 use mc_blockchain_types::{
-    AttestationEvidence, Block, BlockContents, BlockMetadata, BlockMetadataContents, BlockSignature,
-    QuorumSet,
+    AttestationEvidence, Block, BlockContents, BlockMetadata, BlockMetadataContents,
+    BlockSignature, QuorumSet,
 };
 use mc_common::{NodeID, ResponderId};
 use mc_consensus_scp_types::QuorumSetMember;
 use mc_crypto_keys::{Ed25519Pair, Ed25519Public, RistrettoPrivate};
 use mc_light_client_verifier::TrustedValidatorSet;
 use mc_return::{
-    disclosure::BRIDGE_RETURN_MEMO_TYPE, BlockMetadataQuorum, BlockSignatureQuorum, HeaderChain,
-    QuorumEvidence, TxOutTree,
+    create_return_tx_out, BlockMetadataQuorum, BlockSignatureQuorum, HeaderChain, QuorumEvidence,
+    TxOutTree,
 };
 use mc_transaction_core::{
     encrypted_fog_hint::EncryptedFogHint,
@@ -34,6 +34,13 @@ use rand_core::SeedableRng;
 /// consistent between the fixture and the escrow's `eusdTokenId`.
 pub const EUSD_TOKEN_ID: u64 = 1;
 
+/// Chain 1, escrow [0x71;20], namespace bytes32("mc-bridge-return-v1").
+/// The Solidity suite independently checks this against redemptionDomain.
+pub const REDEMPTION_DOMAIN: [u8; 32] = [
+    0x9d, 0x79, 0x1b, 0xf9, 0xdc, 0x21, 0x48, 0x9f, 0xfb, 0x25, 0x9f, 0xcf, 0xe5, 0x02, 0xa0, 0x88,
+    0xcd, 0x0e, 0xae, 0xe2, 0xb1, 0xa8, 0x46, 0x57, 0x0c, 0xc4, 0x3d, 0xd4, 0xac, 0xeb, 0x67, 0xc6,
+];
+
 pub fn rng(seed: u8) -> ChaChaRng {
     ChaChaRng::from_seed([seed; 32])
 }
@@ -46,16 +53,24 @@ pub fn return_tx_out(
     value: u64,
     beneficiary: [u8; 20],
 ) -> TxOut {
-    let mut memo_data = [0u8; 64];
-    memo_data[..20].copy_from_slice(&beneficiary);
+    return_tx_out_for_domain(rng, recipient, value, beneficiary, REDEMPTION_DOMAIN)
+}
+
+pub fn return_tx_out_for_domain(
+    rng: &mut ChaChaRng,
+    recipient: &PublicAddress,
+    value: u64,
+    beneficiary: [u8; 20],
+    domain: [u8; 32],
+) -> TxOut {
     let tx_private_key = RistrettoPrivate::from_random(rng);
-    TxOut::new_with_memo(
-        BlockVersion::MAX,
+    create_return_tx_out(
         Amount::new(value, TokenId::from(EUSD_TOKEN_ID)),
         recipient,
         &tx_private_key,
         EncryptedFogHint::fake_onetime_hint(rng),
-        |_ctx| Ok(MemoPayload::new(BRIDGE_RETURN_MEMO_TYPE, memo_data)),
+        beneficiary,
+        domain,
     )
     .expect("TxOut::new_with_memo")
 }
@@ -257,7 +272,9 @@ pub fn signature_evidence(
     threshold: u32,
     block: &Block,
 ) -> QuorumEvidence {
-    QuorumEvidence::BlockSignature(block_signature_quorum(validators, signing, threshold, block))
+    QuorumEvidence::BlockSignature(block_signature_quorum(
+        validators, signing, threshold, block,
+    ))
 }
 
 /// The standard scenario the tests share.
@@ -276,6 +293,10 @@ pub struct Scenario {
 
 impl Scenario {
     pub fn build() -> Self {
+        Self::with_domain(REDEMPTION_DOMAIN)
+    }
+
+    pub fn with_domain(domain: [u8; 32]) -> Self {
         let mut r = rng(7);
         let bridge = AccountKey::random(&mut r);
         let beneficiary: [u8; 20] = hex_20("742d35cc6634c0532925a3b844bc454e4438f44e");
@@ -292,7 +313,13 @@ impl Scenario {
         ]);
         // Return output is index 3 in the global TxOut ordering.
         ledger.append(vec![
-            return_tx_out(&mut r, &bridge.default_subaddress(), value, beneficiary),
+            return_tx_out_for_domain(
+                &mut r,
+                &bridge.default_subaddress(),
+                value,
+                beneficiary,
+                domain,
+            ),
             filler_tx_out(&mut r, 13),
         ]);
         ledger.append(vec![filler_tx_out(&mut r, 14)]);
@@ -346,7 +373,6 @@ pub fn expected_hash(leaves: &[TxOut], from: u64, to: u64) -> [u8; 32] {
     };
     hash_nodes(&left, &right)
 }
-
 
 pub fn hex_20(s: &str) -> [u8; 20] {
     let bytes = hex::decode(s).expect("hex");

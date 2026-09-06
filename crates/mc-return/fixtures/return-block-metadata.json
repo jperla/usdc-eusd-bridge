@@ -17,9 +17,9 @@
       "version": 0
     },
     {
-      "contents_hash": "0x69a1948698f06d22cfc62bb964a74e6c32ad3cbcb122b7a4fcb7386158bacea0",
+      "contents_hash": "0x5c162f8ed6c0b7380422d22e8659412e60377f5296af2f46eb37f8423ed91ffc",
       "cumulative_txo_count": "5",
-      "id": "0x0a8ca71eec5623b59714f96977fd92dec76e9c6423ad88c15cdd7457136e7d70",
+      "id": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
       "index": "1",
       "parent_id": "0xfc74b509326e0462901b6a8b5b6c2a685d67a18a3f8b621adcc497132f3a87b0",
       "root_element": {
@@ -34,11 +34,11 @@
     {
       "contents_hash": "0x6a8b6d589d3f12e5791b56a3fe14b8c272c3fbbb1ddd407319ef7eaf112f7c97",
       "cumulative_txo_count": "6",
-      "id": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+      "id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
       "index": "2",
-      "parent_id": "0x0a8ca71eec5623b59714f96977fd92dec76e9c6423ad88c15cdd7457136e7d70",
+      "parent_id": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
       "root_element": {
-        "hash": "0xfb84a2d9b049a5478a7f5b4b3e4a4b839f2a28d57762d4856819e03fb2350a01",
+        "hash": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
         "range": {
           "from": "0",
           "to": "7"
@@ -50,7 +50,7 @@
   "digests": {
     "block_id": {
       "challenge_label": "digest32",
-      "digest": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+      "digest": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
       "ops": [
         {
           "data": "0x7072696d",
@@ -65,7 +65,7 @@
           "label": "parent_id"
         },
         {
-          "data": "0x0a8ca71eec5623b59714f96977fd92dec76e9c6423ad88c15cdd7457136e7d70",
+          "data": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
           "label": "bytes"
         },
         {
@@ -129,7 +129,7 @@
           "label": "hash"
         },
         {
-          "data": "0xfb84a2d9b049a5478a7f5b4b3e4a4b839f2a28d57762d4856819e03fb2350a01",
+          "data": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
           "label": "bytes"
         },
         {
@@ -153,7 +153,7 @@
     },
     "block_sig": {
       "challenge_label": "digest32",
-      "digest": "0x5fee6ead18163c9e1122c7c4cf4650ba067a918136fdb56fb67b01ae786b3c95",
+      "digest": "0xbc2c6ce915c3701be2b18010acce20d76b68fbee535b81a2d9f25abcd9f166e2",
       "ops": [
         {
           "data": "0x616767",
@@ -168,7 +168,7 @@
           "label": "id"
         },
         {
-          "data": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+          "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
           "label": "bytes"
         },
         {
@@ -184,7 +184,7 @@
           "label": "parent_id"
         },
         {
-          "data": "0x0a8ca71eec5623b59714f96977fd92dec76e9c6423ad88c15cdd7457136e7d70",
+          "data": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
           "label": "bytes"
         },
         {
@@ -248,7 +248,7 @@
           "label": "hash"
         },
         {
-          "data": "0xfb84a2d9b049a5478a7f5b4b3e4a4b839f2a28d57762d4856819e03fb2350a01",
+          "data": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
           "label": "bytes"
         },
         {
@@ -281,10 +281,11 @@
   },
   "disclosure": {
     "blinding": "0xd9ecc364eabf5442f88d9f6641e4db9c3d78d7d629c956c0880c6804f30ca907",
-    "memo_data": "0x742d35cc6634c0532925a3b844bc454e4438f44e0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    "memo_type": "0x8001",
+    "memo_data": "0x742d35cc6634c0532925a3b844bc454e4438f44e9d791bf9dc21489ffb259fcfe502a088cd0eaee2b1a846570cc43dd4aceb67c6000000000000000000000000",
+    "memo_type": "0x8002",
     "on_chain_verifiable": false,
     "recovered_subaddress_spend_key": "0xdcda2179a97fa2784e29f922e1d26130c7439b3ba4d119f0ebe93b0f0e97585e",
+    "redemption_domain": "0x9d791bf9dc21489ffb259fcfe502a088cd0eaee2b1a846570cc43dd4aceb67c6",
     "shared_secret": "0x4ae5f77890de397cbfee96d1d7cd285cc1c7478351ca3713db726641b4de8d01",
     "view_private_key": "0xea580562651cf326c37d29bf26dc761bac78b0db937be7083e7a7c11f33bfb07"
   },
@@ -298,7 +299,7 @@
   "membership_proof": {
     "elements": [
       {
-        "hash": "0x7908d9fd32c0b497e2e92d921cd1e7d36b8eb6c394fa972003dbfa01dc31e49b",
+        "hash": "0x12fd6eaad254f5cff5ca62003bc9a79ca64c7c75801102abe76a1e46fd47a893",
         "range": {
           "from": "3",
           "to": "3"
@@ -332,14 +333,14 @@
   "merkle": {
     "hash": "blake2b-256",
     "known_root": {
-      "hash": "0xfb84a2d9b049a5478a7f5b4b3e4a4b839f2a28d57762d4856819e03fb2350a01",
+      "hash": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
       "range": {
         "from": "0",
         "to": "7"
       }
     },
     "leaf_domain_tag": "mc_tx_out_merkle_leaf",
-    "leaf_hash": "0x7908d9fd32c0b497e2e92d921cd1e7d36b8eb6c394fa972003dbfa01dc31e49b",
+    "leaf_hash": "0x12fd6eaad254f5cff5ca62003bc9a79ca64c7c75801102abe76a1e46fd47a893",
     "nil_domain_tag": "mc_tx_out_merkle_nil",
     "nil_hash": "0xffdaaf4305e365c4c30ca1e5fbf4f5e62b081441ee94eb2d0980470b5e705968",
     "node_domain_tag": "mc_tx_out_merkle_node"
@@ -348,13 +349,13 @@
   "quorum": {
     "metadata": [
       {
-        "block_id": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+        "block_id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
         "node_key": "0xeb46d259460300039a1ce4cce6358a34054a618396d18999d4739f142c40edaf",
         "responder_id": "node0.test.mobilecoin.com:443",
-        "signature": "0xbfc05cce1e4583e169030f7c0c5772ecab41ad67dada7661e878b2f52915b8a1b8c356ccd488b5c81e1b75e006c06f55db9a03d1813ab38cf1c3bf6038e69800",
+        "signature": "0xc27ddad52b0d79d5eaee48cc2868d17e65bf60e205feee7b668c9f7c11bad4a17054533eb9621df0d70ded50972feb4309e620f6f8937752649cea0ff95d6408",
         "signed_message": {
           "challenge_label": "digest32",
-          "digest": "0x41c370cabfccd119456d1846a0186eb7f186ac2d12b2428b6443c38aef1c60e2",
+          "digest": "0x9a1c9d460c8fc309b41a3bb667c4314b960fec478c488ace1f8a28a35f342902",
           "ops": [
             {
               "data": "0x616767",
@@ -369,7 +370,7 @@
               "label": "block_id"
             },
             {
-              "data": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+              "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
               "label": "bytes"
             },
             {
@@ -949,13 +950,13 @@
         }
       },
       {
-        "block_id": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+        "block_id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
         "node_key": "0xc8e3752ec8160551095b98c3a23644379bde3c1d9fa13fda12e25a92b4a62136",
         "responder_id": "node1.test.mobilecoin.com:443",
-        "signature": "0xff160313d8a0c947ee838fd3efecf6d26672ac9b1915787ff41003baabd272d43e891d46f30040157e6bb5cfc0c1d229ad28a31948ac77a476868aed97c9c406",
+        "signature": "0xb54c171c75ac6c8ae59d25e89c267c437065878ece087a16554d35ef8c8e9e1f90d8054421dba41325d09407e6dbd2e4fd48007b3b05bb0393e20cd828077b06",
         "signed_message": {
           "challenge_label": "digest32",
-          "digest": "0x6189124116a113d126982c4e72a07b951e760b5df3ea6b1dda1d27ea0d56b688",
+          "digest": "0x07e8816c9fbf43a3099d1f29f463efea9a864b4e42bb82c25007dae91e24b8ec",
           "ops": [
             {
               "data": "0x616767",
@@ -970,7 +971,7 @@
               "label": "block_id"
             },
             {
-              "data": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+              "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
               "label": "bytes"
             },
             {
@@ -1550,13 +1551,13 @@
         }
       },
       {
-        "block_id": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+        "block_id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
         "node_key": "0x123bdd63850a05098158a9da7049fdbf2b3718da2a9e4819a2041c0fa3d18da9",
         "responder_id": "node2.test.mobilecoin.com:443",
-        "signature": "0x80dc36ce0639623ddc37a4a682e6d0f137a5bb20015293ed884b3046769dc56d10ff6d4f21e9d0b8dac7ecd01b9f08148ed4f12c850096852635d707604a5e0a",
+        "signature": "0x988e2ef7d29aacae26366f00537c2828176866844ea7ec91e0fd5db9ef524f930473c4656f3e7b725e5bda08e6610fd2e1bdf734d33c658bb57a305b7b8fa108",
         "signed_message": {
           "challenge_label": "digest32",
-          "digest": "0x19c15600f03d3e3a9e28215fda05554c4d973173aa8e3a9ce1d42249e11e01ff",
+          "digest": "0x4939c0525533f2fa75e63a8277072d43ed014041f03e1848aa60de9f6cadedc2",
           "ops": [
             {
               "data": "0x616767",
@@ -1571,7 +1572,7 @@
               "label": "block_id"
             },
             {
-              "data": "0x87efee3213e9a0f8390f6b898c040f7459a3987f7f7d1c5c4743f5d08d7fb2df",
+              "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
               "label": "bytes"
             },
             {
@@ -2166,7 +2167,7 @@
   },
   "tx_out": {
     "e_fog_hint": "0x6505daf3b54e0011e00453a03be7dcb0f2f5115b80f3830dd91744b89c43294cea4cb622e989e7e7dbe3de49a0941f5fd9eb184bbf2a84844e9c512bfa43afef3422d02ba62fb31f0ff73ba564210e231ef20100",
-    "e_memo": "0x3a857e12de02bf142d1a9f77715254afdb53b312f9e863079f9d670933a7c3086610d698ed4d834e55595ffe8fb4ba04594d29b29f769e1df3cf570bf186d15165b4",
+    "e_memo": "0x3a867e12de02bf142d1a9f77715254afdb53b312f9e8fe7e8464bb287b38382df9df339a4dc54e40fbbbee56c9e3b6c064998559f8b09e1df3cf570bf186d15165b4",
     "masked_amount": {
       "commitment": "0x0ef6e8acb9f884f6946b17c8a1b006f4eb96b1dc4a5be81307140df1ff812617",
       "masked_token_id": "0x90d02a99560e28a8",
@@ -2178,7 +2179,7 @@
   },
   "tx_out_digest": {
     "challenge_label": "digest32",
-    "digest": "0x4046a32430164a10cbef29c6ebadf8c31050629da6fd886a33eb0629590b0673",
+    "digest": "0xa2c411321412cd385a6d01b31a6fdd8f5ae0a92f865ab86289be01cd84c02b16",
     "ops": [
       {
         "data": "0x616767",
@@ -2265,7 +2266,7 @@
         "label": "0"
       },
       {
-        "data": "0x3a857e12de02bf142d1a9f77715254afdb53b312f9e863079f9d670933a7c3086610d698ed4d834e55595ffe8fb4ba04594d29b29f769e1df3cf570bf186d15165b4",
+        "data": "0x3a867e12de02bf142d1a9f77715254afdb53b312f9e8fe7e8464bb287b38382df9df339a4dc54e40fbbbee56c9e3b6c064998559f8b09e1df3cf570bf186d15165b4",
         "label": "bytes"
       },
       {

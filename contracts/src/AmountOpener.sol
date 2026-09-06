@@ -268,7 +268,8 @@ library MemoOpener {
         }
     }
 
-    /// The memo type and the Ethereum beneficiary it names.
+    /// Decode the fixed v2 payload: type2 || beneficiary20 || domain32 ||
+    /// reserved12. The verifier enforces the type, domain and zero reserved.
     ///
     /// This repo's schema (`crates/mc-return/src/disclosure.rs`) puts the
     /// beneficiary in the first 20 bytes of the memo DATA, which is bytes 2..22
@@ -284,26 +285,21 @@ library MemoOpener {
     function open(bytes32 s, bytes memory eMemo)
         internal
         pure
-        returns (bytes2 memoType, address beneficiary)
+        returns (bytes2 memoType, address beneficiary, bytes32 domain, bytes12 reserved)
     {
         if (eMemo.length != MEMO_BYTES) revert InvalidMemoLength(eMemo.length);
 
         (bytes32 aesKey, bytes16 aesNonce) = okm(s);
         bytes memory pt = Aes256.ctr(aesKey, aesNonce, eMemo);
 
-        // Read byte by byte. Slicing a `bytes memory` compiles to a
-        // memory-to-memory copy, which solc emits as MCOPY on a Cancun target
-        // and which is an invalid opcode on Shanghai.
-        memoType = bytes2(
-            uint16((uint16(uint8(pt[0])) << 8) | uint16(uint8(pt[1])))
-        );
-        uint160 a;
-        unchecked {
-            for (uint256 i = 0; i < 20; ++i) {
-                a = (a << 8) | uint160(uint8(pt[2 + i]));
-            }
+        // Length was checked above. Clear the low bytes of partial words so
+        // memory beyond the payload never influences the fixed-width values.
+        assembly {
+            memoType := shl(240, shr(240, mload(add(pt, 32))))
+            beneficiary := shr(96, mload(add(pt, 34)))
+            domain := mload(add(pt, 54))
+            reserved := shl(160, shr(160, mload(add(pt, 86))))
         }
-        beneficiary = address(a);
     }
 }
 
@@ -414,7 +410,7 @@ contract AmountOpenerProbe_DO_NOT_DEPLOY {
     function openMemo(bytes32 s, bytes calldata eMemo)
         external
         pure
-        returns (bytes2 memoType, address beneficiary)
+        returns (bytes2 memoType, address beneficiary, bytes32 domain, bytes12 reserved)
     {
         return MemoOpener.open(s, eMemo);
     }

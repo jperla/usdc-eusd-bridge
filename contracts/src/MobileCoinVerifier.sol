@@ -43,18 +43,11 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
     /// output could have written its memo, so a payload that does not carry
     /// this type is not a redemption instruction and its first 20 bytes are
     /// not an address.
-    bytes2 public constant BRIDGE_RETURN_MEMO_TYPE = 0x8001;
+    bytes2 public constant BRIDGE_RETURN_MEMO_TYPE = 0x8002;
 
-    /// A tag naming this DEPLOYMENT, echoed by the proof.
-    ///
-    /// Not to be confused with BRIDGE_RETURN_MEMO_TYPE above, which is the
-    /// binding that involves the memo. This one is nowhere in the MobileCoin
-    /// data: it is a constant the submitter must restate. An unchanged proof
-    /// fails under a different tag, but a relayer can replace the tag without
-    /// changing the signed output. It provides no cross-deployment replay
-    /// protection; independently funded escrows must not share a return address
-    /// unless an authenticated deployment domain or shared replay state is
-    /// enforced separately.
+    /// Configured namespace, combined with chain id and the CALLING escrow.
+    /// The resulting domain is carried inside the quorum-authenticated memo,
+    /// not in an editable relayer field. See `redemptionDomain`.
     bytes32 public immutable memoDomain;
 
     ValidatorRegistry public immutable registry;
@@ -133,8 +126,6 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         // `verifyReturn` instead. A field that is accepted and then ignored
         // invites someone to start honouring it again, so there is no field.
         TxOutFields txOut;
-        // --- the deployment this proof was assembled for ---
-        bytes32 memoDomainTag;
         // --- membership ---
         bytes32[] merklePath;
         uint64 merkleIndex;
@@ -146,6 +137,7 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
     error WrongTokenId(uint64 got, uint64 want);
     error WrongMemoDomain(bytes32 got, bytes32 want);
     error WrongMemoType(bytes2 got, bytes2 want);
+    error NonzeroMemoReserved(bytes12 got);
     error ZeroBeneficiary();
     error NotPayableToBridge();
     error MembershipFailed();
@@ -315,17 +307,33 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         );
     }
 
-    /// Step 6: who this output names.
+    /// Domain the sender must put in memo data bytes 20..52 before creating
+    /// the MobileCoin output. Distinct escrows (even sharing this verifier),
+    /// chains and configured namespaces cannot redeem each other's returns.
+    /// An upgrade preserving an escrow and namespace must preserve its replay
+    /// registry too. A new escrow requires newly addressed return outputs.
+    function redemptionDomain(address escrow) public view returns (bytes32) {
+        return keccak256(abi.encode(
+            bytes32("mc-bridge-return-v2"), block.chainid, escrow, memoDomain
+        ));
+    }
+
+    /// Step 6: the beneficiary AND deployment this output names.
     function openMemo(bytes32 sharedSecret, bytes memory eMemo)
         public
-        pure
+        view
         returns (address beneficiary)
     {
         bytes2 memoType;
-        (memoType, beneficiary) = MemoOpener.open(sharedSecret, eMemo);
+        bytes32 domain;
+        bytes12 reserved;
+        (memoType, beneficiary, domain, reserved) = MemoOpener.open(sharedSecret, eMemo);
         if (memoType != BRIDGE_RETURN_MEMO_TYPE) {
             revert WrongMemoType(memoType, BRIDGE_RETURN_MEMO_TYPE);
         }
+        if (reserved != bytes12(0)) revert NonzeroMemoReserved(reserved);
+        bytes32 expectedDomain = redemptionDomain(msg.sender);
+        if (domain != expectedDomain) revert WrongMemoDomain(domain, expectedDomain);
         // A memo of the right type whose first 20 bytes are zero names nobody.
         // The escrow refuses this too; refusing it here as well means the
         // failure is attributable to the proof rather than to the payout.
@@ -348,10 +356,6 @@ contract MobileCoinVerifier is IMobileCoinVerifier {
         verifyQuorum(p);
 
         if (!verifyMembership(p)) revert MembershipFailed();
-
-        if (p.memoDomainTag != memoDomain) {
-            revert WrongMemoDomain(p.memoDomainTag, memoDomain);
-        }
 
         bytes32 sharedSecret = sharedSecretOf(p);
         (uint64 amount, uint64 tokenId) = openAmount(sharedSecret, p.txOut);
