@@ -3,7 +3,11 @@
 # revisions every proof and measurement in this repo was produced under.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-DEFAULT_CARGO="$(command -v cargo || true)"
+# Resolve the actual stable Cargo executable, not rustup's dispatch shim:
+# the shim would select this workspace's pinned nightly in the spike directory.
+# The archived lockfile includes edition-2024 manifests; its compiler remains
+# the pinned rustc on PATH, while a modern Cargo must parse those manifests.
+DEFAULT_CARGO="${BRIDGE_SPIKE_CARGO:-$(rustup which --toolchain stable cargo 2>/dev/null || command -v cargo || true)}"
 mkdir -p vendor
 
 clone_at() {

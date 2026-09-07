@@ -71,6 +71,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake clang libclang-dev pkg-config protobuf-compiler
+          rustup toolchain install stable --profile minimal
           rustup toolchain install nightly-2024-10-11 --profile minimal
       - name: Pinned vendors and locked dependency caches
         run: ./scripts/setup.sh
