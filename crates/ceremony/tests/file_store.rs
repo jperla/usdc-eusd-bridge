@@ -108,7 +108,9 @@ fn child_writer_crash() {
         return;
     };
     let mut s = FileStore::open(path).unwrap();
-    s.reserve(SlotId(42)).unwrap();
+    if std::env::var_os("BRIDGE_JOURNAL_BIND_ONLY").is_none() {
+        s.reserve(SlotId(42)).unwrap();
+    }
     s.bind(SlotId(42), ContextId([8; 32])).unwrap();
     // _exit bypasses Rust destructors: the OS must release the writer lock.
     unsafe {
@@ -202,4 +204,155 @@ fn an_unexpected_write_poisons_the_live_handle_without_issuing_a_receipt() {
     assert!(s.is_poisoned());
     assert!(s.reserve(SlotId(2)).is_err());
     assert_eq!(s.lookup(SlotId(2)), None);
+}
+
+#[test]
+fn recovery_acknowledges_exactly_one_durable_write_and_is_idempotent() {
+    for crash_after_bind in [false, true] {
+        let p = Temp::new();
+        let mut anchor = MemoryAnchor::default();
+        let mut s = FileStore::create(&p.0).unwrap();
+        if crash_after_bind {
+            anchor.commit(&s.reserve(SlotId(42)).unwrap()).unwrap();
+            s.bind(SlotId(42), ContextId([8; 32])).unwrap();
+        } else {
+            s.reserve(SlotId(42)).unwrap();
+        }
+        drop(s);
+        let before = fs::read(&p.0).unwrap();
+        let mut s = FileStore::open(&p.0).unwrap();
+        assert!(ceremony::store::DurableNonceGuard::new(&mut s, &mut anchor).is_err());
+        s.reconcile(&mut anchor).unwrap();
+        s.reconcile(&mut anchor).unwrap();
+        assert_eq!(s.head(), anchor.head());
+        assert_eq!(s.sequence(), anchor.high_water());
+        assert_eq!(before, fs::read(&p.0).unwrap());
+        assert!(ceremony::store::DurableNonceGuard::new(&mut s, &mut anchor).is_ok());
+        if crash_after_bind {
+            assert!(s.bind(SlotId(42), ContextId([9; 32])).is_err());
+        }
+    }
+}
+
+#[test]
+fn recovery_rejects_rollback_forks_and_missing_anchor_history() {
+    for case in 0..4 {
+        let p = Temp::new();
+        let mut anchor = MemoryAnchor::default();
+        let mut s = FileStore::create(&p.0).unwrap();
+        let empty = fs::read(&p.0).unwrap();
+        let first = s.reserve(SlotId(1)).unwrap();
+        let prefix = fs::read(&p.0).unwrap();
+        let second = s.bind(SlotId(1), ContextId([1; 32])).unwrap();
+        match case {
+            0 => {} // Two unanchored writes cannot be reconciled.
+            1 | 2 => {
+                anchor.commit(&first).unwrap();
+                anchor.commit(&second).unwrap();
+            }
+            3 => {
+                let mut other = ceremony::store::MemoryStore::new();
+                anchor.commit(&other.reserve(SlotId(2)).unwrap()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(s);
+        if case == 1 {
+            fs::write(&p.0, prefix).unwrap();
+        }
+        if case == 2 {
+            fs::write(&p.0, empty).unwrap();
+        }
+        let head = anchor.head();
+        let sequence = anchor.high_water();
+        let mut s = FileStore::open(&p.0).unwrap();
+        assert!(s.reconcile(&mut anchor).is_err(), "case {case}");
+        assert!(s.is_poisoned());
+        assert_eq!(anchor.head(), head);
+        assert_eq!(anchor.high_water(), sequence);
+        assert!(s.reserve(SlotId(3)).is_err());
+    }
+}
+
+#[test]
+fn recovery_rechecks_storage_even_when_cached_head_matches_anchor() {
+    let p = Temp::new();
+    let mut anchor = MemoryAnchor::default();
+    let mut s = FileStore::create(&p.0).unwrap();
+    anchor.commit(&s.reserve(SlotId(1)).unwrap()).unwrap();
+    let mut bytes = fs::read(&p.0).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(&p.0, bytes).unwrap();
+    assert!(s.reconcile(&mut anchor).is_err());
+    assert!(s.is_poisoned());
+}
+
+#[test]
+fn recovery_after_actual_process_death_preserves_bound_slot() {
+    let p = Temp::new();
+    let mut anchor = MemoryAnchor::default();
+    let mut s = FileStore::create(&p.0).unwrap();
+    anchor.commit(&s.reserve(SlotId(42)).unwrap()).unwrap();
+    drop(s);
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_writer_crash"])
+        .env("BRIDGE_JOURNAL_CRASH_TEST", &p.0)
+        .env("BRIDGE_JOURNAL_BIND_ONLY", "1")
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(23), "{result:?}");
+    let mut s = FileStore::open(&p.0).unwrap();
+    s.reconcile(&mut anchor).unwrap();
+    assert_eq!(anchor.high_water(), 2);
+    assert_eq!(
+        s.lookup(SlotId(42)),
+        Some(SlotRecord::Bound(ContextId([8; 32])))
+    );
+    assert!(s.bind(SlotId(42), ContextId([9; 32])).is_err());
+}
+
+#[test]
+fn failed_anchor_acknowledgement_requires_reopen_and_can_retry_safely() {
+    use ceremony::store::{AnchorError, Receipt, RecordDigest};
+    struct FailingAnchor {
+        inner: MemoryAnchor,
+        commit_before_error: bool,
+    }
+    impl Anchor for FailingAnchor {
+        fn high_water(&self) -> u64 {
+            self.inner.high_water()
+        }
+        fn head(&self) -> Option<RecordDigest> {
+            self.inner.head()
+        }
+        fn is_poisoned(&self) -> bool {
+            self.inner.is_poisoned()
+        }
+        fn observe(&mut self, n: u64) -> Result<(), AnchorError> {
+            self.inner.observe(n)
+        }
+        fn commit(&mut self, r: &Receipt) -> Result<(), AnchorError> {
+            if self.commit_before_error {
+                self.inner.commit(r)?;
+            }
+            Err(AnchorError::Poisoned)
+        }
+    }
+    for commit_before_error in [false, true] {
+        let p = Temp::new();
+        let mut s = FileStore::create(&p.0).unwrap();
+        s.reserve(SlotId(1)).unwrap();
+        let mut anchor = FailingAnchor {
+            inner: MemoryAnchor::default(),
+            commit_before_error,
+        };
+        assert!(s.reconcile(&mut anchor).is_err());
+        assert!(s.is_poisoned());
+        assert!(s.reconcile(&mut anchor.inner).is_err());
+        drop(s);
+        let mut s = FileStore::open(&p.0).unwrap();
+        s.reconcile(&mut anchor.inner).unwrap();
+        assert_eq!(s.head(), anchor.inner.head());
+        assert_eq!(s.sequence(), 1);
+    }
 }

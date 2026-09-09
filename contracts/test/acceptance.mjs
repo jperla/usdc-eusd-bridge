@@ -290,6 +290,7 @@ if (process.env.BRIDGE_LOCAL_RELEASE_BIN) {
       {input:JSON.stringify(input), encoding:'utf8', timeout:30_000});
     try {
       for (const bad of [{...request, data:'0x'+word(0)}, {...request, token_id:'8192'},
+                         {...request, data:'0x'+word((1n << 64n)-1n)},
                          {...request, topics:[]}, {...request, unknown:true}]) {
         const r = invoke(bad);
         assert(!r.error && r.status !== 0, 'malformed authorization must fail');
@@ -298,6 +299,8 @@ if (process.env.BRIDGE_LOCAL_RELEASE_BIN) {
       assert(!result.error && result.status===0, `local signer: ${result.error || result.stderr}`);
       const signed = JSON.parse(result.stdout);
       assertEq(signed.stock_mlsag_verified, true, 'MobileCoin stock MLSAG verifier');
+      assertEq(signed.stock_rct_verified, true, 'MobileCoin stock RCT verifier');
+      assertEq(signed.rct_mutations_rejected, 6, 'fee, expiry, recipient, range proof, token, memo tampering');
       assertEq(signed.amount, AMOUNT.toString(), 'exact deposited amount');
       assertEq(signed.destination, depositLog.topics[3], 'exact deposited destination');
       assertEq(signed.return_output_digest, FIX.tx_out_digest.digest, 'bound return association');

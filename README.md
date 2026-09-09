@@ -43,7 +43,7 @@ and an effective freeze transaction. These are explicit trust boundaries.
 | `crates/ceremony` | Signing state machine, fsynced single-writer binding journal, independent-anchor adapter, authorization hooks and attributable messages. |
 | `crates/auditor` | Deposit/release reconciliation, exposure calculation and structured freeze decisions. |
 | `crates/mc-return` | Return-proof construction using MobileCoin's own types and verifier. |
-| `crates/e2e` | Auditor handoff and connected EVM-deposit → authenticated Rust release-intent signing → synthetic return → EVM payout simulation. |
+| `crates/e2e` | Auditor handoff and connected EVM-deposit → authenticated Rust transaction RCT signing → synthetic return → EVM payout simulation. |
 
 `Proof` no longer contains relayer-chosen amount, token ID, or beneficiary.
 Recipient checking returns the already computed shared secret; the verifier
@@ -103,8 +103,10 @@ exhibit the correlated-share threshold failure.
 
 **Not established:** a live Ethereum observer, independent cross-host signing,
 MobileCoin full-transaction submission/confirmation, or real USDC payout. The
-local flow signs a structured release intent derived from an executed deposit;
-it does not construct or validate a complete MobileCoin transaction. Test
+local flow constructs a transaction prefix from an executed deposit and checks
+its two-cohort RCT signature, fee balance, and range proofs with upstream code.
+The funding ring has no ledger membership proofs and the recipient view key is
+a fixed local fixture; this is not ledger admission or submission. Test
 shares, synthetic ledger blocks, mock ERC20, and an in-memory independent
 anchor are explicit simulation boundaries. The journal survives process exit,
 but production rollback protection requires an external monotonic anchor.

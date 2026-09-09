@@ -78,8 +78,12 @@ head and sequence, then durably records the full session/seat context before
 MLSAG commitments can be emitted. Existing reservations fail across reopen.
 A journal cannot detect its own valid snapshot rollback: an independent,
 rollback-resistant anchor is mandatory. The simulation uses MemoryAnchor.
-Journal/anchor disagreement stops signing; automatic crash reconciliation is
-still missing. The backend revalidates the whole log per write and caps it at
+Journal/anchor disagreement stops signing. Explicit `FileStore::reconcile`
+can acknowledge exactly one durable write beyond the independent anchor, after
+replaying and validating storage and checking the exact predecessor hash and
+sequence. It never reconstructs an anchor or skips history. A failed recovery
+poisons the handle until reopen; an uncertain anchor acknowledgement is safely
+retryable after reopen, whether the anchor advanced or stayed unchanged. The backend revalidates the whole log per write and caps it at
 128 MiB; high-throughput operation and log maintenance remain future work.
 
 Tests cover a subprocess exiting without Rust destructors, lock release on
@@ -107,19 +111,24 @@ The acceptance run:
    and numeric bounds and constructs a structured release intent binding chain,
    escrow, deposit ID, sender, destination, amount, token and return association.
 3. Drives both signing rounds with a 2-of-3 owner cohort plus 1 gate, the durable
-   journal and identity-signed packets. MobileCoin's stock MLSAG verifier accepts
-   the signature and refuses an altered intent. Repeating the process cannot
+   journal and identity-signed packets. The intent digest is included in the
+   release memo; signers sign the upstream transaction signing digest. Stock
+   MLSAG and RCT verification check the signature, fee balance and Bulletproofs.
+   Six negative controls alter fee, expiry, recipient, range proof, token and
+   memo independently. Repeating the process cannot
    silently recreate its existing journal.
 4. Builds deployment-specific synthetic return blocks using MobileCoin's own
    types, then verifies their proof and pays the beneficiary through the real
    Solidity verifier and escrow. Replay, bad signature, wrong membership,
    altered beneficiary layout and deployment mismatches are refused.
 
-This connects components over actual process and EVM boundaries, but **the
-signed object is a release intent, not a complete MobileCoin transaction**.
-No TxPrefix/RCT construction, fee/range-proof validation, independent signer
-hosts, production DKG, ledger submission/confirmation or live Ethereum observer
-is demonstrated. The reserve/ring uses deterministic test shares. The return
+This connects components over actual process and EVM boundaries and constructs
+a TxPrefix and RCT signature. **It does not demonstrate ledger admission.**
+The synthetic funding ring lacks ledger membership proofs; the recipient view
+key is an explicit test fixture because the deposit event only supplies a spend
+key. The fee (one unit) and tombstone (100) are local fixtures. Independent signer
+hosts, production DKG, authenticated full-address discovery, ledger submission/
+confirmation and a live Ethereum observer remain unestablished. Shares, return
 ledger and token are synthetic. Do not describe this as a live three-leg bridge.
 
 Solidity-only CI reads committed upstream-generated per-domain fixtures. Full
@@ -140,8 +149,15 @@ coverage prevent a reject-everything baseline.
 The model assumes authenticated memos, hash collision resistance and persistent
 replay state for each chain/escrow. It is independent finite design evidence,
 not a refinement proof of the Solidity implementation. The complete proof
-command discovers 15 runners, including the earlier rollback, provenance,
+command discovers 16 runners, including the earlier rollback, provenance,
 threshold counterexamples and failure-propagation controls.
+
+`JournalReconcile.tla` separately enumerates histories of length zero through
+three over two abstract records (464 baseline states). It checks exact history
+continuation and poisoned-state refusal. Reachability and guard-removal controls
+must produce the named counterexamples. Full-history equality makes the model's
+sequence check redundant; the implementation checks both sequence and hash.
+This model assumes durable, validated storage and does not model hardware faults.
 
 ## Verification
 
@@ -149,8 +165,8 @@ Locally verified with the pinned Rust nightly and locked Solidity dependencies:
 
 | Check | Result |
 |---|---|
-| `./scripts/test.sh` | 390 Rust tests, 350 Solidity tests, 12 runner controls and 3 auditor handoff checks; exit 0 |
-| `./scripts/proofs.sh` | 15 runners passed, 0 failed; exit 0 |
+| `./scripts/test.sh` | 395 Rust tests, 350 Solidity tests, 12 runner controls and 3 auditor handoff checks; exit 0 |
+| `./scripts/proofs.sh` | 16 runners passed, 0 failed; exit 0 |
 | Actual constant-rho source mutation | Compiled; the targeted binding-factor regression failed as expected |
 | Restored MLSAG protocol and wire tests | Passed; final additional authenticated-malformed-payload coverage is included in acceptance |
 
@@ -160,6 +176,6 @@ independent tests. The return fixture costs 10,679,423 execution gas and
 The final acceptance command and remote CI status are recorded in the PR
 update. A Linux workflow being configured is not evidence that it has passed.
 The funding gates remain independent DKG/operators, an external anchor and
-recovery procedure, full transaction authorization, live-chain integration,
+production recovery integration, independently enforced transaction authorization, live-chain integration,
 authenticated enrollment/finality policy, operational freeze drills and
 independent cryptographic/smart-contract review.

@@ -10,6 +10,8 @@ ceremony = { path = "../ceremony" }
 auditor = { path = "../auditor" }
 mc-return = { path = "../mc-return" }
 
+mc-transaction-core = { workspace = true }
+mc-crypto-ring-signature-signer = { path = "../../vendor/mobilecoin/crypto/ring-signature/signer" }
 mc-crypto-ring-signature = { workspace = true }
 mc-crypto-keys = { workspace = true }
 mc-crypto-hashes = { workspace = true }

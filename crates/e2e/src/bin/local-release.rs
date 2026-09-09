@@ -3,8 +3,16 @@
 use ceremony::store::{DurableNonceGuard, FileStore, MemoryAnchor};
 use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT, scalar::Scalar};
 use mc_crypto_hashes::{Blake2b256, Digest};
-use mc_crypto_keys::RistrettoPublic;
+use mc_crypto_keys::{RistrettoPrivate, RistrettoPublic};
 use mc_crypto_ring_signature::{generators, Commitment, CompressedCommitment, ReducedTxOut};
+use mc_crypto_ring_signature_signer::{InputSecret, OneTimeKeyDeriveData, SignableInputRing};
+use mc_transaction_core::{
+    encrypted_fog_hint::EncryptedFogHint,
+    onetime_keys::create_shared_secret,
+    ring_ct::{InputRing, OutputSecret, SignatureRctBulletproofs, SigningData},
+    tx::{TxIn, TxOut, TxPrefix},
+    Amount, BlockVersion, MaskedAmount, MemoPayload, PublicAddress,
+};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use serde::Deserialize;
@@ -81,7 +89,7 @@ fn run() -> Result<(), String> {
         return Err("local scenario requires token 1".into());
     }
     // All signing inputs come from the decoded event plus the explicit return
-    // association. Signing this intent does not validate a full TxPrefix/RCT.
+    // association. Its digest is also authenticated inside the release output memo.
     let mut message = b"bridge-local-release-intent-v1".to_vec();
     for b in [
         &chain_id[..],
@@ -96,11 +104,6 @@ fn run() -> Result<(), String> {
         message.extend(b);
     }
     let session_id: [u8; 32] = Blake2b256::digest(&message).into();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // A second invocation cannot silently reset a prior signing attempt.
-    let mut store = FileStore::create(dir.join("nonces.journal")).map_err(|e| e.to_string())?;
-    let mut anchor = MemoryAnchor::default();
-    let mut guard = DurableNonceGuard::new(&mut store, &mut anchor).map_err(|e| e.to_string())?;
     let spend = CompositeSpend::simulate_from_seed(
         42,
         &CohortSpec::<Owners>::sequential(2, 3),
@@ -109,9 +112,57 @@ fn run() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     let gens = generators(token);
-    let blinding = Scalar::from(9u64);
-    let out_blinding = Scalar::from(4u64);
-    let out_commitment = CompressedCommitment::from(&Commitment::new(value, out_blinding, &gens));
+    let mut rng = ChaCha20Rng::seed_from_u64(99);
+    let version = BlockVersion::MAX;
+    let fee = Amount::new(1, token.into());
+    let input_amount = Amount::new(
+        value
+            .checked_add(fee.value)
+            .ok_or("release plus fee overflow")?,
+        token.into(),
+    );
+    let input_shared = RistrettoPublic::from(RISTRETTO_BASEPOINT_POINT * Scalar::from(12u64));
+    let input_masked =
+        MaskedAmount::new(version, input_amount, &input_shared).map_err(|e| e.to_string())?;
+    let (_, blinding) = input_masked
+        .get_value(&input_shared)
+        .map_err(|e| e.to_string())?;
+    // The event supplies a spend key only. This local scenario uses an explicit
+    // test view key; production needs an authenticated full address registry.
+    let destination_key = RistrettoPublic::try_from(&destination[..]).unwrap();
+    let view = RistrettoPublic::from(destination_key.as_ref() * Scalar::from(11u64));
+    let recipient = PublicAddress::new(&destination_key, &view);
+    let tx_private = RistrettoPrivate::from(Scalar::from(13u64));
+    let shared = create_shared_secret(&view, &tx_private);
+    let mut memo = [0u8; 64];
+    memo[..32].copy_from_slice(&session_id);
+    let release = TxOut::new_with_memo(
+        version,
+        Amount::new(value, token.into()),
+        &recipient,
+        &tx_private,
+        EncryptedFogHint::fake_onetime_hint(&mut rng),
+        |_| Ok(MemoPayload::new([0x80, 0x03], memo)),
+    )
+    .map_err(|e| e.to_string())?;
+    let receiver_shared = create_shared_secret(
+        &RistrettoPublic::try_from(&release.public_key).map_err(|e| e.to_string())?,
+        &RistrettoPrivate::from(Scalar::from(11u64)),
+    );
+    if receiver_shared != shared {
+        return Err("receiver shared secret mismatch".into());
+    }
+    if release.decrypt_memo(&receiver_shared) != MemoPayload::new([0x80, 0x03], memo) {
+        return Err("receiver release-intent memo mismatch".into());
+    }
+    let (opened, output_blinding) = release
+        .get_masked_amount()
+        .map_err(|e| e.to_string())?
+        .get_value(&shared)
+        .map_err(|e| e.to_string())?;
+    if opened != Amount::new(value, token.into()) {
+        return Err("release opening mismatch".into());
+    }
     let ring: Vec<_> = (0..11)
         .map(|i| ReducedTxOut {
             public_key: spend.tx_public().into(),
@@ -121,9 +172,60 @@ fn run() -> Result<(), String> {
                 RistrettoPublic::from(RISTRETTO_BASEPOINT_POINT * Scalar::from(i as u64 + 50))
                     .into()
             },
-            commitment: CompressedCommitment::from(&Commitment::new(value, blinding, &gens)),
+            commitment: CompressedCommitment::from(&Commitment::new(
+                input_amount.value,
+                blinding,
+                &gens,
+            )),
         })
         .collect();
+    // Synthetic funding ring: no live membership proof or ledger admission is
+    // claimed. All prefix outputs, range proofs and fee commitments are real.
+    let inputs = ring
+        .iter()
+        .map(|member| TxOut {
+            masked_amount: Some(input_masked.clone()),
+            target_key: member.target_key,
+            public_key: member.public_key,
+            e_fog_hint: EncryptedFogHint::fake_onetime_hint(&mut rng),
+            e_memo: None,
+        })
+        .collect();
+    let prefix = TxPrefix::new(
+        vec![TxIn {
+            ring: inputs,
+            proofs: vec![],
+            input_rules: None,
+        }],
+        vec![release],
+        fee,
+        100,
+    );
+    let signable = InputRing::Signable(SignableInputRing {
+        members: ring.clone(),
+        real_input_index: 5,
+        input_secret: InputSecret {
+            onetime_key_derive_data: OneTimeKeyDeriveData::SubaddressIndex(7),
+            amount: input_amount,
+            blinding,
+        },
+    });
+    let signing = SigningData::new(
+        version,
+        &prefix,
+        &[signable],
+        &[OutputSecret {
+            amount: opened,
+            blinding: output_blinding,
+        }],
+        fee,
+        true,
+        &mut rng,
+    )
+    .map_err(|e| format!("RCT preparation: {e:?}"))?;
+    let message = signing.mlsag_signing_digest.clone();
+    let out_blinding = signing.pseudo_output_blindings[0];
+    let out_commitment = signing.pseudo_output_commitments[0];
     let params = SessionParams {
         session_id: &session_id,
         message: &message,
@@ -131,6 +233,11 @@ fn run() -> Result<(), String> {
         real_index: 5,
         output_commitment: &out_commitment,
     };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // A second invocation cannot silently reset a prior signing attempt.
+    let mut store = FileStore::create(dir.join("nonces.journal")).map_err(|e| e.to_string())?;
+    let mut anchor = MemoryAnchor::default();
+    let mut guard = DurableNonceGuard::new(&mut store, &mut anchor).map_err(|e| e.to_string())?;
     let seats = mlsag::quorum_signers(&spend, &[Owners::nth(0), Owners::nth(1)], &[Gates::nth(0)])
         .map_err(|e| e.to_string())?;
     let mut nonces = Vec::new();
@@ -181,7 +288,6 @@ fn run() -> Result<(), String> {
     else {
         return Err("wrong packet".into());
     };
-    let mut rng = ChaCha20Rng::seed_from_u64(99);
     let session = Session::open(params, &mut rng).map_err(|e| e.to_string())?;
     session.preflight(&nonces).map_err(|e| e.to_string())?;
     let session = session
@@ -226,12 +332,69 @@ fn run() -> Result<(), String> {
     if signature.verify(&altered, &ring, &out_commitment).is_ok() {
         return Err("altered intent verified".into());
     }
+    let rct = SignatureRctBulletproofs {
+        ring_signatures: vec![signature],
+        pseudo_output_commitments: signing.pseudo_output_commitments,
+        range_proof_bytes: signing.range_proof_bytes,
+        range_proofs: signing.range_proofs,
+        pseudo_output_token_ids: signing.pseudo_output_token_ids,
+        output_token_ids: signing.output_token_ids,
+    };
+    let signed_rings = prefix.get_input_rings().map_err(|e| e.to_string())?;
+    let commitments: Vec<_> = prefix
+        .output_commitments()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .copied()
+        .collect();
+    rct.verify(version, &prefix, &signed_rings, &commitments, fee, &mut rng)
+        .map_err(|e| format!("stock RCT verifier: {e:?}"))?;
+    // Exercise each independently authenticated component with the original
+    // signature, rebuilding prefix-derived verifier inputs after mutation.
+    for case in 0..6 {
+        let mut bad_prefix = prefix.clone();
+        let mut bad_rct = rct.clone();
+        let mut bad_fee = fee;
+        match case {
+            0 => {
+                bad_prefix.fee += 1;
+                bad_fee.value += 1;
+            }
+            1 => bad_prefix.tombstone_block += 1,
+            2 => bad_prefix.outputs[0].target_key = ring[0].target_key,
+            3 => bad_rct.range_proofs[0][0] ^= 1,
+            4 => bad_rct.output_token_ids[0] += 1,
+            5 => bad_prefix.outputs[0].e_memo = None,
+            _ => unreachable!(),
+        }
+        let bad_commitments: Vec<_> = bad_prefix
+            .output_commitments()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .copied()
+            .collect();
+        let bad_rings = bad_prefix.get_input_rings().map_err(|e| e.to_string())?;
+        if bad_rct
+            .verify(
+                version,
+                &bad_prefix,
+                &bad_rings,
+                &bad_commitments,
+                bad_fee,
+                &mut rng,
+            )
+            .is_ok()
+        {
+            return Err(format!("RCT mutation {case} verified"));
+        }
+    }
     println!(
         "{}",
         serde_json::json!({"amount": value.to_string(), "destination": r.topics[3],
         "deposit_id": r.topics[1], "return_output_digest": r.return_output_digest,
         "session_id": hex::encode(session_id), "stock_mlsag_verified": true,
-        "authenticated_packets": 10, "scope": "local release-intent signature; no MobileCoin transaction submission"})
+        "authenticated_packets": 10, "stock_rct_verified": true, "rct_mutations_rejected": 6,
+        "scope": "local transaction RCT signature; synthetic funding ring, test view key, no ledger submission"})
     );
     Ok(())
 }

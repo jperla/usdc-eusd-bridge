@@ -82,18 +82,64 @@ impl FileStore {
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
+    /// Recover the single unacknowledged write possible between journal fsync
+    /// and anchor commit. The independent anchor must already name its exact
+    /// predecessor. Never rebuild an anchor from a journal or skip history.
+    /// On any error this handle stays poisoned; reopen before retrying.
+    pub fn reconcile<A: Anchor>(&mut self, anchor: &mut A) -> Result<(), StoreError> {
+        if self.poisoned || anchor.is_poisoned() {
+            self.poisoned = true;
+            return Err(io("poisoned journal or anchor"));
+        }
+        self.poisoned = true;
+        // A previous process may have died before fsync returned. Establish
+        // durability before handing the recovered receipt to the anchor.
+        self.file.sync_all().map_err(io)?;
+        let (found, last) = self.read_verified()?;
+        if found.head() != self.state.head() || found.sequence() != self.state.sequence() {
+            return Err(io("journal changed outside the lock"));
+        }
+        if found.head() != anchor.head() || found.sequence() != anchor.high_water() {
+            let receipt = last.ok_or_else(|| io("empty journal disagrees with anchor"))?;
+            if anchor.high_water().checked_add(1) != Some(receipt.sequence())
+                || receipt.prev_head() != anchor.head()
+            {
+                return Err(io("journal is not one write beyond the anchored history"));
+            }
+            anchor.commit(&receipt).map_err(io)?;
+        }
+        if anchor.is_poisoned()
+            || found.head() != anchor.head()
+            || found.sequence() != anchor.high_water()
+        {
+            return Err(io("anchor did not acknowledge recovered write"));
+        }
+        self.state = found;
+        self.poisoned = false;
+        Ok(())
+    }
     fn read_state(&mut self) -> Result<MemoryStore, StoreError> {
+        self.read_verified().map(|(state, _)| state)
+    }
+    fn read_verified(&mut self) -> Result<(MemoryStore, Option<Receipt>), StoreError> {
         let length = self.file.metadata().map_err(io)?.len();
         if length > MAX_BYTES {
             return Err(io("journal capacity exceeded"));
         }
         self.file.seek(SeekFrom::Start(0)).map_err(io)?;
         let mut bytes = Vec::new();
-        self.file.read_to_end(&mut bytes).map_err(io)?;
-        if !bytes.starts_with(MAGIC) || (bytes.len() - MAGIC.len()) % FRAME != 0 {
+        (&mut self.file)
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io)?;
+        if bytes.len() as u64 > MAX_BYTES
+            || !bytes.starts_with(MAGIC)
+            || (bytes.len() - MAGIC.len()) % FRAME != 0
+        {
             return Err(io("invalid header or torn journal frame"));
         }
         let mut state = MemoryStore::new();
+        let mut last = None;
         for f in bytes[MAGIC.len()..].chunks_exact(FRAME) {
             let sequence = u64::from_le_bytes(f[..8].try_into().unwrap());
             let slot = SlotId(u64::from_le_bytes(f[8..16].try_into().unwrap()));
@@ -110,8 +156,9 @@ impl FileStore {
             if receipt.sequence() != sequence || receipt.head().0 != f[49..81] {
                 return Err(io("journal hash chain mismatch"));
             }
+            last = Some(receipt);
         }
-        Ok(state)
+        Ok((state, last))
     }
     fn persist(&mut self, next: MemoryStore, receipt: Receipt) -> Result<Receipt, StoreError> {
         if self.poisoned {
