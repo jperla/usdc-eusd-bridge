@@ -1,0 +1,53 @@
+# Deliberately its own workspace (empty [workspace] table): this is a fixture
+# generator, not a bridge component, and `cargo test` at the repo root must
+# never build it. The root manifest also lists `tools` under `exclude` -- both
+# halves are needed, since without the empty table here cargo would walk up and
+# resolve the root manifest as this package's workspace.
+[workspace]
+
+[package]
+name = "amount-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# The three crates that DEFINE the constructions being pinned. Nothing in
+# src/main.rs re-implements masking, Pedersen commitments or memo encryption:
+# every published byte is produced by these, so agreeing with the fixture is
+# agreeing with MobileCoin.
+mc-transaction-types = { path = "../../vendor/mobilecoin/transaction/types", default-features = false, features = ["alloc"] }
+mc-transaction-core = { path = "../../vendor/mobilecoin/transaction/core", default-features = false }
+mc-crypto-ring-signature = { path = "../../vendor/mobilecoin/crypto/ring-signature", default-features = false, features = ["alloc"] }
+mc-crypto-keys = { path = "../../vendor/mobilecoin/crypto/keys", default-features = false, features = ["alloc"] }
+mc-crypto-hashes = { path = "../../vendor/mobilecoin/crypto/hashes", default-features = false }
+
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] }
+
+# Same versions MobileCoin's own workspace pins (vendor/mobilecoin/Cargo.toml
+# lines 199, 225, 249, 322). The generator uses them ONLY to reproduce, from
+# the published intermediates, what the MobileCoin API already returned -- and
+# asserts the two agree. That is what makes it safe to publish the
+# intermediates: they are shown to be the real decomposition, not a plausible
+# one.
+hkdf = "0.12"
+sha2 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+
+rand_chacha = "0.3"
+rand_core = { version = "0.6", features = ["std"] }
+hex = "0.4"
+serde_json = "1"
+
+# Taken from the vendored MobileCoin root manifest (by way of the repo root).
+# mc-transaction-core reaches bulletproofs-og, schnorrkel-og and serde_cbor,
+# and none of the three resolves from crates.io -- these forks are not
+# optional. The other three patches the root manifest carries (mbedtls,
+# mbedtls-sys-auto, lmdb-rkv) are reached only by the enclave and ledger
+# crates, which this generator does not link; including them anyway makes
+# cargo warn on every run, so they are left out.
+[patch.crates-io]
+bulletproofs-og = { git = "https://github.com/mobilecoinfoundation/bulletproofs.git", rev = "9abfdc054d9ba65f1e185ea1e6eff3947ce879dc" }
+schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }
+serde_cbor = { git = "https://github.com/mobilecoinofficial/cbor", rev = "4c886a7c1d523aae1ec4aa7386f402cb2f4341b5" }

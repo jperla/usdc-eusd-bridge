@@ -5,18 +5,18 @@ edition = "2021"
 publish = false
 
 [dependencies]
-mc-crypto-ring-signature = { path = "/Users/jperla/josh/repos/mobilecoin/crypto/ring-signature", default-features = false, features = ["alloc"] }
-mc-crypto-keys = { path = "/Users/jperla/josh/repos/mobilecoin/crypto/keys", default-features = false, features = ["alloc"] }
-mc-core-types = { path = "/Users/jperla/josh/repos/mobilecoin/core/types", default-features = false }
-mc-crypto-hashes = { path = "/Users/jperla/josh/repos/mobilecoin/crypto/hashes", default-features = false }
+mc-crypto-ring-signature = { path = "../../../vendor/mobilecoin/crypto/ring-signature", default-features = false, features = ["alloc"] }
+mc-crypto-keys = { path = "../../../vendor/mobilecoin/crypto/keys", default-features = false, features = ["alloc"] }
+mc-core-types = { path = "../../../vendor/mobilecoin/core/types", default-features = false }
+mc-crypto-hashes = { path = "../../../vendor/mobilecoin/crypto/hashes", default-features = false }
 
-modular-frost = { path = "/Users/jperla/josh/repos/serai/crypto/frost", default-features = false, features = ["ristretto"] }
-dalek-ff-group = { path = "/Users/jperla/josh/repos/serai/crypto/dalek-ff-group", default-features = false, features = ["std"] }
-dkg-dealer = { path = "/Users/jperla/josh/repos/serai/crypto/dkg/dealer" }
-flexible-transcript = { path = "/Users/jperla/josh/repos/serai/crypto/transcript", default-features = false, features = ["std", "recommended"] }
+modular-frost = { path = "../../../vendor/serai/crypto/frost", default-features = false, features = ["ristretto"] }
+dalek-ff-group = { path = "../../../vendor/serai/crypto/dalek-ff-group", default-features = false, features = ["std"] }
+dkg-dealer = { path = "../../../vendor/serai/crypto/dkg/dealer" }
+flexible-transcript = { path = "../../../vendor/serai/crypto/transcript", default-features = false, features = ["std", "recommended"] }
 
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "rand_core"] }
-ciphersuite = { path = "/Users/jperla/josh/repos/serai/crypto/ciphersuite", default-features = false, features = ["std"] }
+ciphersuite = { path = "../../../vendor/serai/crypto/ciphersuite", default-features = false, features = ["std"] }
 group = "0.13"
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
 rand_chacha = "0.3"

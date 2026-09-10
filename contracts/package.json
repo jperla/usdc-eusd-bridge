@@ -1,0 +1,13 @@
+{
+  "name": "bridge-contracts",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node test/run.mjs" },
+  "comment": "Exact versions, not ranges. The suite compiles real bytecode and reports gas, so the compiler and the EVM are part of the result; a caret would let a later solc silently change what the numbers in README.md refer to.",
+  "dependencies": {
+    "@ethereumjs/evm": "3.1.1",
+    "@ethereumjs/util": "9.1.0",
+    "ethereum-cryptography": "2.2.1",
+    "solc": "0.8.26"
+  }
+}

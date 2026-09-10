@@ -1,108 +1,87 @@
 ------------------------ MODULE ClaimAcceptance ------------------------
 (***************************************************************************)
-(* Who gets paid, how often, and in what order.                             *)
-(*                                                                          *)
-(* REBUILT after review. The previous version was a toy counterexample      *)
-(* dressed up as three production claims:                                   *)
-(*   - the beneficiary was a constant that IGNORED the output, so every     *)
-(*     output named the same address and per-output binding went untested;  *)
-(*   - "global nullifier" meant only "not partitioned by epoch";            *)
-(*   - CEI had no transfer-success, transfer-failure or revert action, so   *)
-(*     the rollback claim was unmodelled and INV_NoPayoutDuringFlight was   *)
-(*     vacuous in the baseline.                                             *)
-(*                                                                          *)
-(* This version uses per-call state, a real per-output beneficiary map, and *)
-(* a claim identity stable across epoch AND mode:                           *)
-(*                                                                          *)
-(*   IDLE --validate+consume--> PENDING --> SUCCESS                         *)
-(*                                  |-----> FAILURE (revert restores state) *)
-(*                                  |-----> reentry attempt, rejected       *)
-(*                                                                          *)
-(* SCOPE. The memo codec is NOT modelled, so "the output names a            *)
-(* beneficiary" is an assumption rather than a result: finalized bytes      *)
-(* establish an Ethereum beneficiary only after schema, decryption, domain  *)
-(* and canonical-address checks succeed. Contract upgrade is modelled as a  *)
-(* mode change over ONE registry, not as two independent deployments.       *)
+(* Bounded claim lifecycle: validate/consume, external call, success or     *)
+(* revert, retry, and changes of epoch/mode over one replay registry.       *)
+(*                                                                         *)
+(* SCOPE: authenticated outputs and decoded beneficiaries are assumptions. *)
+(* This does not prove the codec, token implementation, implementation     *)
+(* refinement, gas sufficiency, or separate contract deployments.          *)
+(*                                                                         *)
+(* lastFailure records actual before/after state. The old stranded flag   *)
+(* read the same guard as the faulty transition, so a broken rollback      *)
+(* could escape it. The new observer does not read that guard.             *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
-CONSTANTS
-    Outputs, Beneficiaries, Relayers, Epochs, Modes,
+CONSTANTS Outputs, Beneficiaries, Relayers, Epochs, Modes,
+          GuardBeneficiaryFromOutput, GuardStableClaimId,
+          GuardConsumeBeforeCall, GuardRevertOnFailure
 
-    GuardBeneficiaryFromOutput,   \* pay the output's beneficiary, not the submitter
-    GuardStableClaimId,           \* claim identity excludes epoch and mode
-    GuardConsumeBeforeCall,       \* consume, then call
-    GuardRevertOnFailure          \* a failed transfer restores state
+ASSUME Outputs # {} /\ Beneficiaries # {} /\ Relayers # {}
+ASSUME Epochs # {} /\ Modes # {}
 
-\* Each output names a DISTINCT beneficiary. The previous version used a
-\* constant that ignored the output entirely, so every output named the same
-\* address and per-output binding was never tested. Injectivity is asserted
-\* here rather than supplied by the config, which cannot express it.
-BeneficiaryOf ==
-    CHOOSE f \in [Outputs -> Beneficiaries] :
-        \A a, b \in Outputs : a # b => f[a] # f[b]
+VARIABLES consumed, payouts, payCount, pending, epoch, mode, beneficiaryOf,
+          lastFailure, failedKeys, retryPaid
 
-VARIABLES consumed, payouts, payCount, pending, epoch, mode, stranded
+vars == <<consumed, payouts, payCount, pending, epoch, mode, beneficiaryOf,
+          lastFailure, failedKeys, retryPaid>>
 
-vars == <<consumed, payouts, payCount, pending, epoch, mode, stranded>>
-
-\* The replay key. Stable means it excludes epoch and mode, so one source
-\* event maps to one key everywhere; partitioned, each namespace gets its own.
 ClaimKeyAt(o, e, m) ==
     IF GuardStableClaimId THEN <<o, 0, 0>> ELSE <<o, e, m>>
-
-\* Ambient form, for validating a NEW submission against current state.
 ClaimKey(o) == ClaimKeyAt(o, epoch, mode)
-
-NoClaim == [out |-> 0, payee |-> 0, ep |-> 0, md |-> 0, key |-> 0]
-Claims  == [out: Outputs, payee: Beneficiaries \cup Relayers, ep: Epochs,
-            md: Modes, key: {ClaimKeyAt(o, e, m) :
-                              o \in Outputs, e \in Epochs, m \in Modes}]
+Keys == {ClaimKeyAt(o, e, m) : o \in Outputs, e \in Epochs, m \in Modes}
+Payouts == SUBSET (Outputs \X (Beneficiaries \cup Relayers))
+Counts == [Outputs -> 0..2]
+Snapshot(c, p, n) == [consumed |-> c, payouts |-> p, counts |-> n]
+Snapshots == [consumed: SUBSET Keys, payouts: Payouts, counts: Counts]
+EmptySnapshot == Snapshot({}, {}, [o \in Outputs |-> 0])
+NoClaim == [out |-> 0, payee |-> 0, key |-> 0, before |-> EmptySnapshot]
+Claims == [out: Outputs, payee: Beneficiaries \cup Relayers,
+           key: Keys, before: Snapshots]
 
 TypeOK ==
-    /\ consumed \subseteq (Outputs \X (Epochs \cup {0}) \X (Modes \cup {0}))
-    /\ payouts \subseteq (Outputs \X (Beneficiaries \cup Relayers))
-    /\ payCount \in [Outputs -> 0..2]
+    /\ consumed \subseteq Keys
+    /\ payouts \in Payouts
+    /\ payCount \in Counts
     /\ pending \in Claims \cup {NoClaim}
-    /\ epoch \in Epochs
-    /\ mode \in Modes
-    /\ stranded \subseteq Outputs
+    /\ epoch \in Epochs /\ mode \in Modes
+    /\ beneficiaryOf \in [Outputs -> Beneficiaries]
+    /\ lastFailure \in [before: Snapshots, after: Snapshots]
+    /\ failedKeys \subseteq Keys
+    /\ retryPaid \in BOOLEAN
 
 Init ==
-    /\ consumed = {}
-    /\ payouts = {}
+    /\ consumed = {} /\ payouts = {}
     /\ payCount = [o \in Outputs |-> 0]
     /\ pending = NoClaim
     /\ epoch = CHOOSE e \in Epochs : TRUE
     /\ mode = CHOOSE m \in Modes : TRUE
-    /\ stranded = {}
+    \* Includes different beneficiaries AND multiple outputs to one payee.
+    /\ beneficiaryOf \in [Outputs -> Beneficiaries]
+    /\ lastFailure = [before |-> EmptySnapshot, after |-> EmptySnapshot]
+    /\ failedKeys = {} /\ retryPaid = FALSE
 
-Payee(o, r) == IF GuardBeneficiaryFromOutput THEN BeneficiaryOf[o] ELSE r
+Payee(o, r) == IF GuardBeneficiaryFromOutput THEN beneficiaryOf[o] ELSE r
 
 ValidateAndCall(o, r) ==
     /\ pending = NoClaim
     /\ ClaimKey(o) \notin consumed
     /\ payCount[o] < 2
-    \* Capture the EXACT key. Review's trace: validate under (e1,m1), rotate to
-    \* e2, then fail -- the failure removed <<o1,e2,m1>>, which was never
-    \* inserted, while <<o1,e1,m1>> stayed consumed with nothing paid.
-    /\ pending' = [out |-> o, payee |-> Payee(o, r), ep |-> epoch, md |-> mode,
-                   key |-> ClaimKey(o)]
+    /\ pending' = [out |-> o, payee |-> Payee(o, r), key |-> ClaimKey(o),
+                    before |-> Snapshot(consumed, payouts, payCount)]
     /\ consumed' = IF GuardConsumeBeforeCall
                      THEN consumed \cup {ClaimKey(o)} ELSE consumed
-    /\ UNCHANGED <<payouts, payCount, epoch, mode, stranded>>
+    /\ UNCHANGED <<payouts, payCount, epoch, mode, beneficiaryOf,
+                    lastFailure, failedKeys, retryPaid>>
 
-(* A re-entrant call arrives DURING the external transfer, for the claim    *)
-(* being transferred -- that is what re-entrancy is. Review caught the       *)
-(* earlier version letting it select any output, which paid out for         *)
-(* unrelated claims that had never been validated.                          *)
 ReenterAttempt(r) ==
     /\ pending # NoClaim
-    /\ pending.key \notin consumed             \* only open if CEI guard is off
+    /\ pending.key \notin consumed
     /\ payCount[pending.out] < 2
     /\ payouts' = payouts \cup {<<pending.out, Payee(pending.out, r)>>}
     /\ payCount' = [payCount EXCEPT ![pending.out] = @ + 1]
-    /\ UNCHANGED <<consumed, pending, epoch, mode, stranded>>
+    /\ UNCHANGED <<consumed, pending, epoch, mode, beneficiaryOf,
+                    lastFailure, failedKeys, retryPaid>>
 
 ReturnSuccess ==
     /\ pending # NoClaim
@@ -110,29 +89,34 @@ ReturnSuccess ==
     /\ payouts' = payouts \cup {<<pending.out, pending.payee>>}
     /\ payCount' = [payCount EXCEPT ![pending.out] = @ + 1]
     /\ consumed' = consumed \cup {pending.key}
+    /\ retryPaid' = (retryPaid \/ pending.key \in failedKeys)
     /\ pending' = NoClaim
-    /\ UNCHANGED <<epoch, mode, stranded>>
+    /\ UNCHANGED <<epoch, mode, beneficiaryOf, lastFailure, failedKeys>>
 
 ReturnFailure ==
     /\ pending # NoClaim
-    /\ consumed' = IF GuardRevertOnFailure
-                     THEN consumed \ {pending.key} ELSE consumed
-    \* Without the revert, the claim stays consumed although nothing was paid:
-    \* the user's funds are unreachable for good.
-    /\ stranded' = IF GuardRevertOnFailure THEN stranded
-                    ELSE stranded \cup {pending.out}
+    \* An EVM revert undoes the whole call, including any nested transfer.
+    /\ consumed' = IF GuardRevertOnFailure THEN pending.before.consumed ELSE consumed
+    /\ payouts' = IF GuardRevertOnFailure THEN pending.before.payouts ELSE payouts
+    /\ payCount' = IF GuardRevertOnFailure THEN pending.before.counts ELSE payCount
+    \* Observe the state actually produced, independently of the guard.
+    /\ lastFailure' = [before |-> pending.before,
+                        after |-> Snapshot(consumed', payouts', payCount')]
+    \* Only the most recent failure is needed for a retry witness. Retaining
+    \* every failed namespace multiplies states without strengthening safety.
+    /\ failedKeys' = {pending.key}
     /\ pending' = NoClaim
-    /\ UNCHANGED <<payouts, payCount, epoch, mode>>
+    /\ UNCHANGED <<epoch, mode, beneficiaryOf, retryPaid>>
 
-\* Disabled during a pending synchronous call: an EVM transaction does not
-\* observe an admin rotation mid-call. Modelling it as reachable produced a
-\* namespace-drift artifact that had nothing to do with the guards under test.
-Rotate(e)  == /\ pending = NoClaim
-              /\ e # epoch /\ epoch' = e
-              /\ UNCHANGED <<consumed, payouts, payCount, pending, mode, stranded>>
-Upgrade(m) == /\ pending = NoClaim
-              /\ m # mode /\ mode' = m
-              /\ UNCHANGED <<consumed, payouts, payCount, pending, epoch, stranded>>
+\* Admin actions occur between synchronous external calls in this model.
+Rotate(e) ==
+    /\ pending = NoClaim /\ e # epoch /\ epoch' = e
+    /\ UNCHANGED <<consumed, payouts, payCount, pending, mode, beneficiaryOf,
+                    lastFailure, failedKeys, retryPaid>>
+Upgrade(m) ==
+    /\ pending = NoClaim /\ m # mode /\ mode' = m
+    /\ UNCHANGED <<consumed, payouts, payCount, pending, epoch, beneficiaryOf,
+                    lastFailure, failedKeys, retryPaid>>
 
 Next ==
     \/ \E o \in Outputs, r \in Relayers : ValidateAndCall(o, r)
@@ -140,41 +124,26 @@ Next ==
     \/ ReturnSuccess \/ ReturnFailure
     \/ \E e \in Epochs : Rotate(e)
     \/ \E m \in Modes : Upgrade(m)
-
 Spec == Init /\ [][Next]_vars
 
--------------------------------------------------------------------------
-\* Every payout goes to the beneficiary named by THAT output. With distinct
-\* beneficiaries per output this tests the binding rather than a constant.
 INV_PaidOnlyNamedBeneficiary ==
-    \A p \in payouts : p[2] = BeneficiaryOf[p[1]]
-
-\* One source event, one payout -- across every epoch and mode.
+    \A p \in payouts : p[2] = beneficiaryOf[p[1]]
 INV_AtMostOnePayout == \A o \in Outputs : payCount[o] <= 1
+INV_PendingImpliesConsumed == pending # NoClaim => pending.key \in consumed
+INV_FailureRestoresState == lastFailure.after = lastFailure.before
+\* Retained name for existing configs; the oracle is now observed state.
+INV_NoStrandedClaims == INV_FailureRestoresState
 
-\* A pending external call implies that exact claim is already consumed.
-INV_PendingImpliesConsumed ==
-    pending # NoClaim => pending.key \in consumed
-
-\* KNOWN UNPROVED. This looks like the revert guard's property and is not.
-\* `stranded` is set by the SAME guard branch that breaks rollback, so the
-\* guard both introduces the bug and raises the flag that detects it. Counter-
-\* mutating the real behaviour -- leave `consumed` untouched on failure while
-\* keeping the `stranded` update "good" -- passes every invariant. A derived
-\* property needs an independent failure-history record and a retry trace.
-INV_NoStrandedClaims == stranded = {}
-
--------------------------------------------------------------------------
-COV_CanPay       == payouts = {}
-COV_CanPend      == pending = NoClaim
-COV_CanRotate    == epoch = (CHOOSE e \in Epochs : TRUE)
-COV_CanUpgrade   == mode = (CHOOSE m \in Modes : TRUE)
-\* The good state review asked for: consumed AND a call in flight.
+COV_CanPay == payouts = {}
+COV_CanPend == pending = NoClaim
+COV_CanRotate == epoch = (CHOOSE e \in Epochs : TRUE)
+COV_CanUpgrade == mode = (CHOOSE m \in Modes : TRUE)
 COV_ConsumedPend == ~(pending # NoClaim /\ pending.key \in consumed)
-\* KNOWN UNPROVED. This does NOT cover ReturnFailure: its shortest violation
-\* is Init -> ValidateAndCall, where the key is consumed and payCount is 0
-\* with the call merely pending. No failure has occurred, and breaking the
-\* rollback assignment leaves it firing regardless.
-COV_CanRevert    == \A o \in Outputs : ClaimKey(o) \notin consumed \/ payCount[o] > 0
-COV_CanStrand    == stranded = {}   \* reachable only with the revert guard off
+\* Only ReturnFailure can change failedKeys; a pending call is insufficient.
+COV_CanRevert == failedKeys = {}
+\* A successful retry of the EXACT failed replay key, not an unrelated pay.
+COV_RetryPays == ~retryPaid
+COV_SameBeneficiaryOutputsPay ==
+    ~(\E a, b \in Outputs : a # b /\ beneficiaryOf[a] = beneficiaryOf[b]
+        /\ payCount[a] = 1 /\ payCount[b] = 1)
 =========================================================================

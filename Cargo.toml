@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+# The vendored checkouts live inside this directory, so without `exclude`
+# cargo walks up from vendor/mobilecoin/crypto/* and resolves THIS manifest as
+# their workspace root -- then fails on the workspace.package keys they inherit
+# from MobileCoin's own root. They are separate workspaces, not members.
+# proofs/ holds archived spikes, each with its own pinned lockfile: they are
+# evidence of what was true when they were run, so they must resolve
+# independently rather than float with this workspace.
+exclude = ["vendor", "tools", "proofs"]
+members = [
+    "crates/two-cohort",
+    "crates/ceremony",
+    "crates/auditor",
+    "crates/mc-return",
+    "crates/e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+mc-crypto-ring-signature = { path = "vendor/mobilecoin/crypto/ring-signature", default-features = false, features = ["alloc"] }
+mc-crypto-keys = { path = "vendor/mobilecoin/crypto/keys", default-features = false, features = ["alloc"] }
+mc-core-types = { path = "vendor/mobilecoin/core/types", default-features = false }
+mc-crypto-hashes = { path = "vendor/mobilecoin/crypto/hashes", default-features = false }
+mc-crypto-digestible = { path = "vendor/mobilecoin/crypto/digestible", default-features = false }
+mc-blockchain-types = { path = "vendor/mobilecoin/blockchain/types", default-features = false }
+mc-transaction-core = { path = "vendor/mobilecoin/transaction/core", default-features = false }
+
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "rand_core"] }
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
+rand_chacha = "0.3"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+thiserror = "1"
+
+# Copied verbatim from the vendored MobileCoin root manifest. Path-depending on
+# its crates means inheriting its dependency graph, and these forks are not
+# optional -- without them mc-transaction-core will not resolve at all.
+[patch.crates-io]
+bulletproofs-og = { git = "https://github.com/mobilecoinfoundation/bulletproofs.git", rev = "9abfdc054d9ba65f1e185ea1e6eff3947ce879dc" }
+mbedtls = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
+mbedtls-sys-auto = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
+lmdb-rkv = { git = "https://github.com/mozilla/lmdb-rs", rev = "df1c2f5" }
+schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }
+serde_cbor = { git = "https://github.com/mobilecoinofficial/cbor", rev = "4c886a7c1d523aae1ec4aa7386f402cb2f4341b5" }

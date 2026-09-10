@@ -1,0 +1,16 @@
+# Its own workspace: a fixture generator, not a bridge component.
+[workspace]
+
+[package]
+name = "ristretto-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+curve25519-dalek = { version = "4", features = ["rand_core"] }
+mc-crypto-hashes = { path = "../../vendor/mobilecoin/crypto/hashes" }
+rand_chacha = "0.3"
+rand_core = { version = "0.6", features = ["std"] }
+hex = "0.4"
+serde_json = "1"

@@ -1,0 +1,24 @@
+# Deliberately its own workspace (empty [workspace] table): this is a build-time
+# fixture generator, not a bridge component, and it must not be compiled by
+# `cargo test -p <bridge crate>`.
+#
+# It links the SAME merlin and mc-crypto-digestible that MobileCoin links --
+# same versions, resolved from the same Cargo.lock (copied from
+# vendor/mobilecoin) -- so the bytes it emits are the bytes MobileCoin
+# produces, not a re-derivation.
+#
+# See README.md for why mc-blockchain-types is NOT a dependency here, and what
+# that costs in assurance.
+[workspace]
+
+[package]
+name = "merlin-fixtures"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+merlin = { version = "3", default-features = false }
+mc-crypto-digestible = { path = "../../vendor/mobilecoin/crypto/digestible" }
+hex = "0.4"
+serde_json = "1"

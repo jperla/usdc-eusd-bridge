@@ -16,3 +16,4 @@ proofs/tla/tla2tools.jar
 
 # Review transcripts stay local: they are working notes, not deliverables.
 reviews/
+.preview/

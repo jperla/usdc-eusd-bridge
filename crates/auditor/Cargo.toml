@@ -1,0 +1,17 @@
+[package]
+name = "auditor"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# No MobileCoin or Ethereum client dependencies on purpose. This crate is the
+# decision layer: it consumes already-decoded records and returns a decision.
+# Keeping the chain clients out means the freeze logic can be exercised
+# exhaustively in tests without either chain being reachable.
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

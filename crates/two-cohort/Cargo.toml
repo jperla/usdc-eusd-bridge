@@ -1,0 +1,59 @@
+[package]
+name = "two-cohort"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mc-crypto-ring-signature = { workspace = true }
+mc-crypto-keys = { workspace = true }
+mc-crypto-hashes = { workspace = true }
+
+# `digest` gives Scalar::from_hash / RistrettoPoint::from_hash, which the
+# MobileCoin key derivations are defined in terms of. `zeroize` gives the
+# Scalar: Zeroize impl that every secret-bearing type here relies on; with
+# default-features off at the workspace level it is not otherwise enabled.
+curve25519-dalek = { workspace = true, features = ["digest", "zeroize"] }
+
+# For `hazmat::ExpandedSecretKey`, which is the ONLY thing this dependency is
+# here for: a seat's linked endorsement proves knowledge of the scalar `d` with
+# `Id = d*B`, and RFC 8032 defines that scalar as the clamped first half of
+# SHA-512 over the 32-byte secret key. Deriving it here by hand would be a
+# second, unreviewed implementation of the expansion the signing key type
+# already uses; a divergence would not be caught by any signature check, only by
+# proofs that mysteriously do not verify. `mc-crypto-keys` builds on this exact
+# crate and version, so `IdentityPublic` and the point `d*B` computed here are
+# the same key by construction rather than by assumption.
+ed25519-dalek = { version = "2.1.1", default-features = false, features = ["hazmat", "zeroize"] }
+
+# Serai's PedPoP: Pedersen DKG with per-dealer VSS commitments and a Schnorr
+# proof-of-possession over a transcript. Vendored at rev 4b89cf02 and used
+# rather than reimplemented -- a hand-rolled DKG is exactly the kind of code
+# whose bugs only surface after funding.
+dkg-pedpop = { path = "../../vendor/serai/crypto/dkg/pedpop" }
+dalek-ff-group = { path = "../../vendor/serai/crypto/dalek-ff-group" }
+ciphersuite = { path = "../../vendor/serai/crypto/ciphersuite" }
+
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Exposes `Pop::prove_unchecked`, the prover that signs whatever claim it is
+# handed. Off by default so that a deployment which wants it has to write this
+# name in its OWN manifest, where a reviewer reading the dependency line sees
+# it. See `Pop::prove_unchecked` for exactly what this does and does not buy.
+unchecked-proving = []
+
+[dev-dependencies]
+# This crate, depending on itself with the feature on, is what keeps the
+# integration tests able to reach the raw prover while a downstream deployment
+# cannot without naming the feature. Integration tests are separate crates and
+# so cannot see a `pub(crate)` item or a `cfg(test)` one; this is the only
+# mechanism that distinguishes "in this repo's tests" from "downstream".
+two-cohort = { path = ".", features = ["unchecked-proving"] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }

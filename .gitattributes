@@ -1,0 +1,8 @@
+# Collapse generated and fixture content in review views. All of it is
+# reproducible -- lockfiles from their manifests, fixtures from the generators
+# in tools/ and crates/mc-return -- so reading the diff line by line tells a
+# reviewer nothing that regenerating it would not.
+Cargo.lock                              linguist-generated=true
+contracts/package-lock.json             linguist-generated=true
+contracts/test/fixtures/*.json          linguist-generated=true
+crates/mc-return/fixtures/*.json        linguist-generated=true

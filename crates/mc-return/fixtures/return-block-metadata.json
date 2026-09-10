@@ -1,0 +1,2292 @@
+{
+  "anchor_block_index": "2",
+  "chain": [
+    {
+      "contents_hash": "0x0dceccf26ce2b2bc1e12626a168feea2df6438a84c1e238826996dd678d798a4",
+      "cumulative_txo_count": "3",
+      "id": "0xfc74b509326e0462901b6a8b5b6c2a685d67a18a3f8b621adcc497132f3a87b0",
+      "index": "0",
+      "parent_id": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "root_element": {
+        "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "range": {
+          "from": "0",
+          "to": "0"
+        }
+      },
+      "version": 0
+    },
+    {
+      "contents_hash": "0x5c162f8ed6c0b7380422d22e8659412e60377f5296af2f46eb37f8423ed91ffc",
+      "cumulative_txo_count": "5",
+      "id": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
+      "index": "1",
+      "parent_id": "0xfc74b509326e0462901b6a8b5b6c2a685d67a18a3f8b621adcc497132f3a87b0",
+      "root_element": {
+        "hash": "0x17d153667d51237e7b2dc47f40e3c0de1b065babedd975295a3a7d7214989491",
+        "range": {
+          "from": "0",
+          "to": "3"
+        }
+      },
+      "version": 4
+    },
+    {
+      "contents_hash": "0x6a8b6d589d3f12e5791b56a3fe14b8c272c3fbbb1ddd407319ef7eaf112f7c97",
+      "cumulative_txo_count": "6",
+      "id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+      "index": "2",
+      "parent_id": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
+      "root_element": {
+        "hash": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
+        "range": {
+          "from": "0",
+          "to": "7"
+        }
+      },
+      "version": 4
+    }
+  ],
+  "digests": {
+    "block_id": {
+      "challenge_label": "digest32",
+      "digest": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+      "ops": [
+        {
+          "data": "0x7072696d",
+          "label": "version"
+        },
+        {
+          "data": "0x04000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "parent_id"
+        },
+        {
+          "data": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
+          "label": "bytes"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "index"
+        },
+        {
+          "data": "0x0200000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "cumulative_txo_count"
+        },
+        {
+          "data": "0x0600000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x616767",
+          "label": "root_element"
+        },
+        {
+          "data": "0x54784f75744d656d62657273686970456c656d656e74",
+          "label": "name"
+        },
+        {
+          "data": "0x616767",
+          "label": "range"
+        },
+        {
+          "data": "0x52616e6765",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "from"
+        },
+        {
+          "data": "0x0000000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "to"
+        },
+        {
+          "data": "0x0700000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x6167672d656e64",
+          "label": "range"
+        },
+        {
+          "data": "0x52616e6765",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "hash"
+        },
+        {
+          "data": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
+          "label": "bytes"
+        },
+        {
+          "data": "0x6167672d656e64",
+          "label": "root_element"
+        },
+        {
+          "data": "0x54784f75744d656d62657273686970456c656d656e74",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "contents_hash"
+        },
+        {
+          "data": "0x6a8b6d589d3f12e5791b56a3fe14b8c272c3fbbb1ddd407319ef7eaf112f7c97",
+          "label": "bytes"
+        }
+      ],
+      "protocol_label": "mobilecoin-block-id"
+    },
+    "block_sig": {
+      "challenge_label": "digest32",
+      "digest": "0xbc2c6ce915c3701be2b18010acce20d76b68fbee535b81a2d9f25abcd9f166e2",
+      "ops": [
+        {
+          "data": "0x616767",
+          "label": "block-sig"
+        },
+        {
+          "data": "0x426c6f636b",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "id"
+        },
+        {
+          "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+          "label": "bytes"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "version"
+        },
+        {
+          "data": "0x04000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "parent_id"
+        },
+        {
+          "data": "0xbc49221113ed43427d07ba064f18beb787867a29f85f63403ad6b7df23d5f4a4",
+          "label": "bytes"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "index"
+        },
+        {
+          "data": "0x0200000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "cumulative_txo_count"
+        },
+        {
+          "data": "0x0600000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x616767",
+          "label": "root_element"
+        },
+        {
+          "data": "0x54784f75744d656d62657273686970456c656d656e74",
+          "label": "name"
+        },
+        {
+          "data": "0x616767",
+          "label": "range"
+        },
+        {
+          "data": "0x52616e6765",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "from"
+        },
+        {
+          "data": "0x0000000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "to"
+        },
+        {
+          "data": "0x0700000000000000",
+          "label": "uint"
+        },
+        {
+          "data": "0x6167672d656e64",
+          "label": "range"
+        },
+        {
+          "data": "0x52616e6765",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "hash"
+        },
+        {
+          "data": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
+          "label": "bytes"
+        },
+        {
+          "data": "0x6167672d656e64",
+          "label": "root_element"
+        },
+        {
+          "data": "0x54784f75744d656d62657273686970456c656d656e74",
+          "label": "name"
+        },
+        {
+          "data": "0x7072696d",
+          "label": "contents_hash"
+        },
+        {
+          "data": "0x6a8b6d589d3f12e5791b56a3fe14b8c272c3fbbb1ddd407319ef7eaf112f7c97",
+          "label": "bytes"
+        },
+        {
+          "data": "0x6167672d656e64",
+          "label": "block-sig"
+        },
+        {
+          "data": "0x426c6f636b",
+          "label": "name"
+        }
+      ],
+      "protocol_label": "digestible"
+    }
+  },
+  "disclosure": {
+    "blinding": "0xd9ecc364eabf5442f88d9f6641e4db9c3d78d7d629c956c0880c6804f30ca907",
+    "memo_data": "0x742d35cc6634c0532925a3b844bc454e4438f44e9d791bf9dc21489ffb259fcfe502a088cd0eaee2b1a846570cc43dd4aceb67c6000000000000000000000000",
+    "memo_type": "0x8002",
+    "on_chain_verifiable": false,
+    "recovered_subaddress_spend_key": "0xdcda2179a97fa2784e29f922e1d26130c7439b3ba4d119f0ebe93b0f0e97585e",
+    "redemption_domain": "0x9d791bf9dc21489ffb259fcfe502a088cd0eaee2b1a846570cc43dd4aceb67c6",
+    "shared_secret": "0x4ae5f77890de397cbfee96d1d7cd285cc1c7478351ca3713db726641b4de8d01",
+    "view_private_key": "0xea580562651cf326c37d29bf26dc761bac78b0db937be7083e7a7c11f33bfb07"
+  },
+  "expected": {
+    "amount": "1500000",
+    "beneficiary": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+    "blockIndex": "1",
+    "outputPublicKey": "0x72db33e462ac3b2f38421c710c1761ab6fdeee40ddffd42d29e451de306dce7b",
+    "tokenId": "1"
+  },
+  "membership_proof": {
+    "elements": [
+      {
+        "hash": "0x12fd6eaad254f5cff5ca62003bc9a79ca64c7c75801102abe76a1e46fd47a893",
+        "range": {
+          "from": "3",
+          "to": "3"
+        }
+      },
+      {
+        "hash": "0x19277471272a10b372e1571291bd71b71daffe3da904890b6cf89437503ef8e2",
+        "range": {
+          "from": "2",
+          "to": "2"
+        }
+      },
+      {
+        "hash": "0xff3d1628745ee95059b4caf25ede1cd7196ccae6bace9c5507d31021b99d6121",
+        "range": {
+          "from": "0",
+          "to": "1"
+        }
+      },
+      {
+        "hash": "0x2ceb99196e1ccff8b291191edcb4a7acd6f178b399eff9fdd9c5b5debd40d356",
+        "range": {
+          "from": "4",
+          "to": "7"
+        }
+      }
+    ],
+    "highest_index": "4",
+    "index": "3"
+  },
+  "merkle": {
+    "hash": "blake2b-256",
+    "known_root": {
+      "hash": "0x94c5fe6b35f767fc5adf40c35487ef79b0f51de9fb78cbf36a7461eb0ae66fea",
+      "range": {
+        "from": "0",
+        "to": "7"
+      }
+    },
+    "leaf_domain_tag": "mc_tx_out_merkle_leaf",
+    "leaf_hash": "0x12fd6eaad254f5cff5ca62003bc9a79ca64c7c75801102abe76a1e46fd47a893",
+    "nil_domain_tag": "mc_tx_out_merkle_nil",
+    "nil_hash": "0xffdaaf4305e365c4c30ca1e5fbf4f5e62b081441ee94eb2d0980470b5e705968",
+    "node_domain_tag": "mc_tx_out_merkle_node"
+  },
+  "origin_block_index": "1",
+  "quorum": {
+    "metadata": [
+      {
+        "block_id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+        "node_key": "0xeb46d259460300039a1ce4cce6358a34054a618396d18999d4739f142c40edaf",
+        "responder_id": "node0.test.mobilecoin.com:443",
+        "signature": "0xc27ddad52b0d79d5eaee48cc2868d17e65bf60e205feee7b668c9f7c11bad4a17054533eb9621df0d70ded50972feb4309e620f6f8937752649cea0ff95d6408",
+        "signed_message": {
+          "challenge_label": "digest32",
+          "digest": "0x9a1c9d460c8fc309b41a3bb667c4314b960fec478c488ace1f8a28a35f342902",
+          "ops": [
+            {
+              "data": "0x616767",
+              "label": "block_metadata"
+            },
+            {
+              "data": "0x426c6f636b4d65746164617461436f6e74656e7473",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "block_id"
+            },
+            {
+              "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+              "label": "bytes"
+            },
+            {
+              "data": "0x616767",
+              "label": "quorum_set"
+            },
+            {
+              "data": "0x51756f72756d536574",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "threshold"
+            },
+            {
+              "data": "0x03000000",
+              "label": "uint"
+            },
+            {
+              "data": "0x736571",
+              "label": "members"
+            },
+            {
+              "data": "0x0500000000000000",
+              "label": "len"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465302e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xeb46d259460300039a1ce4cce6358a34054a618396d18999d4739f142c40edaf",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465312e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xc8e3752ec8160551095b98c3a23644379bde3c1d9fa13fda12e25a92b4a62136",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465322e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x123bdd63850a05098158a9da7049fdbf2b3718da2a9e4819a2041c0fa3d18da9",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465332e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xf0a68b4d52a7f6f83c69ace18d9ccf9680421ddb90831e9a7ac59ab1d1bb5757",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465342e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xe185d695513720901d65f5b85f472d77b5b061d7e0d40ebec480f3fbb99d0734",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "quorum_set"
+            },
+            {
+              "data": "0x51756f72756d536574",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "verification_report"
+            },
+            {
+              "data": "0x566572696669636174696f6e5265706f7274",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "sig"
+            },
+            {
+              "data": "0x566572696669636174696f6e5369676e6174757265",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x",
+              "label": "bytes"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "sig"
+            },
+            {
+              "data": "0x566572696669636174696f6e5369676e6174757265",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "http_body"
+            },
+            {
+              "data": "0x",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "verification_report"
+            },
+            {
+              "data": "0x566572696669636174696f6e5265706f7274",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465302e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "block_metadata"
+            },
+            {
+              "data": "0x426c6f636b4d65746164617461436f6e74656e7473",
+              "label": "name"
+            }
+          ],
+          "protocol_label": "digestible"
+        }
+      },
+      {
+        "block_id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+        "node_key": "0xc8e3752ec8160551095b98c3a23644379bde3c1d9fa13fda12e25a92b4a62136",
+        "responder_id": "node1.test.mobilecoin.com:443",
+        "signature": "0xb54c171c75ac6c8ae59d25e89c267c437065878ece087a16554d35ef8c8e9e1f90d8054421dba41325d09407e6dbd2e4fd48007b3b05bb0393e20cd828077b06",
+        "signed_message": {
+          "challenge_label": "digest32",
+          "digest": "0x07e8816c9fbf43a3099d1f29f463efea9a864b4e42bb82c25007dae91e24b8ec",
+          "ops": [
+            {
+              "data": "0x616767",
+              "label": "block_metadata"
+            },
+            {
+              "data": "0x426c6f636b4d65746164617461436f6e74656e7473",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "block_id"
+            },
+            {
+              "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+              "label": "bytes"
+            },
+            {
+              "data": "0x616767",
+              "label": "quorum_set"
+            },
+            {
+              "data": "0x51756f72756d536574",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "threshold"
+            },
+            {
+              "data": "0x03000000",
+              "label": "uint"
+            },
+            {
+              "data": "0x736571",
+              "label": "members"
+            },
+            {
+              "data": "0x0500000000000000",
+              "label": "len"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465302e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xeb46d259460300039a1ce4cce6358a34054a618396d18999d4739f142c40edaf",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465312e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xc8e3752ec8160551095b98c3a23644379bde3c1d9fa13fda12e25a92b4a62136",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465322e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x123bdd63850a05098158a9da7049fdbf2b3718da2a9e4819a2041c0fa3d18da9",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465332e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xf0a68b4d52a7f6f83c69ace18d9ccf9680421ddb90831e9a7ac59ab1d1bb5757",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465342e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xe185d695513720901d65f5b85f472d77b5b061d7e0d40ebec480f3fbb99d0734",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "quorum_set"
+            },
+            {
+              "data": "0x51756f72756d536574",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "verification_report"
+            },
+            {
+              "data": "0x566572696669636174696f6e5265706f7274",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "sig"
+            },
+            {
+              "data": "0x566572696669636174696f6e5369676e6174757265",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x",
+              "label": "bytes"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "sig"
+            },
+            {
+              "data": "0x566572696669636174696f6e5369676e6174757265",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "http_body"
+            },
+            {
+              "data": "0x",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "verification_report"
+            },
+            {
+              "data": "0x566572696669636174696f6e5265706f7274",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465312e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "block_metadata"
+            },
+            {
+              "data": "0x426c6f636b4d65746164617461436f6e74656e7473",
+              "label": "name"
+            }
+          ],
+          "protocol_label": "digestible"
+        }
+      },
+      {
+        "block_id": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+        "node_key": "0x123bdd63850a05098158a9da7049fdbf2b3718da2a9e4819a2041c0fa3d18da9",
+        "responder_id": "node2.test.mobilecoin.com:443",
+        "signature": "0x988e2ef7d29aacae26366f00537c2828176866844ea7ec91e0fd5db9ef524f930473c4656f3e7b725e5bda08e6610fd2e1bdf734d33c658bb57a305b7b8fa108",
+        "signed_message": {
+          "challenge_label": "digest32",
+          "digest": "0x4939c0525533f2fa75e63a8277072d43ed014041f03e1848aa60de9f6cadedc2",
+          "ops": [
+            {
+              "data": "0x616767",
+              "label": "block_metadata"
+            },
+            {
+              "data": "0x426c6f636b4d65746164617461436f6e74656e7473",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "block_id"
+            },
+            {
+              "data": "0xfee22e2f38f29c038d45a916adc18db0d4c56bce741139592325c5364ab1f357",
+              "label": "bytes"
+            },
+            {
+              "data": "0x616767",
+              "label": "quorum_set"
+            },
+            {
+              "data": "0x51756f72756d536574",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "threshold"
+            },
+            {
+              "data": "0x03000000",
+              "label": "uint"
+            },
+            {
+              "data": "0x736571",
+              "label": "members"
+            },
+            {
+              "data": "0x0500000000000000",
+              "label": "len"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465302e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xeb46d259460300039a1ce4cce6358a34054a618396d18999d4739f142c40edaf",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465312e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xc8e3752ec8160551095b98c3a23644379bde3c1d9fa13fda12e25a92b4a62136",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465322e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x123bdd63850a05098158a9da7049fdbf2b3718da2a9e4819a2041c0fa3d18da9",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465332e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xf0a68b4d52a7f6f83c69ace18d9ccf9680421ddb90831e9a7ac59ab1d1bb5757",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x766172",
+              "label": "member"
+            },
+            {
+              "data": "0x51756f72756d5365744d656d626572",
+              "label": "name"
+            },
+            {
+              "data": "0x00000000",
+              "label": "which"
+            },
+            {
+              "data": "0x616767",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465342e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0xe185d695513720901d65f5b85f472d77b5b061d7e0d40ebec480f3fbb99d0734",
+              "label": "ed25519"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "public_key"
+            },
+            {
+              "data": "0x456432353531395075626c6963",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "Node"
+            },
+            {
+              "data": "0x4e6f64654944",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": ""
+            },
+            {
+              "data": "0x51756f72756d5365744d656d62657257726170706572",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "quorum_set"
+            },
+            {
+              "data": "0x51756f72756d536574",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "verification_report"
+            },
+            {
+              "data": "0x566572696669636174696f6e5265706f7274",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "sig"
+            },
+            {
+              "data": "0x566572696669636174696f6e5369676e6174757265",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x",
+              "label": "bytes"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "sig"
+            },
+            {
+              "data": "0x566572696669636174696f6e5369676e6174757265",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "http_body"
+            },
+            {
+              "data": "0x",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "verification_report"
+            },
+            {
+              "data": "0x566572696669636174696f6e5265706f7274",
+              "label": "name"
+            },
+            {
+              "data": "0x616767",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x7072696d",
+              "label": "0"
+            },
+            {
+              "data": "0x6e6f6465322e746573742e6d6f62696c65636f696e2e636f6d3a343433",
+              "label": "str"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "responder_id"
+            },
+            {
+              "data": "0x526573706f6e6465724964",
+              "label": "name"
+            },
+            {
+              "data": "0x6167672d656e64",
+              "label": "block_metadata"
+            },
+            {
+              "data": "0x426c6f636b4d65746164617461436f6e74656e7473",
+              "label": "name"
+            }
+          ],
+          "protocol_label": "digestible"
+        }
+      }
+    ],
+    "route": "block_metadata"
+  },
+  "quorum_cost": {
+    "append_ops": 441,
+    "appended_bytes": 4443,
+    "transcripts": 3
+  },
+  "schema": "mc-return/1",
+  "source": {
+    "crate": "mc-return",
+    "mobilecoin_rev": "05cb699f8f4cc1bc21186392545820c5b38408db",
+    "note": "every u64 is a decimal string; every byte string is 0x-prefixed hex"
+  },
+  "tx_out": {
+    "e_fog_hint": "0x6505daf3b54e0011e00453a03be7dcb0f2f5115b80f3830dd91744b89c43294cea4cb622e989e7e7dbe3de49a0941f5fd9eb184bbf2a84844e9c512bfa43afef3422d02ba62fb31f0ff73ba564210e231ef20100",
+    "e_memo": "0x3a867e12de02bf142d1a9f77715254afdb53b312f9e8fe7e8464bb287b38382df9df339a4dc54e40fbbbee56c9e3b6c064998559f8b09e1df3cf570bf186d15165b4",
+    "masked_amount": {
+      "commitment": "0x0ef6e8acb9f884f6946b17c8a1b006f4eb96b1dc4a5be81307140df1ff812617",
+      "masked_token_id": "0x90d02a99560e28a8",
+      "masked_value": "14037785402491988106",
+      "version": 2
+    },
+    "public_key": "0x72db33e462ac3b2f38421c710c1761ab6fdeee40ddffd42d29e451de306dce7b",
+    "target_key": "0x8ac9ce26b6eb86fbd93bafd46b551ed8be3fbd5ec6e117b611c9fe258cf73123"
+  },
+  "tx_out_digest": {
+    "challenge_label": "digest32",
+    "digest": "0xa2c411321412cd385a6d01b31a6fdd8f5ae0a92f865ab86289be01cd84c02b16",
+    "ops": [
+      {
+        "data": "0x616767",
+        "label": "mobilecoin-txout"
+      },
+      {
+        "data": "0x54784f7574",
+        "label": "name"
+      },
+      {
+        "data": "0x616767",
+        "label": "amount"
+      },
+      {
+        "data": "0x4d61736b6564416d6f756e745632",
+        "label": "name"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "commitment"
+      },
+      {
+        "data": "0x0ef6e8acb9f884f6946b17c8a1b006f4eb96b1dc4a5be81307140df1ff812617",
+        "label": "ristretto"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "masked_value"
+      },
+      {
+        "data": "0x8ae8b2bc723bd0c2",
+        "label": "uint"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "masked_token_id"
+      },
+      {
+        "data": "0x90d02a99560e28a8",
+        "label": "bytes"
+      },
+      {
+        "data": "0x6167672d656e64",
+        "label": "amount"
+      },
+      {
+        "data": "0x4d61736b6564416d6f756e745632",
+        "label": "name"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "target_key"
+      },
+      {
+        "data": "0x8ac9ce26b6eb86fbd93bafd46b551ed8be3fbd5ec6e117b611c9fe258cf73123",
+        "label": "ristretto"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "public_key"
+      },
+      {
+        "data": "0x72db33e462ac3b2f38421c710c1761ab6fdeee40ddffd42d29e451de306dce7b",
+        "label": "ristretto"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "e_fog_hint"
+      },
+      {
+        "data": "0x6505daf3b54e0011e00453a03be7dcb0f2f5115b80f3830dd91744b89c43294cea4cb622e989e7e7dbe3de49a0941f5fd9eb184bbf2a84844e9c512bfa43afef3422d02ba62fb31f0ff73ba564210e231ef20100",
+        "label": "bytes"
+      },
+      {
+        "data": "0x616767",
+        "label": "e_memo"
+      },
+      {
+        "data": "0x456e637279707465644d656d6f",
+        "label": "name"
+      },
+      {
+        "data": "0x7072696d",
+        "label": "0"
+      },
+      {
+        "data": "0x3a867e12de02bf142d1a9f77715254afdb53b312f9e8fe7e8464bb287b38382df9df339a4dc54e40fbbbee56c9e3b6c064998559f8b09e1df3cf570bf186d15165b4",
+        "label": "bytes"
+      },
+      {
+        "data": "0x6167672d656e64",
+        "label": "e_memo"
+      },
+      {
+        "data": "0x456e637279707465644d656d6f",
+        "label": "name"
+      },
+      {
+        "data": "0x6167672d656e64",
+        "label": "mobilecoin-txout"
+      },
+      {
+        "data": "0x54784f7574",
+        "label": "name"
+      }
+    ],
+    "protocol_label": "digestible"
+  },
+  "tx_out_index": "3"
+}

@@ -1,0 +1,28 @@
+[package]
+name = "ceremony"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Threshold signing ceremony state machine for the USDC <-> eUSD bridge."
+
+[dependencies]
+# The Shamir sharing and the Lagrange weights the FROST backend needs live in
+# `two-cohort`, which is the crate that owns the threshold algebra for this
+# workspace and pins it against hand-computed weight vectors. This crate holds
+# no second copy of either.
+two-cohort = { path = "../two-cohort" }
+
+mc-crypto-keys = { workspace = true }
+mc-crypto-hashes = { workspace = true }
+curve25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+thiserror = { workspace = true }
+
+# The library is generic over `RngCore + CryptoRng`; only the tests pin a
+# concrete stream, and they pin a seeded one so a failure reproduces.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+rand_chacha = { workspace = true }
+hex = { workspace = true }

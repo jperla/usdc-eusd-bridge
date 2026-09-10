@@ -1,0 +1,601 @@
+// Keccak-f[1600], STROBE-128 and Merlin, checked against things that were not
+// written here.
+//
+// Three independent anchors, because a transcript implementation that is only
+// compared to itself proves nothing:
+//
+//   1. The permutation, against the Keccak team's published intermediate
+//      values (all 25 lanes) and against FIPS 202 SHA3-256, plus a
+//      length-sweep differential against ethereum-cryptography's keccak256.
+//   2. The transcript, against fixtures produced by the merlin 3.0.0 and
+//      mc-crypto-digestible 7.1.0 crates themselves -- see
+//      tools/merlin-fixtures.
+//   3. The digestible framing, against digests hardcoded in MobileCoin's own
+//      crypto/digestible/tests/basic.rs. Those values were published by
+//      MobileCoin before this repo existed; nothing here can move them.
+//
+// Read tools/merlin-fixtures/README.md for the one link in the chain that is
+// NOT anchored this way.
+
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+import { keccak256 } from 'ethereum-cryptography/keccak.js';
+import {
+  Chain, selector, word, b32, dynBytes, test, assert, assertEq, summary,
+} from './harness.mjs';
+
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const FIX = JSON.parse(
+  readFileSync(join(HERE, 'fixtures', 'merlin.json'), 'utf8')
+);
+
+// The permutation is expensive in the EVM; a 33KB transcript runs a couple of
+// hundred of them. Nothing here is gas-metered as a claim, so the limit is
+// just set out of the way.
+const GAS = 40_000_000_000n;
+
+// ------------------------------------------------------------------ encoding
+
+const hexToBytes = (h) => {
+  const s = h.replace(/^0x/, '');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+};
+
+const bytesToHex = (b) =>
+  Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+
+/// Two dynamic `bytes` arguments, both in the tail.
+const encodeTwoBytes = (sig, aHex, bHex) => {
+  const a = dynBytes(aHex);
+  return (
+    selector(sig) + word(64) + word(64 + a.length / 2) + a + dynBytes(bHex)
+  );
+};
+
+const u = (n, bytes) => BigInt(n).toString(16).padStart(bytes * 2, '0');
+
+/// Ops as emitted by the Rust generator -> the MerlinProbe_DO_NOT_DEPLOY script format
+/// documented on MerlinProbe_DO_NOT_DEPLOY. Big-endian here, deliberately unlike the
+/// transcript's own little-endian encodings, so a byte-order confusion between
+/// the two shows up rather than cancelling.
+function encodeScript(ops) {
+  const parts = [];
+  for (const o of ops) {
+    const ctx = o.ctx;
+    const cl = u(ctx.length / 2, 2);
+    switch (o.op) {
+      case 'append':
+        parts.push('00' + cl + ctx + u(o.data.length / 2, 4) + o.data);
+        break;
+      case 'challenge':
+        parts.push('01' + cl + ctx + u(o.len, 4));
+        break;
+      case 'u64':
+        parts.push('02' + cl + ctx + u(o.value, 8));
+        break;
+      case 'prim':
+        parts.push(
+          '03' + cl + ctx + u(o.typename.length / 2, 2) + o.typename +
+          u(o.data.length / 2, 4) + o.data
+        );
+        break;
+      case 'none':
+        parts.push('04' + cl + ctx);
+        break;
+      case 'seq':
+        parts.push('05' + cl + ctx + u(o.len, 8));
+        break;
+      case 'agg':
+        parts.push('06' + cl + ctx + u(o.name.length / 2, 2) + o.name);
+        break;
+      case 'aggend':
+        parts.push('07' + cl + ctx + u(o.name.length / 2, 2) + o.name);
+        break;
+      case 'var':
+        parts.push(
+          '08' + cl + ctx + u(o.name.length / 2, 2) + o.name + u(o.which, 4)
+        );
+        break;
+      default:
+        throw new Error(`unknown op ${o.op}`);
+    }
+  }
+  return parts.join('');
+}
+
+// ------------------------------------------------------- permutation harness
+
+const encLanes = (lanes) => lanes.map((l) => word(l)).join('');
+
+const decLanes = (ret) => {
+  const h = ret.replace(/^0x/, '');
+  return Array.from({ length: 25 }, (_, i) =>
+    BigInt('0x' + h.slice(i * 64, i * 64 + 64))
+  );
+};
+
+async function permute(chain, probe, lanes) {
+  const r = await chain.must(
+    probe,
+    selector('f1600(uint256[25])') + encLanes(lanes),
+    { gasLimit: GAS }
+  );
+  return decLanes(r.ret);
+}
+
+/// A Keccak sponge whose ONLY permutation is the one running in the EVM.
+/// `padByte` is the domain separator: 0x06 for SHA-3 (FIPS 202), 0x01 for the
+/// original Keccak that Ethereum uses.
+async function sponge(chain, probe, rate, msgBytes, padByte, outLen) {
+  const blocks = Math.floor(msgBytes.length / rate) + 1;
+  const padded = new Uint8Array(blocks * rate);
+  padded.set(msgBytes);
+  padded[msgBytes.length] = padByte;
+  padded[blocks * rate - 1] |= 0x80;
+
+  let lanes = new Array(25).fill(0n);
+  for (let off = 0; off < padded.length; off += rate) {
+    // Byte j of a block lands in lane floor(j/8) at bit 8*(j mod 8): the same
+    // little-endian lane convention Keccak1600 documents.
+    for (let j = 0; j < rate; j++) {
+      lanes[j >> 3] ^= BigInt(padded[off + j]) << BigInt((j % 8) * 8);
+    }
+    lanes = await permute(chain, probe, lanes);
+  }
+
+  const out = [];
+  let lanesOut = lanes;
+  while (out.length < outLen) {
+    for (let j = 0; j < rate && out.length < outLen; j++) {
+      out.push(Number((lanesOut[j >> 3] >> BigInt((j % 8) * 8)) & 0xffn));
+    }
+    if (out.length < outLen) lanesOut = await permute(chain, probe, lanesOut);
+  }
+  return new Uint8Array(out);
+}
+
+// ---------------------------------------------------------------------- main
+
+// Only this component's sources: a half-written contract elsewhere in src/ is
+// someone else's problem, not a failure of the transcript.
+const chain = await Chain.create({ only: ['Keccak1600.sol', 'Merlin.sol'] });
+const kp = await chain.deploy('Keccak1600Probe_DO_NOT_DEPLOY');
+const mp = await chain.deploy('MerlinProbe_DO_NOT_DEPLOY');
+
+// Keccak-f[1600] applied to the all-zero state. All 25 lanes, from the Keccak
+// team's KeccakF-1600-IntermediateValues.txt ("After permutation"). Lane 0 is
+// the widely quoted f1258f7940e1dde7; the other 24 are the part an
+// implementation missing rho, pi or the round constants still gets wrong.
+const ZERO_STATE_PERMUTED = [
+  0xf1258f7940e1dde7n, 0x84d5ccf933c0478an, 0xd598261ea65aa9een,
+  0xbd1547306f80494dn, 0x8b284e056253d057n, 0xff97a42d7f8e6fd4n,
+  0x90fee5a0a44647c4n, 0x8c5bda0cd6192e76n, 0xad30a6f71b19059cn,
+  0x30935ab7d08ffc64n, 0xeb5aa93f2317d635n, 0xa9a6e6260d712103n,
+  0x81a57c16dbcf555fn, 0x43b831cd0347c826n, 0x01f22f1a11a5569fn,
+  0x05e5635a21d9ae61n, 0x64befef28cc970f2n, 0x613670957bc46611n,
+  0xb87c5a554fd00ecbn, 0x8c3ee88a1ccf32c8n, 0x940c7922ae3a2614n,
+  0x1841f924a2c509e4n, 0x16f53526e70465c2n, 0x75f644e97f30a13bn,
+  0xeaf1ff7b5ceca249n,
+];
+
+await test('keccak-f[1600] of the all-zero state, ALL 25 lanes', async () => {
+  const got = await permute(chain, kp, new Array(25).fill(0n));
+  for (let i = 0; i < 25; i++) {
+    assertEq(
+      got[i].toString(16).padStart(16, '0'),
+      ZERO_STATE_PERMUTED[i].toString(16).padStart(16, '0'),
+      `lane ${i}`
+    );
+  }
+});
+
+await test('the 25-lane gate is not vacuous', async () => {
+  // If the probe ignored its argument, or the comparison compared a value to
+  // itself, the check above would pass for a permuted input too.
+  const perturbed = new Array(25).fill(0n);
+  perturbed[7] = 1n;
+  const got = await permute(chain, kp, perturbed);
+  let same = 0;
+  for (let i = 0; i < 25; i++) {
+    if (got[i] === ZERO_STATE_PERMUTED[i]) same++;
+  }
+  assert(same === 0, `one flipped input bit left ${same} lanes unchanged`);
+});
+
+// ---------------------------------------------------------------------------
+// The assembly against the Solidity it replaced.
+//
+// The fixed anchors below -- the 25-lane KAT, FIPS 202, the keccak256 sweep,
+// MobileCoin's own digests -- are the ones that matter, because they were not
+// written here. This differential adds the thing they cannot give: coverage of
+// states nobody chose. `Keccak1600.f1600Reference` is the readable port that
+// `f1600` replaced; if the two ever disagree on a state, one of them is wrong
+// and neither is trustworthy until that is resolved.
+// ---------------------------------------------------------------------------
+
+async function permuteRef(chain, probe, lanes) {
+  const r = await chain.must(
+    probe,
+    selector('f1600Reference(uint256[25])') + encLanes(lanes),
+    { gasLimit: GAS }
+  );
+  return decLanes(r.ret);
+}
+
+/// xorshift64*, seeded by hand, so a failing state is the same state on the
+/// next run and can be pasted into a regression test.
+function rng(seed) {
+  let s = seed;
+  return () => {
+    s ^= (s << 13n) & 0xffffffffffffffffn;
+    s ^= s >> 7n;
+    s ^= (s << 17n) & 0xffffffffffffffffn;
+    return (s * 0x2545f4914f6cdd1dn) & 0xffffffffffffffffn;
+  };
+}
+
+async function assertAgrees(lanes, what) {
+  const got = await permute(chain, kp, lanes);
+  const want = await permuteRef(chain, kp, lanes);
+  for (let i = 0; i < 25; i++) {
+    assertEq(
+      got[i].toString(16).padStart(64, '0'),
+      want[i].toString(16).padStart(64, '0'),
+      `${what}: lane ${i}`
+    );
+  }
+  return got;
+}
+
+await test('assembly and reference agree on random states', async () => {
+  const next = rng(0x9e3779b97f4a7c15n);
+  for (let t = 0; t < 16; t++) {
+    const lanes = Array.from({ length: 25 }, () => next());
+    await assertAgrees(lanes, `random state ${t}`);
+  }
+});
+
+await test('assembly and reference agree on states that stress the mask', async () => {
+  // Random lanes are dense in their high bits and would hide a rotation that
+  // is only wrong when a lane is nearly empty or nearly full. These are the
+  // shapes where an off-by-one in a shift count survives everything else:
+  // every bit set, one bit set at each end, and the two halves separated.
+  const ALL = 0xffffffffffffffffn;
+  const shapes = [
+    ['all lanes zero but lane 24', (i) => (i === 24 ? ALL : 0n)],
+    ['all bits set', () => ALL],
+    ['top bit of every lane', () => 1n << 63n],
+    ['bottom bit of every lane', () => 1n],
+    ['top and bottom bits', () => (1n << 63n) | 1n],
+    ['high half set', () => 0xffffffff00000000n],
+    ['low half set', () => 0x00000000ffffffffn],
+    ['alternating bits', (i) => (i % 2 ? 0xaaaaaaaaaaaaaaaan : 0x5555555555555555n)],
+  ];
+  for (const [name, f] of shapes) {
+    await assertAgrees(Array.from({ length: 25 }, (_, i) => f(i)), name);
+  }
+  // One bit, walked across every lane boundary and every byte boundary within
+  // a lane: this is what catches a lane written to the wrong pi destination.
+  for (const bit of [0n, 1n, 7n, 8n, 31n, 32n, 62n, 63n]) {
+    const lanes = new Array(25).fill(0n);
+    lanes[Number(bit) % 25] = 1n << bit;
+    await assertAgrees(lanes, `single bit ${bit}`);
+  }
+});
+
+await test('assembly and reference agree even on out-of-convention input', async () => {
+  // Lanes are documented as 64-bit values in a uint256, and nothing in src/
+  // produces anything else -- but the ABI decoder does not enforce it, so a
+  // caller reaching the probe directly can pass 256 dirty bits. Both
+  // implementations fold that down on the first round's rho; this pins that
+  // they fold it down the SAME way, rather than one of them carrying dirt
+  // into a later round.
+  const next = rng(0xdeadbeefcafef00dn);
+  for (let t = 0; t < 4; t++) {
+    const lanes = Array.from(
+      { length: 25 },
+      () => (next() << 192n) | (next() << 128n) | (next() << 64n) | next()
+    );
+    const got = await assertAgrees(lanes, `dirty state ${t}`);
+    for (let i = 0; i < 25; i++) {
+      assert(got[i] >> 64n === 0n, `lane ${i} left dirty on output`);
+    }
+  }
+});
+
+await test('the differential is not vacuous', async () => {
+  // Both sides are reached through the same encoder and decoder. If the probe
+  // dispatched both selectors to one implementation, or the comparison were
+  // self-referential, every assertion above would hold with the assembly
+  // deleted. Distinct inputs must give distinct outputs through BOTH entry
+  // points, and the reference must reproduce the published KAT on its own.
+  const ref = await permuteRef(chain, kp, new Array(25).fill(0n));
+  for (let i = 0; i < 25; i++) {
+    assertEq(
+      ref[i].toString(16).padStart(16, '0'),
+      ZERO_STATE_PERMUTED[i].toString(16).padStart(16, '0'),
+      `reference lane ${i}`
+    );
+  }
+  const perturbed = new Array(25).fill(0n);
+  perturbed[3] = 1n << 40n;
+  const refOther = await permuteRef(chain, kp, perturbed);
+  let same = 0;
+  for (let i = 0; i < 25; i++) if (ref[i] === refOther[i]) same++;
+  assert(same === 0, `reference ignored its input on ${same} lanes`);
+});
+
+await test('FIPS 202: SHA3-256 of the empty string', async () => {
+  // a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a is the
+  // value in the FIPS 202 / NIST CAVP SHA3-256 short-message set for len 0.
+  const got = await sponge(chain, kp, 136, new Uint8Array(0), 0x06, 32);
+  assertEq(
+    bytesToHex(got),
+    'a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a',
+    'SHA3-256("")'
+  );
+});
+
+await test('keccak256 length sweep vs ethereum-cryptography', async () => {
+  // An independent implementation of the same sponge. The lengths bracket the
+  // 136-byte rate so single-block, exact-block and multi-block padding all
+  // run.
+  for (const n of [0, 1, 135, 136, 137, 200, 272, 273]) {
+    const msg = new Uint8Array(n);
+    for (let i = 0; i < n; i++) msg[i] = (i * 37 + 11) & 0xff;
+    const got = await sponge(chain, kp, 136, msg, 0x01, 32);
+    assertEq(bytesToHex(got), bytesToHex(keccak256(msg)), `keccak256 len ${n}`);
+  }
+});
+
+// ----------------------------------------------------- merlin differentials
+
+/// The probe returns keccak256 of the concatenated challenge output (see
+/// MerlinProbe_DO_NOT_DEPLOY for why it cannot return the bytes themselves), so the fixture's
+/// expected hex is hashed the same way before comparing. `head` and `len` come
+/// back too, purely so a failure says something.
+const runScript = async (label, ops) => {
+  const r = await chain.must(
+    mp,
+    encodeTwoBytes('run(bytes,bytes)', label, encodeScript(ops)),
+    { gasLimit: GAS }
+  );
+  const h = r.ret.replace(/^0x/, '');
+  return {
+    hash: h.slice(0, 64),
+    len: Number(BigInt('0x' + h.slice(64, 128))),
+    head: h.slice(128, 192),
+  };
+};
+
+const expectOutput = (got, expectedHex, what) => {
+  assertEq(got.len, expectedHex.length / 2, `${what}: output length`);
+  assertEq(
+    got.head,
+    (expectedHex.slice(0, 64) + '0'.repeat(64)).slice(0, 64),
+    `${what}: first 32 output bytes`
+  );
+  assertEq(
+    got.hash,
+    bytesToHex(keccak256(hexToBytes(expectedHex))),
+    `${what}: keccak256 of the whole output`
+  );
+};
+
+assert(FIX.cases.length > 0, 'fixture file has no transcript cases');
+assert(FIX.merlinVersion === '3.0.0', 'fixtures were built against a different merlin');
+
+for (const c of FIX.cases) {
+  await test(`merlin: ${c.name}`, async () => {
+    expectOutput(await runScript(c.label, c.ops), c.expected, c.name);
+  });
+}
+
+for (const c of FIX.digestibleKats) {
+  await test(`digestible KAT (upstream): ${c.name}`, async () => {
+    expectOutput(await runScript(c.label, c.ops), c.expected, c.name);
+  });
+}
+
+for (const b of FIX.blockIds) {
+  await test(`block id: ${b.name}`, async () => {
+    const args =
+      word(b.version) + b32(b.parentId) + word(b.index) +
+      word(b.cumulativeTxoCount) + word(b.rangeFrom) + word(b.rangeTo) +
+      b32(b.rootHash) + b32(b.contentsHash);
+    const r = await chain.must(
+      mp,
+      selector(
+        'blockId(uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)'
+      ) + args,
+      { gasLimit: GAS }
+    );
+    assertEq(r.ret.replace(/^0x/, ''), b.blockId, b.name);
+  });
+}
+
+// -------------------------------------------------------- negative controls
+//
+// The fixtures above can only fail if the Solidity is wrong, but they cannot
+// tell us that the Solidity is *reading its inputs*. These can.
+
+await test('the domain separator reaches the state', async () => {
+  const ops = [{ op: 'challenge', ctx: '63', len: 32 }];
+  const a = await runScript('746573742070726f746f636f6c', ops);
+  const b = await runScript('746573742070726f746f636f6d', ops); // last byte + 1
+  assert(a.hash !== b.hash, 'two different dom-seps produced the same challenge');
+});
+
+await test('a one-bit change in an appended message changes the challenge', async () => {
+  const c = FIX.cases.find((x) => x.name === 'equivalence-simple');
+  const tampered = JSON.parse(JSON.stringify(c.ops));
+  const d = tampered[0].data;
+  tampered[0].data =
+    d.slice(0, d.length - 2) +
+    (parseInt(d.slice(-2), 16) ^ 1).toString(16).padStart(2, '0');
+  const got = await runScript(c.label, tampered);
+  assert(
+    got.hash !== bytesToHex(keccak256(hexToBytes(c.expected))),
+    'tampered message reproduced the fixture output'
+  );
+});
+
+await test('the message LENGTH is framed, not just the bytes', async () => {
+  // append("ab","") then append("","cd") vs append("ab","cd") -- if the length
+  // were not part of the meta-AD these could collide.
+  const ch = { op: 'challenge', ctx: '63', len: 32 };
+  const a = await runScript('6c', [
+    { op: 'append', ctx: '6162', data: '' },
+    { op: 'append', ctx: '', data: '6364' },
+    ch,
+  ]);
+  const b = await runScript('6c', [
+    { op: 'append', ctx: '6162', data: '6364' },
+    ch,
+  ]);
+  assert(a.hash !== b.hash, 'framing collision between distinct append sequences');
+});
+
+await test('every block-id field is bound', async () => {
+  const base = FIX.blockIds.find((x) => x.name === 'mixed');
+  const call = (o) =>
+    selector(
+      'blockId(uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)'
+    ) +
+    word(o.version) + b32(o.parentId) + word(o.index) +
+    word(o.cumulativeTxoCount) + word(o.rangeFrom) + word(o.rangeTo) +
+    b32(o.rootHash) + b32(o.contentsHash);
+
+  const ref = (await chain.must(mp, call(base), { gasLimit: GAS })).ret;
+  const mutations = [
+    { version: Number(base.version) + 1 },
+    { parentId: base.parentId.slice(0, 62) + '00' },
+    { index: (BigInt(base.index) + 1n).toString() },
+    { cumulativeTxoCount: (BigInt(base.cumulativeTxoCount) + 1n).toString() },
+    { rangeFrom: (BigInt(base.rangeFrom) + 1n).toString() },
+    { rangeTo: (BigInt(base.rangeTo) + 1n).toString() },
+    { rootHash: base.rootHash.slice(0, 62) + '00' },
+    { contentsHash: base.contentsHash.slice(0, 62) + '00' },
+  ];
+  for (const m of mutations) {
+    const got = (await chain.must(mp, call({ ...base, ...m }), { gasLimit: GAS })).ret;
+    assert(got !== ref, `block id ignored ${Object.keys(m)[0]}`);
+  }
+});
+
+// ------------------------------------------------------------------ costing
+//
+// Not an assertion, but the number anyone deciding whether to verify a
+// MobileCoin block header on Ethereum needs to see.
+
+await test('report the cost of one block id', async () => {
+  const b = FIX.blockIds[0];
+  const r = await chain.must(
+    mp,
+    selector(
+      'blockId(uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)'
+    ) +
+      word(b.version) + b32(b.parentId) + word(b.index) +
+      word(b.cumulativeTxoCount) + word(b.rangeFrom) + word(b.rangeTo) +
+      b32(b.rootHash) + b32(b.contentsHash),
+    { gasLimit: GAS }
+  );
+  console.log(`        one MobileCoin block id: ${r.gas.toLocaleString()} gas`);
+  const p = await chain.must(
+    kp,
+    selector('f1600(uint256[25])') + encLanes(new Array(25).fill(0n)),
+    { gasLimit: GAS }
+  );
+  console.log(`        one keccak-f[1600]:      ${p.gas.toLocaleString()} gas`);
+});
+
+// ---------------------------------------------------------------------------
+// Against MobileCoin's own output, not against a fixture this file generated.
+//
+// crates/mc-return builds a real Block with MobileCoin's types and signs it
+// with BlockSignature::from_block_and_keypair, then records both digests. If
+// these two assertions pass, the Solidity reproduces what a MobileCoin node
+// produces -- which is the only thing that makes an on-chain verifier sound.
+// ---------------------------------------------------------------------------
+
+{
+  const RET = JSON.parse(readFileSync(
+    join(HERE, '..', '..', 'crates', 'mc-return', 'fixtures', 'return.json'), 'utf8'));
+  const blk = RET.chain[RET.chain.length - 1];
+  const args =
+    word(blk.version) + b32(blk.parent_id) + word(blk.index) +
+    word(blk.cumulative_txo_count) + word(blk.root_element.range.from) +
+    word(blk.root_element.range.to) + b32(blk.root_element.hash) +
+    b32(blk.contents_hash);
+
+  await test('block id matches a Block built by MobileCoin itself', async () => {
+    const r = await chain.must(mp, selector(
+      'blockId(uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)') + args);
+    assertEq(r.ret, blk.id, 'block id');
+    // The block stores its own id, so agreement here is what lets the
+    // signature digest below bind the id transitively.
+    assertEq(r.ret, RET.digests.block_id.digest, 'id == recorded block_id digest');
+  });
+
+  await test('BlockSignature digest matches what a validator actually signs', async () => {
+    const r = await chain.must(mp, selector(
+      'blockSigDigest(bytes32,uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)')
+      + b32(blk.id) + args);
+    assertEq(r.ret, RET.digests.block_sig.digest, 'block-sig digest');
+  });
+
+  await test('the sig digest is not the id digest, and depends on every field', async () => {
+    // Distinct protocol label and an aggregate wrapper, so confusing the two
+    // would be a real substitution -- assert they cannot be interchanged.
+    assert(RET.digests.block_sig.digest !== RET.digests.block_id.digest,
+      'sig digest must differ from the id digest');
+
+    // Perturb each field in turn; every one must move the digest, or that
+    // field is not bound and a relayer could vary it freely.
+    const base = b32(blk.id) + args;
+    const sel = selector(
+      'blockSigDigest(bytes32,uint32,bytes32,uint64,uint64,uint64,uint64,bytes32,bytes32)');
+    const ref = (await chain.must(mp, sel + base)).ret;
+    for (let wordIdx = 0; wordIdx < 9; wordIdx++) {
+      const words = base.match(/.{64}/g);
+      const cur = BigInt('0x' + words[wordIdx]);
+      words[wordIdx] = word(cur ^ 1n);
+      const got = (await chain.must(mp, sel + words.join(''))).ret;
+      assert(got !== ref, `field ${wordIdx} is not bound into the digest`);
+    }
+  });
+
+  await test('TxOut digest matches the leaf preimage MobileCoin computes', async () => {
+    // This is what makes a membership proof about a SPECIFIC output. The
+    // fixture's tx_out_digest is produced by MobileCoin's own TxOut::hash.
+    const tx = RET.tx_out;
+    const ma = tx.masked_amount;
+    const enc = (hex) => {
+      const h = hex.replace(/^0x/, '');
+      return word(h.length / 2) + h.padEnd(Math.ceil(h.length / 64) * 64, '0');
+    };
+    // Three trailing dynamic args: maskedTokenId, eFogHint, eMemo.
+    const head = b32(ma.commitment) + word(ma.masked_value) + word(0) +
+      b32(tx.target_key) + b32(tx.public_key) + word(0) + word(0);
+    const tails = [enc(ma.masked_token_id), enc(tx.e_fog_hint), enc(tx.e_memo)];
+    let off = 7 * 32;
+    const words = head.match(/.{64}/g);
+    for (const [slot, tail] of [[2, tails[0]], [5, tails[1]], [6, tails[2]]]) {
+      words[slot] = word(off);
+      off += tail.length / 2;
+    }
+    const r = await chain.must(mp, selector(
+      'txOutDigest(bytes32,uint64,bytes,bytes32,bytes32,bytes,bytes)')
+      + words.join('') + tails.join(''));
+    assertEq(r.ret, RET.tx_out_digest.digest, 'TxOut digest');
+  });
+
+}
+
+summary();

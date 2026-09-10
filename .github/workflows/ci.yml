@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Native integration, Solidity bytecode, and finite-state negative controls.
+
+jobs:
+  contracts:
+    name: Solidity against a real EVM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 18.18.1 is the version every recorded contract result was produced
+      # under. The dependency tree is pure JS and wasm -- no native builds, no
+      # platform-restricted packages -- so the runner's OS does not enter into
+      # the result.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+
+      # `npm ci` and not `npm install`: it installs the locked tree exactly and
+      # fails if package.json and the lockfile have drifted apart. The suite
+      # compiles real bytecode and prints gas, so an unpinned compiler would
+      # quietly change what those numbers mean.
+      - name: Install locked dependencies
+        working-directory: contracts
+        run: npm ci --no-audit --no-fund
+
+      - name: Run the contract suite
+        working-directory: contracts
+        run: node test/run.mjs
+
+      - name: Check test runner failure propagation
+        run: node --test scripts/test-runners.mjs
+
+  proofs:
+    name: TLA+ models and negative controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install checksum-pinned TLC
+        run: ./scripts/setup-proofs.sh
+      - name: Run proof runners
+        run: ./scripts/proofs.sh
+
+  native:
+    name: Rust and connected local signing integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang libclang-dev pkg-config protobuf-compiler
+          rustup toolchain install stable --profile minimal
+          rustup toolchain install nightly-2024-10-11 --profile minimal
+      - name: Pinned vendors and locked dependency caches
+        run: ./scripts/setup.sh
+      - name: Rust, durable signing and real EVM return tests
+        run: ./scripts/test.sh
+      - name: Generated upstream proofs are reproducible
+        run: git diff --exit-code -- crates/mc-return/fixtures contracts/test/fixtures/returns-v2
