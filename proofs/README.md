@@ -48,6 +48,8 @@ rejects every packet, showing that safety alone is vacuous and the positive-path
 probes distinguish that model. This abstracts cryptographic verification and
 assumes caller enrollment and collision-resistant contexts. It does not establish
 signature security, network-service behavior, roster uniqueness, or Rust refinement.
+It does not prove packet deduplication: an authentic packet with the expected
+context may be decoded again.
 
 ## Durable commitment publication
 
@@ -56,6 +58,8 @@ independent anchor acknowledgement, crash, one-write reconciliation, rollback,
 and publication. Its baseline generates 751 states for one fixed session/seat,
 up to four durable writes and two attempted publications. It checks at most one
 publication and that a durable context binding was anchored before publication.
+Here publication means a new nonce issuance authorized by a guard claim, not
+network retransmission of a previously issued packet.
 
 Positive probes require ordinary publication, recovery before publication, and
 publication after a lost acknowledgement. Loss can occur before or after the
