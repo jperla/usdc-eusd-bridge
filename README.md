@@ -79,7 +79,7 @@ For the proof suite, install Java 21, then:
 
 ```sh
 ./scripts/setup-proofs.sh  # official TLC release, pinned SHA-256
-./scripts/proofs.sh        # all 15 discovered proof runners
+./scripts/proofs.sh        # all 18 discovered proof runners
 ```
 
 See [proofs/README.md](proofs/README.md) for tool overrides and model scope.

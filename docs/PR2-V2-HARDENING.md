@@ -149,7 +149,7 @@ coverage prevent a reject-everything baseline.
 The model assumes authenticated memos, hash collision resistance and persistent
 replay state for each chain/escrow. It is independent finite design evidence,
 not a refinement proof of the Solidity implementation. The complete proof
-command discovers 16 runners, including the earlier rollback, provenance,
+command discovers 18 runners, including the earlier rollback, provenance,
 threshold counterexamples and failure-propagation controls.
 
 `JournalReconcile.tla` separately enumerates histories of length zero through
@@ -159,6 +159,15 @@ must produce the named counterexamples. Full-history equality makes the model's
 sequence check redundant; the implementation checks both sequence and hash.
 This model assumes durable, validated storage and does not model hardware faults.
 
+`PacketAcceptance.tla` adds nine packet acceptance invariants (1,027 baseline
+states), positive coverage for both signing rounds, individual guard mutations,
+and self-selected-context and reject-everything source mutations.
+`DurablePublication.tla` composes crashes, lost acknowledgements, recovery,
+rollback and nonce publication (751 baseline states), with duplicate/ordering
+counterexamples and reachable successful recovery. See `proofs/README.md` for
+the exact finite bounds, mapping to implementation and assumptions. These source
+mutations change the models, not Rust; no cryptographic refinement is claimed.
+
 ## Verification
 
 Locally verified with the pinned Rust nightly and locked Solidity dependencies:
@@ -166,7 +175,7 @@ Locally verified with the pinned Rust nightly and locked Solidity dependencies:
 | Check | Result |
 |---|---|
 | `./scripts/test.sh` | 395 Rust tests, 350 Solidity tests, 12 runner controls and 3 auditor handoff checks; exit 0 |
-| `./scripts/proofs.sh` | 16 runners passed, 0 failed; exit 0 |
+| `./scripts/proofs.sh` | 18 runners passed, 0 failed; exit 0 |
 | Actual constant-rho source mutation | Compiled; the targeted binding-factor regression failed as expected |
 | Restored MLSAG protocol and wire tests | Passed; final additional authenticated-malformed-payload coverage is included in acceptance |
 
